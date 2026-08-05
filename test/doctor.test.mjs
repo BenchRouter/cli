@@ -9,12 +9,12 @@ import { fileURLToPath } from "node:url";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, "..");
-const cliPath = path.join(repoRoot, "bin/benchrouter-setup.mjs");
+const cliPath = path.join(repoRoot, "bin/benchrouter.mjs");
 const routeId = "app/chat";
 const fixture = JSON.parse(
   await readFile(path.join(testDir, "fixtures/benchrouter-proxy/chat-completion.json"), "utf8")
 );
-const cliSource = await readFile(cliPath, "utf8");
+const cliSource = await readFile(path.join(repoRoot, "src/cli.mjs"), "utf8");
 
 test("doctor passes with wired code_refs and a proxy fixture replay", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
@@ -28,13 +28,13 @@ test("doctor passes with wired code_refs and a proxy fixture replay", async (t) 
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /runtime host checklist: set BENCHROUTER_API_KEY .* OPENAI_BASE_URL/);
-  assert.match(result.stdout, /GitHub Actions checklist: set repo secret BENCHROUTER_EVAL_API_KEY/);
+  assert.match(result.stdout, /GitHub Actions checklist: ensure BenchRouter Evals is enabled; CI authenticates with GitHub OIDC/);
   assert.match(result.stdout, /optional fallback provider key detected .* OPENAI_API_KEY/);
   assert.match(result.stdout, /runtime wiring/);
   assert.match(result.stdout, /auth .*live proxy ping used runtime BENCHROUTER_API_KEY/);
   assert.match(result.stdout, /model resolution .*configured route model app\/chat -> selected provider\/canonical slug minimax\/minimax-m2\.7.*usage present/);
-  assert.match(result.stdout, /GitHub secret check skipped .*BENCHROUTER_EVAL_API_KEY/);
-  assert.match(result.stdout, /BenchRouter setup doctor passed\./);
+  assert.match(result.stdout, /GitHub workflow check skipped/);
+  assert.match(result.stdout, /BenchRouter doctor passed\./);
   assert.equal(proxy.requests.length, 1);
   assert.equal(proxy.requests[0].method, "POST");
   assert.equal(proxy.requests[0].url, "/v1/chat/completions");
@@ -94,11 +94,11 @@ test("doctor confirms active BenchRouter Evals workflow from gh", async (t) => {
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /GitHub secret .*BENCHROUTER_EVAL_API_KEY exists/);
   assert.match(result.stdout, /GitHub workflow .*BenchRouter Evals is active/);
+  assert.match(result.stdout, /BenchRouter Evals uses keyless OIDC/);
 });
 
-test("init prints distinct key destinations and writes runtime-only env example", async (t) => {
+test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only env example", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-init-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ scripts: {} }, null, 2)}\n`);
@@ -133,8 +133,7 @@ test("init prints distinct key destinations and writes runtime-only env example"
           BENCHROUTER_EVAL_RUN_ID: "<ci only>"
         },
         setup_api_keys: {
-          production: { key: "br_live_runtime_fixture" },
-          github_actions: { key: "br_live_eval_fixture" }
+          production: { key: "br_live_runtime_fixture" }
         }
       }
     }
@@ -165,12 +164,12 @@ test("init prints distinct key destinations and writes runtime-only env example"
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Runtime\/host BENCHROUTER_API_KEY: br_live_runtime_fixture/);
-  assert.match(result.stdout, /GitHub Actions secret BENCHROUTER_EVAL_API_KEY: br_live_eval_fixture/);
-  assert.match(result.stdout, /Store these now; old values cannot be recovered/);
-  assert.doesNotMatch(result.stdout, /GitHub Actions BENCHROUTER_API_KEY/);
+  assert.doesNotMatch(result.stdout, /BENCHROUTER_EVAL_API_KEY/);
+  assert.match(result.stdout, /Store it now/);
   assert.match(result.stdout, /Tell your coding agent: read \.benchrouter\/SETUP_README\.md/);
   assert.match(result.stdout, /call-site patch, eval evidence, scorer, calibration, and env-var install/);
-  assert.match(result.stdout, /runtime BENCHROUTER_API_KEY in the app host, GitHub Actions repo secret BENCHROUTER_EVAL_API_KEY/);
+  assert.match(result.stdout, /installing runtime BENCHROUTER_API_KEY in the app host/);
+  assert.match(result.stdout, /BenchRouter Evals uses GitHub OIDC/);
 
   const envExample = await readFile(path.join(root, ".env.example"), "utf8");
   assert.match(envExample, /^BENCHROUTER_API_KEY= # runtime key/m);
@@ -363,8 +362,6 @@ async function createTargetRepo(t, { codeRefText }) {
       "      - run: node .benchrouter/upload-results.mjs",
       "        env:",
       "          BENCHROUTER_MODEL_RUN_ID: x",
-      "          BENCHROUTER_ROUTE_ID: app/chat",
-      "          BENCHROUTER_API_KEY: ${{ secrets.BENCHROUTER_EVAL_API_KEY }}",
       "          BENCHROUTER_UPLOAD_RESULTS: '1'",
       ...doctorWorkflowSnippets().map((snippet) => `      # doctor-contract: ${snippet}`)
     ].join("\n")
@@ -389,10 +386,6 @@ async function createFixtureGh(t) {
     ghPath,
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
-if (args[0] === "secret" && args[1] === "list") {
-  process.stdout.write("BENCHROUTER_EVAL_API_KEY\\t2026-06-10T00:00:00Z\\n");
-  process.exit(0);
-}
 if (args[0] === "api" && args[1] === "repos/example/app/actions/workflows") {
   process.stdout.write(JSON.stringify({
     total_count: 1,
@@ -497,7 +490,7 @@ async function startFixtureProxy(t, responseFixture) {
 }
 
 function runDoctor(root, apiUrl, envOverrides = {}) {
-  return runCli(["doctor", "--output-dir", root, "--api-url", apiUrl, "--skip-github-secret"], root, {
+  return runCli(["doctor", "--output-dir", root, "--api-url", apiUrl, "--skip-github-workflow"], root, {
     BENCHROUTER_API_KEY: "br_test_fixture",
     ...envOverrides
   });

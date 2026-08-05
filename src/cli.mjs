@@ -4,6 +4,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
+import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config.mjs";
+import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "help";
@@ -13,9 +15,6 @@ const DOCTOR_WORKFLOW_SNIPPETS = [
   "workflow_dispatch",
   "benchrouter_plan",
   "BENCHROUTER_MODEL_RUN_ID",
-  "BENCHROUTER_ROUTE_ID",
-  "BENCHROUTER_API_KEY",
-  "secrets.BENCHROUTER_EVAL_API_KEY",
   "BENCHROUTER_UPLOAD_RESULTS",
   "run-model",
   "upload-results",
@@ -44,6 +43,8 @@ if (command === "init") {
   await models();
 } else if (command === "upgrade") {
   await upgrade();
+} else if (["status", "frontier", "failures", "explain"].includes(command)) {
+  await readCommand(command);
 } else {
   usage(command === "help" || args.help ? 0 : 1);
 }
@@ -54,10 +55,7 @@ async function init() {
   }
 
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
-  const setupCode = stringArg(
-    "setup-key",
-    stringArg("setup-code", process.env.BENCHROUTER_SETUP_KEY ?? process.env.BENCHROUTER_SETUP_CODE)
-  );
+  const setupCode = stringArg("setup-key", process.env.BENCHROUTER_SETUP_KEY);
   const repoFullName = stringArg("repo") ?? detectGitHubRepo();
   // --route-id / --name / --incumbent-model may be repeated to scaffold multiple
   // routes in one init. They are paired positionally: the Nth --route-id goes
@@ -114,7 +112,7 @@ async function init() {
     }
     process.stdout.write("would update package.json scripts/devDependencies when package.json exists\n");
     process.stdout.write("would update or create .env.example\n");
-    process.stdout.write("would request Runtime/host BENCHROUTER_API_KEY and GitHub Actions BENCHROUTER_EVAL_API_KEY during a real init\n");
+    process.stdout.write("would request Runtime/host BENCHROUTER_API_KEY during a real init\n");
     return;
   }
 
@@ -157,6 +155,7 @@ async function init() {
   }
 
   printSetupApiKeys(setupApiKeys);
+  await maybeSaveRepoReadToken(setupCode, targetRepo);
   printInitNextSteps();
 
   process.stdout.write("\nSuggested PR body:\n");
@@ -252,6 +251,7 @@ async function upgrade() {
 
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Review the dry-run/apply diff; it should only touch BenchRouter-generated kit/readme files.\n");
+  process.stdout.write(`- Run \`npx @benchrouter/cli doctor --repo ${repoFullName}\`.\n`);
   process.stdout.write("- Open a PR titled \"Upgrade BenchRouter kit\".\n");
 }
 
@@ -314,21 +314,41 @@ async function confirmPrompt(question) {
   }
 }
 
-function printSetupApiKeys(setupApiKeys) {
-  if (!setupApiKeys?.production?.key || !setupApiKeys?.github_actions?.key) {
+async function maybeSaveRepoReadToken(token, repoFullName) {
+  if (!token?.startsWith("br_setup_") || !repoFullName) {
     return;
   }
-  process.stdout.write("\nBenchRouter generated setup API keys. They are shown once:\n");
+  let approved = Boolean(args["save-token"]);
+  if (!approved && process.stdin.isTTY) {
+    approved = await confirmPrompt(`Save repo read access for ${repoFullName} on this computer? [y/N] `);
+  }
+  if (!approved) {
+    process.stdout.write("Repo token not saved. Use BENCHROUTER_TOKEN for read commands, or rerun init with --save-token.\n");
+    return;
+  }
+  try {
+    const target = await saveRepoToken(repoFullName, token);
+    process.stdout.write(`Saved repo-scoped read access in ${target}.\n`);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not save repo read access.");
+  }
+}
+
+function printSetupApiKeys(setupApiKeys) {
+  if (!setupApiKeys?.production?.key) {
+    return;
+  }
+  process.stdout.write("\nBenchRouter generated a runtime API key. It is shown once:\n");
   process.stdout.write(`- Runtime/host BENCHROUTER_API_KEY: ${setupApiKeys.production.key}\n`);
-  process.stdout.write(`- GitHub Actions secret BENCHROUTER_EVAL_API_KEY: ${setupApiKeys.github_actions.key}\n`);
-  process.stdout.write("Store these now; old values cannot be recovered. If lost, return to the BenchRouter setup/dashboard flow to mint a new key.\n");
+  process.stdout.write("Store it now. If it is lost, return to the setup page to create a new key.\n");
 }
 
 function printInitNextSteps() {
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Tell your coding agent: read .benchrouter/SETUP_README.md before editing. It explains the call-site patch, eval evidence, scorer, calibration, and env-var install.\n");
-  process.stdout.write("- Ask the user once before installing env vars: runtime BENCHROUTER_API_KEY in the app host, GitHub Actions repo secret BENCHROUTER_EVAL_API_KEY for evals.\n");
-  process.stdout.write("- Run relevant product tests/build and `npx @benchrouter/setup doctor` before opening the PR. If BenchRouter Evals already ran before the GitHub secret existed, rerun the failed workflow after installing it.\n");
+  process.stdout.write("- Ask the user once before installing runtime BENCHROUTER_API_KEY in the app host.\n");
+  process.stdout.write("- BenchRouter Evals uses GitHub OIDC. Do not add an eval API key to GitHub Actions.\n");
+  process.stdout.write("- Run relevant product tests/build and `npx @benchrouter/cli doctor` before opening the PR.\n");
 }
 
 async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, dryRun }) {
@@ -378,6 +398,56 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
   return JSON.parse(responseText);
 }
 
+async function readCommand(kind) {
+  if (args.help) {
+    usage(0, kind);
+  }
+  const repoCandidate = stringArg("repo") ?? detectGitHubRepo();
+  if (!repoCandidate) {
+    usage(1, kind, "Missing --repo and unable to detect one from git remote.");
+  }
+  let repoFullName;
+  try {
+    repoFullName = normalizeRepoFullName(repoCandidate);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Repository must use the owner/repo form.", "invalid_repository");
+  }
+  const routeKey = args._[1];
+  const modelId = kind === "explain" ? args._[1] : args._[2];
+  if (["frontier", "failures"].includes(kind) && !routeKey) {
+    usage(1, kind, "Missing route key.");
+  }
+  if (kind === "explain" && !modelId) {
+    usage(1, kind, "Missing model id.");
+  }
+  let credential;
+  try {
+    credential = resolveRepoToken(repoFullName, stringArg("token"));
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not read BenchRouter credentials.");
+  }
+  if (!credential) {
+    fail("Missing repo read token. Set BENCHROUTER_TOKEN, pass --token, or approve --save-token during init.");
+  }
+  try {
+    await runRepoRead({
+      kind,
+      routeKey,
+      modelId,
+      route: stringArg("route"),
+      apiUrl: stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, ""),
+      repoFullName,
+      token: credential.token,
+      json: Boolean(args.json)
+    });
+  } catch (error) {
+    if (error instanceof CliUsageError) {
+      usage(1, kind, error.message);
+    }
+    fail(error instanceof Error ? error.message : `BenchRouter ${kind} failed.`);
+  }
+}
+
 async function models() {
   if (args.help) {
     usage(0, "models");
@@ -400,12 +470,19 @@ async function models() {
     fail(`No enabled BenchRouter models matched ${JSON.stringify(filter)}.`);
   }
 
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify({ ok: true, models: filtered }, null, 2)}\n`);
+    return;
+  }
   for (const id of filtered) {
     process.stdout.write(`${id}\n`);
   }
 }
 
 async function doctor() {
+  if (args.help) {
+    usage(0, "doctor");
+  }
   const root = path.resolve(stringArg("output-dir", process.cwd()));
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
   const repoFullName = stringArg("repo") ?? detectGitHubRepo();
@@ -457,6 +534,9 @@ async function doctor() {
         failures.push(`workflow missing ${snippet}`);
       }
     }
+    if (workflow.includes("BENCHROUTER_EVAL_API_KEY")) {
+      failures.push("workflow must not reference BENCHROUTER_EVAL_API_KEY; GitHub Actions authenticates with OIDC");
+    }
   }
 
   const uploadHelperPath = path.join(root, ".benchrouter/upload-results.mjs");
@@ -497,7 +577,7 @@ async function doctor() {
       }
     }
     if (envKeys.includes("BENCHROUTER_EVAL_API_KEY")) {
-      failures.push(".env.example must not include BENCHROUTER_EVAL_API_KEY; keep the GitHub eval key as a GitHub Actions secret");
+      failures.push(".env.example must not include BENCHROUTER_EVAL_API_KEY; GitHub Actions authenticates with OIDC");
     }
     const ciOnlyBenchRouterKeys = envKeys.filter(
       (key) => key.startsWith("BENCHROUTER_") && key !== "BENCHROUTER_API_KEY" && key !== "BENCHROUTER_EVAL_API_KEY"
@@ -533,18 +613,15 @@ async function doctor() {
     checks.push(`auth skipped: ${proxyResult.reason}`);
   }
 
-  if (!args["skip-github-secret"]) {
+  if (!args["skip-github-workflow"]) {
     if (!repoFullName) {
-      failures.push("could not detect GitHub repo for secret check; pass --repo owner/repo or --skip-github-secret");
+      failures.push("could not detect GitHub repo for workflow check; pass --repo owner/repo or --skip-github-workflow");
     } else {
-      if (verifyGitHubActionsSecret(repoFullName, failures)) {
-        checks.push("GitHub secret ✓ BENCHROUTER_EVAL_API_KEY exists");
-        checks.push("rerun hint: if BenchRouter Evals already ran before this secret existed, rerun the failed workflow after installing it (example: gh run rerun --failed)");
-      }
       verifyGitHubWorkflowState(repoFullName, failures, checks);
+      checks.push("GitHub Actions checklist: BenchRouter Evals uses keyless OIDC (id-token: write); no eval API key is stored in the repo");
     }
   } else {
-    checks.push("GitHub secret check skipped (expected secret: BENCHROUTER_EVAL_API_KEY)");
+    checks.push("GitHub workflow check skipped");
   }
 
   if (args["check-default-branch"]) {
@@ -568,7 +645,7 @@ async function doctor() {
   for (const check of checks) {
     process.stdout.write(`${check}\n`);
   }
-  process.stdout.write("BenchRouter setup doctor passed.\n");
+  process.stdout.write("BenchRouter doctor passed.\n");
 }
 
 async function fetchModelIds(apiUrl) {
@@ -799,7 +876,7 @@ function runtimeHostChecklist({ root, routes, apiUrl }) {
     : "call_site.base_url_env (record the real env var in .benchrouter/benchrouter.yml)";
   const checklist = [
     `runtime host checklist: set BENCHROUTER_API_KEY in your runtime host and set ${baseUrlLabel} to ${proxyBaseUrl(apiUrl)}`,
-    "GitHub Actions checklist: set repo secret BENCHROUTER_EVAL_API_KEY; the workflow maps it to BENCHROUTER_API_KEY for eval scripts"
+    "GitHub Actions checklist: ensure BenchRouter Evals is enabled; CI authenticates with GitHub OIDC (no stored eval API key)"
   ];
   const fallbackKeys = detectFallbackProviderEnvKeys(root);
   if (fallbackKeys.length > 0) {
@@ -923,22 +1000,6 @@ function proxyNetworkMessage(error) {
     return error.message;
   }
   return "request failed";
-}
-
-function verifyGitHubActionsSecret(repoFullName, failures) {
-  const result = spawnSync("gh", ["secret", "list", "--repo", repoFullName], { encoding: "utf8" });
-  if (result.status !== 0) {
-    failures.push(`could not verify GitHub Actions secrets with gh: ${(result.stderr || result.stdout || "gh failed").trim()}`);
-    return false;
-  }
-  const hasSecret = result.stdout
-    .split(/\r?\n/)
-    .some((line) => line.trim().split(/\s+/)[0] === "BENCHROUTER_EVAL_API_KEY");
-  if (!hasSecret) {
-    failures.push(`GitHub Actions secret BENCHROUTER_EVAL_API_KEY is missing for ${repoFullName}; set it to the GitHub eval key, not the runtime host key`);
-    return false;
-  }
-  return true;
 }
 
 function verifyGitHubWorkflowState(repoFullName, failures, checks) {
@@ -1107,8 +1168,8 @@ Incumbent model: ${incumbentModel}
 
 ### Secrets + CI
 - Runtime host: BENCHROUTER_API_KEY.
-- GitHub Actions repo secret: BENCHROUTER_EVAL_API_KEY.
-- TODO: confirm BenchRouter Evals was rerun if it first ran before the GitHub secret existed.
+- GitHub Actions: keyless through GitHub OIDC. Do not store an eval API key in the repository.
+- TODO: confirm BenchRouter Evals is enabled and has reported after the kit lands.
 
 ### Rollback
 1. Set the selected call site's base URL back to the previous provider.
@@ -1210,22 +1271,30 @@ function stripUndefined(value) {
   return value;
 }
 
-function fail(message) {
-  process.stderr.write(`${message}\n`);
+function fail(message, code = "command_failed") {
+  if (args?.json) {
+    process.stderr.write(`${JSON.stringify({ ok: false, error: { code, message } })}\n`);
+  } else {
+    process.stderr.write(`${message}\n`);
+  }
   process.exit(1);
 }
 
 function usage(status, commandName = "all", message) {
   const stream = status === 0 ? process.stdout : process.stderr;
+  if (status !== 0 && args?.json) {
+    stream.write(`${JSON.stringify({ ok: false, error: { code: "invalid_arguments", message: message ?? `Invalid arguments for ${commandName}.` } })}\n`);
+    process.exit(status);
+  }
   if (message) {
     stream.write(`${message}\n\n`);
   }
   if (commandName === "init") {
     stream.write(`Usage:
-  npx @benchrouter/setup init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model [options]
+  benchrouter init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model [options]
 
 Multiple routes (paired in order; first triple is primary):
-  npx @benchrouter/setup init --setup-key br_setup_... \\
+  benchrouter init --setup-key br_setup_... \\
     --route-id product/route-a --name "Route A" --incumbent-model provider/model-a \\
     --route-id product/route-b --name "Route B" --incumbent-model provider/model-b
 
@@ -1244,19 +1313,21 @@ Options:
   --force                  Overwrite BenchRouter-generated kit/readme files only.
   --overwrite-user-edits   Overwrite existing differing files.
   --output-dir <path>      Defaults to current directory.
+  --save-token             Save this setup token for repo read commands.
 `);
   } else if (commandName === "models") {
     stream.write(`Usage:
-  npx @benchrouter/setup models [options]
+  benchrouter models [options]
 
 Options:
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --filter <text>          Print only enabled IDs containing this text.
+  --json                   Print machine-readable JSON.
 `);
   } else if (commandName === "upgrade") {
     stream.write(`Usage:
-  npx @benchrouter/setup upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
-  npx @benchrouter/setup upgrade --api-key <BENCHROUTER_API_KEY> --repo owner/repo --route-id product/route
+  benchrouter upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
+  benchrouter upgrade --api-key <BENCHROUTER_API_KEY> --repo owner/repo --route-id product/route
 
 The upgrade flow previews the planned changes (without consuming the single-use
 upgrade token), prompts for confirmation, then applies. Use --yes to skip the
@@ -1269,15 +1340,44 @@ Options:
   --output-dir <path>      Defaults to current directory.
   --yes, -y                Skip the interactive confirmation after preview.
   --dry-run                Preview only. Requires --upgrade-token. Never calls apply.
-  --force                  Accepted for compatibility. Upgrade overwrites BenchRouter-owned kit files by default.
+`);
+  } else if (commandName === "doctor") {
+    stream.write(`Usage:
+  benchrouter doctor [options]
+
+Options:
+  --repo owner/repo          Defaults to the current git remote.
+  --api-url <url>            Defaults to https://api.benchrouter.com.
+  --output-dir <path>        Defaults to current directory.
+  --skip-github-workflow     Skip the GitHub workflow-state check.
+  --check-default-branch     Verify the config is present on the default branch.
+`);
+  } else if (["status", "frontier", "failures", "explain"].includes(commandName)) {
+    const commandUsage = {
+      status: "benchrouter status [--repo owner/repo]",
+      frontier: "benchrouter frontier <route-key> [--repo owner/repo]",
+      failures: "benchrouter failures <route-key> [model] [--repo owner/repo]",
+      explain: "benchrouter explain <model> [--route product/route] [--repo owner/repo]"
+    }[commandName];
+    stream.write(`Usage:
+  ${commandUsage}
+
+Options:
+  --repo owner/repo       Defaults to the current git remote.
+  --token br_setup_...    Defaults to BENCHROUTER_TOKEN, then repo-scoped config.
+  --api-url <url>         Defaults to https://api.benchrouter.com.
+  --json                  Print machine-readable JSON.
 `);
   } else {
     stream.write(`Usage:
-  npx @benchrouter/setup init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
-  npx @benchrouter/setup upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
-  npx @benchrouter/setup models
-  npx @benchrouter/setup doctor
-  npx @benchrouter/setup doctor --repo owner/repo --api-url https://api.benchrouter.com
+  benchrouter init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
+  benchrouter upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
+  benchrouter doctor
+  benchrouter models [--json]
+  benchrouter status [--json]
+  benchrouter frontier <route-key> [--json]
+  benchrouter failures <route-key> [model] [--json]
+  benchrouter explain <model> [--route product/route] [--json]
 `);
   }
   process.exit(status);
