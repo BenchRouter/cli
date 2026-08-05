@@ -150,6 +150,10 @@ test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only e
       "Chat",
       "--incumbent-model",
       "openai/gpt-4o-mini",
+      "--provider-id",
+      "openai",
+      "--provider-ref",
+      "gpt-4o-mini-2024-07-18",
       "--base-url-env",
       "OPENAI_BASE_URL",
       "--code-ref",
@@ -178,8 +182,77 @@ test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only e
   assert.doesNotMatch(envExample, /BENCHROUTER_EVAL_RUN_ID/);
   assert.equal(setupServer.requests.length, 1);
   assert.equal(setupServer.requests[0].authorization, "Bearer br_setup_fixture");
+  assert.equal(setupServer.requests[0].body.route.provider_id, "openai");
+  assert.equal(setupServer.requests[0].body.route.provider_ref, "gpt-4o-mini-2024-07-18");
   assert.equal(setupServer.requests[0].body.route.base_url_env, "OPENAI_BASE_URL");
   assert.deepEqual(setupServer.requests[0].body.route.code_refs, ["src/llm.js"]);
+});
+
+test("init requires direct-provider identity flags together", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-provider-flags-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const result = await runCli(
+    [
+      "init",
+      "--setup-key",
+      "br_setup_fixture",
+      "--route-id",
+      routeId,
+      "--name",
+      "Chat",
+      "--incumbent-model",
+      "openai/gpt-4o-mini",
+      "--provider-id",
+      "openai",
+      "--output-dir",
+      root
+    ],
+    root
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^Pass --provider-id and --provider-ref together\./);
+});
+
+test("init gives an actionable setup-key expiry error", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-expired-setup-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const setupServer = await startFixtureProxy(t, {
+    status: 401,
+    body: {
+      error: {
+        code: "setup_code_expired",
+        message: "BenchRouter setup key has expired"
+      }
+    }
+  });
+
+  const result = await runCli(
+    [
+      "init",
+      "--setup-key",
+      "br_setup_expired_fixture",
+      "--route-id",
+      routeId,
+      "--name",
+      "Chat",
+      "--incumbent-model",
+      "openai/gpt-4o-mini",
+      "--api-url",
+      setupServer.url,
+      "--output-dir",
+      root
+    ],
+    root
+  );
+
+  assert.equal(result.status, 1);
+  assert.equal(
+    result.stderr,
+    "Setup key expired. Refresh it at https://benchrouter.com/setup/new and run init again.\n"
+  );
+  assert.equal(setupServer.requests.length, 1);
 });
 
 test("upgrade overwrites existing BenchRouter kit files without requiring --force", async (t) => {

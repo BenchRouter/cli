@@ -21,6 +21,9 @@ npx @benchrouter/cli init \
   --incumbent-model provider/model
 ```
 
+For a direct-provider incumbent, also pass `--provider-id <id>` and
+`--provider-ref <exact-ref>`. Pass both or neither.
+
 The setup key comes from the signed-in BenchRouter setup page. It is scoped to
 one GitHub repository. A successful setup can return one runtime key:
 `BENCHROUTER_API_KEY`. Install that key only in the application host.

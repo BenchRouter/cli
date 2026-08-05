@@ -63,6 +63,8 @@ async function init() {
   const routeIds = arrayArg("route-id");
   const routeNames = arrayArg("name");
   const incumbentModels = arrayArg("incumbent-model");
+  const providerIds = arrayArg("provider-id");
+  const providerRefs = arrayArg("provider-ref");
   const codeRefs = arrayArg("code-ref");
   const baseUrlEnvs = arrayArg("base-url-env");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
@@ -79,6 +81,12 @@ async function init() {
   if (routeIds.length !== routeNames.length || routeIds.length !== incumbentModels.length) {
     usage(1, "init", "When repeating routes, pass one --name and one --incumbent-model per --route-id (in the same order).");
   }
+  if ((providerIds.length === 0) !== (providerRefs.length === 0)) {
+    usage(1, "init", "Pass --provider-id and --provider-ref together.");
+  }
+  if (providerIds.length > 0 && (providerIds.length !== routeIds.length || providerRefs.length !== routeIds.length)) {
+    usage(1, "init", "Pass one --provider-id and --provider-ref per route, or omit both.");
+  }
   if (baseUrlEnvs.length > 1 && baseUrlEnvs.length !== routeIds.length) {
     usage(1, "init", "When repeating --base-url-env, pass one value per --route-id (in the same order), or pass it once for all routes.");
   }
@@ -87,6 +95,8 @@ async function init() {
     route_id: id,
     name: routeNames[index],
     incumbent_model: incumbentModels[index],
+    provider_id: providerIds[index],
+    provider_ref: providerRefs[index],
     code_refs: codeRefs,
     base_url_env: baseUrlEnvs[index] ?? baseUrlEnvs[0] ?? ""
   }));
@@ -360,6 +370,8 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
       route_id: primary.route_id,
       name: primary.name,
       incumbent_model: primary.incumbent_model,
+      provider_id: primary.provider_id,
+      provider_ref: primary.provider_ref,
       code_refs: primary.code_refs.length > 0 ? primary.code_refs : undefined,
       base_url_env: primary.base_url_env || undefined
     },
@@ -368,6 +380,8 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
           route_id: spec.route_id,
           name: spec.name,
           incumbent_model: spec.incumbent_model,
+          provider_id: spec.provider_id,
+          provider_ref: spec.provider_ref,
           code_refs: spec.code_refs.length > 0 ? spec.code_refs : undefined,
           base_url_env: spec.base_url_env || undefined
         }))
@@ -389,6 +403,9 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
   if (!response.ok) {
     const parsed = parseJson(responseText);
     const error = parsed?.error;
+    if (error?.code === "setup_code_expired") {
+      fail("Setup key expired. Refresh it at https://benchrouter.com/setup/new and run init again.");
+    }
     if (isUnsupportedIncumbentModel(response.status, error)) {
       fail(unsupportedIncumbentMessage(primary.incumbent_model));
     }
@@ -758,21 +775,10 @@ function isUnsupportedIncumbentModel(status, error) {
 }
 
 function unsupportedIncumbentMessage(modelId) {
-  return `BenchRouter setup stopped before writing files.
-
-The incumbent model from this repo was not accepted by BenchRouter/OpenRouter:
-  ${modelId}
-
-Do not replace it automatically. A replacement changes runtime behavior.
-
-Next steps:
-Stop and ask the user for one exact OpenRouter model ID.
-
-To inspect curated BenchRouter candidate IDs, run:
-   npx github:BenchRouter/setup models
-
-Re-run init only after the user explicitly approves that exact ID:
-   npx github:BenchRouter/setup init ... --incumbent-model <provider/model-id>`;
+  return `BenchRouter did not accept the incumbent model: ${modelId}
+Do not substitute another model. Confirm the exact model ID.
+For a direct provider, also pass --provider-id and --provider-ref.
+List catalog IDs with: npx --yes --package @benchrouter/cli benchrouter models`;
 }
 
 function parseJson(text) {
@@ -1306,6 +1312,8 @@ Options:
   --route-id <id>         Repeatable. Pair each with one --name and one --incumbent-model.
   --name <text>           Repeatable. Display name for the matching --route-id.
   --incumbent-model <id>  Repeatable. Incumbent model for the matching --route-id.
+  --provider-id <id>      Repeatable. Direct provider for the matching route.
+  --provider-ref <ref>    Repeatable. Exact provider model ref; requires --provider-id.
   --code-ref <path>       Repeatable. Call-site files recorded on the primary route.
   --base-url-env <name>   Repeatable. Env var the call site uses for its LLM base URL.
   --api-url <url>          Defaults to https://api.benchrouter.com.
