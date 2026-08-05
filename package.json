@@ -1,27 +1,30 @@
 {
-  "name": "@benchrouter/setup",
-  "version": "0.1.25",
-  "description": "BenchRouter target-repo setup CLI",
+  "name": "@benchrouter/cli",
+  "version": "0.2.0",
+  "description": "Command-line interface for BenchRouter",
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "npm test && node --check bin/benchrouter-setup.mjs && npm pack --dry-run"
+    "check:syntax": "node --check bin/benchrouter.mjs && node --check src/cli.mjs && node --check src/config.mjs && node --check src/repo-read.mjs",
+    "check": "npm run check:syntax && npm test && npm pack --dry-run"
   },
   "bin": {
-    "benchrouter-setup": "bin/benchrouter-setup.mjs"
+    "benchrouter": "bin/benchrouter.mjs"
   },
   "files": [
     "bin",
-    "README.md"
+    "src",
+    "README.md",
+    "FOLLOWUPS.md"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BenchRouter/setup.git"
+    "url": "git+https://github.com/BenchRouter/cli.git"
   },
   "bugs": {
-    "url": "https://github.com/BenchRouter/setup/issues"
+    "url": "https://github.com/BenchRouter/cli/issues"
   },
-  "homepage": "https://github.com/BenchRouter/setup#readme",
+  "homepage": "https://github.com/BenchRouter/cli#readme",
   "publishConfig": {
     "access": "public"
   },

@@ -1,96 +1,132 @@
-# @benchrouter/setup
+# BenchRouter CLI
 
-Target-repo setup CLI for BenchRouter.
+Use BenchRouter from a terminal. The CLI initializes a repository, checks its
+integration, upgrades the generated kit, and reads route evidence.
 
-Run it from the repository you want to route through BenchRouter:
+The package is `@benchrouter/cli`. It installs the `benchrouter` command.
 
 ```bash
-npx @benchrouter/setup init \
+npx @benchrouter/cli --help
+```
+
+## Initialize a repository
+
+Run `init` from the repository that will use BenchRouter:
+
+```bash
+npx @benchrouter/cli init \
   --setup-key br_setup_... \
   --route-id product/route \
   --name "Route Name" \
   --incumbent-model provider/model
 ```
 
-The setup key comes from the logged-in BenchRouter setup page. It is short-lived and scoped to one GitHub App installation and repo. When `init` fetches the setup packet with that key, BenchRouter returns one-time keys for the target agent to install after user approval:
+The setup key comes from the signed-in BenchRouter setup page. It is scoped to
+one GitHub repository. A successful setup can return one runtime key:
+`BENCHROUTER_API_KEY`. Install that key only in the application host.
 
-- Runtime/host key: `BENCHROUTER_API_KEY`
-- GitHub Actions eval secret: `BENCHROUTER_EVAL_API_KEY`
+BenchRouter Evals does not use a stored GitHub Actions key. The generated
+workflow uses GitHub OIDC with `id-token: write` to get a short-lived eval token.
+Do not create `BENCHROUTER_EVAL_API_KEY`.
 
-The values are printed once. Store them then; if a value is lost, return to the setup/dashboard flow to mint a new key.
-
-If npm is unavailable, the public GitHub package can be run with:
+By default, `init` does not save the setup token. Pass `--save-token`, or approve
+the interactive prompt, to keep repo-scoped read access on the current computer.
+For non-interactive use, set `BENCHROUTER_TOKEN` instead.
 
 ```bash
-npx github:BenchRouter/setup init \
-  --setup-key br_setup_... \
-  --route-id product/route \
-  --name "Route Name" \
-  --incumbent-model provider/model
+npx @benchrouter/cli init ... --save-token
 ```
+
+The generated files include `.benchrouter/SETUP_README.md`. Read that file
+before changing the call site, eval cases, or scorer.
 
 ## Commands
 
 ```bash
-npx @benchrouter/setup init --help
-npx @benchrouter/setup models
-npx @benchrouter/setup doctor
+benchrouter init --help
+benchrouter upgrade --help
+benchrouter doctor
+benchrouter models [--filter text] [--json]
+benchrouter status [--json]
+benchrouter frontier <route-key> [--json]
+benchrouter failures <route-key> [model] [--json]
+benchrouter explain <model> [--route <route-key>] [--json]
 ```
 
-`init` fetches the BenchRouter setup packet, writes BenchRouter scaffold files, updates `package.json`, and adds runtime-only `.env.example` entries such as `BENCHROUTER_API_KEY` and the call site's `base_url_env`. Existing files are preserved by default on re-init. The CLI tells the coding agent to read `.benchrouter/SETUP_README.md`, the repo-specific setup brief generated with the packet.
+`status` shows each route, incumbent, current best model, and latest eval state.
 
-The generated workflow runs on the setup PR: it asks BenchRouter for an eval plan, skips model runs when the same route/eval/covered-code fingerprint already has evidence, uploads only the model arms that need fresh evidence, and fails the PR check if the route cannot call BenchRouter. The workflow reads the GitHub Actions secret named `BENCHROUTER_EVAL_API_KEY` and maps it to `BENCHROUTER_API_KEY` only inside the eval job.
+`frontier` shows the incumbent, best model, and ranked alternatives.
 
-Generated eval runners are JavaScript `.mjs` files under `.benchrouter/` so broad customer TypeScript builds do not pick them up. The generated eval harness reads per-route `.benchrouter/cases.<route>.json` files and fails until the repo has runnable route-specific cases. There is no passing smoke eval.
+`failures` shows failed cases from the latest model run. Pass a model ID to
+select the latest run for that model.
 
-BenchRouter eval is not a substitute for product CI. If provider wiring changes at a selected call site, update existing product tests/mocks so they exercise the BenchRouter-wired runtime path, then run the relevant product tests/build before opening the setup PR.
+`explain` states whether a model is the incumbent, best pick, an eligible
+alternative, or outside the eligible frontier. Pass `--route` when a repository
+has more than one route.
 
-The route ID belongs at the selected LLM call site as the OpenAI-compatible `model` value. Do not add a repo-global `BENCHROUTER_MODEL`; repos with multiple routes should send a different route ID per call site.
+All read commands accept `--json` for scripts and agents.
+
+## Credentials and configuration
+
+Read commands resolve credentials in this order:
+
+1. `--token br_setup_...`
+2. `BENCHROUTER_TOKEN`
+3. the saved token for the detected or specified repository
+
+Saved credentials are isolated by repository. Set `BENCHROUTER_CONFIG_DIR` to
+move the entire configuration root. Tests and automation should always set this
+variable to a temporary directory.
+
+The CLI does not write runtime keys to disk. It never saves a setup token unless
+the user approves the write.
+
+## Doctor
+
+`doctor` checks the generated files, runnable eval cases, scorer syntax,
+package-script wiring, runtime call-site wiring, and the GitHub OIDC workflow.
+It can also make one real proxy call when `BENCHROUTER_API_KEY` is present.
+
+```bash
+benchrouter doctor --repo owner/repo --skip-github-workflow
+BENCHROUTER_API_KEY=br_live_... benchrouter doctor --repo owner/repo
+```
+
+Use `--skip-github-workflow` when `gh` is unavailable or the workflow does not
+exist on the default branch yet.
 
 ## Multiple routes
 
-A repo can evaluate any number of routes. Routes live under `routes:` in `.benchrouter/benchrouter.yml`. The generated GitHub Actions workflow derives a matrix from that file at CI time and runs one independent eval per route — each route gets its own candidate selection, its own eval run, and its own PR gate. To add a route later, edit `.benchrouter/benchrouter.yml` only; you do not regenerate the workflow.
-
-Scaffold several routes at once by repeating `--route-id`/`--name`/`--incumbent-model` (paired in order; the first triple is the primary route):
+Repeat `--route-id`, `--name`, and `--incumbent-model` in the same order:
 
 ```bash
-npx @benchrouter/setup init --setup-key br_setup_... \
+benchrouter init --setup-key br_setup_... \
   --route-id product/route-a --name "Route A" --incumbent-model provider/model-a \
   --route-id product/route-b --name "Route B" --incumbent-model provider/model-b
 ```
 
-### Keying cases by route
+Each runtime call site uses its stable route ID as the OpenAI-compatible `model`
+value. Do not create one global model variable for a repository with several
+routes.
 
-Each entry in `.benchrouter/cases.json` may carry a `route` field set to the **stable** route ID (the `route_id` in `benchrouter.yml`). The CI eval runner selects the cases whose `route` matches the route under test; a case with no `route` runs for every route, so single-route repos need no annotation.
+## Upgrade
 
-### Stable vs PR-tagged route IDs
-
-On a pull request BenchRouter creates a PR-tagged preview route id (`<route>-pr-<N>`) so preview traffic is isolated. The eval runner sends that PR-tagged id to the proxy as the `model` value, but selects cases by the **stable** id, which the CI kit exposes as `BENCHROUTER_BASE_ROUTE_ID`. Do not derive the stable id by string-stripping the `-pr-...` suffix (it is not always reversible). Keep all runtime call sites on the stable route id; during a PR's eval window BenchRouter auto-resolves the stable id to that PR's matching PR-tagged preview route, so no deployment-context headers are needed.
-
-`models` prints curated BenchRouter candidate model IDs, one per line. BenchRouter route manifests accept any OpenRouter model ID as the incumbent. If `init` rejects the repo's current incumbent model because OpenRouter does not recognize it, do not silently substitute another model; rerun `init` only after the user explicitly approves one exact replacement.
-
-`doctor` validates expected BenchRouter files, real eval case coverage, package script wiring, runtime-only env example entries, generated helper syntax, PR workflow wiring, and route call-site wiring. It also prints a generic runtime-host checklist:
-
-- Set runtime `BENCHROUTER_API_KEY` in the host that runs the patched call site.
-- Set the recorded `call_site.base_url_env` to the BenchRouter OpenAI-compatible base URL.
-- Set GitHub Actions repo secret `BENCHROUTER_EVAL_API_KEY` for evals.
-- Keep any direct-provider API key only if the app has an intentional fallback path.
-
-The live proxy ping is auto-gated. If `BENCHROUTER_API_KEY` is absent from the local environment, doctor reports the ping as skipped and still completes offline checks. If the key is present, doctor uses it for one authenticated proxy ping, sends the route ID as the OpenAI-compatible `model`, and reports the selected provider/canonical slug returned by BenchRouter. It never prints the key. When it can identify the GitHub repo, it verifies the `BENCHROUTER_EVAL_API_KEY` Actions secret exists.
-
-Before opening a PR, use:
+`upgrade` previews a server-generated kit update, asks for confirmation, then
+applies the server-authoritative packet.
 
 ```bash
-npx @benchrouter/setup doctor --repo owner/repo --skip-github-secret
-BENCHROUTER_API_KEY=br_live_... npx @benchrouter/setup doctor --repo owner/repo
+benchrouter upgrade \
+  --upgrade-token br_upgrade_... \
+  --repo owner/repo \
+  --route-id product/route
 ```
 
-If BenchRouter Evals already ran before `BENCHROUTER_EVAL_API_KEY` existed, install the secret and rerun the failed workflow. With the GitHub CLI, `gh run rerun --failed` is one way to do that.
+Use `--dry-run` to preview a single-use upgrade token without applying it. Use
+`--yes` only when an interactive confirmation is not possible.
 
-After the PR is merged, verify the config file is readable on the default branch:
+## Model IDs
 
-```bash
-BENCHROUTER_API_KEY=br_live_... npx @benchrouter/setup doctor --repo owner/repo --check-default-branch
-```
-
-The CLI never writes a raw BenchRouter API key to disk.
+`models` prints the current BenchRouter catalog. A route incumbent can be an
+exact OpenRouter model that is not an automatic candidate. If BenchRouter cannot
+resolve the incumbent, stop and ask the user for one exact replacement. Do not
+substitute a model automatically.
