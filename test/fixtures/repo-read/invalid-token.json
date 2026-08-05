@@ -1,0 +1,5 @@
+{
+  "error": "read_token_invalid",
+  "message": "BenchRouter repo read token is invalid or expired. Open the dashboard to mint a new repo token.",
+  "authorize_url": "https://benchrouter.com/setup"
+}
