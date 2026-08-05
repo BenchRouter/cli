@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "repo_full_name": "example/app",
+  "routes": [
+    {
+      "route_key": "app/chat",
+      "name": "Chat",
+      "gated": false,
+      "best_model": "minimax/minimax-m2.7",
+      "baseline_model": null,
+      "original_model": "minimax/minimax-m2.7",
+      "state": "active",
+      "latest_run": {
+        "result_set_id": "ers_recorded",
+        "status": "decided",
+        "decided_at": "2026-08-05T12:00:00.000Z"
+      },
+      "frontier_headline": "app/chat: incumbent minimax/minimax-m2.7, best minimax/minimax-m2.7"
+    }
+  ]
+}

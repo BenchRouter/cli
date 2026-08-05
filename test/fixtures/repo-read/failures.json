@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "repo_full_name": "example/app",
+  "route_key": "app/chat",
+  "model": "minimax/minimax-m2.7",
+  "model_run_id": "emrun_recorded",
+  "failures": [
+    {
+      "case_id": "tone-critical",
+      "critical": true,
+      "outcome": "assertion_failure",
+      "error": "expected concise reply",
+      "cost_usd": 0.0001,
+      "latency_ms": 420,
+      "raw_output": "A long reply",
+      "reference_output": "A concise reply"
+    }
+  ]
+}
