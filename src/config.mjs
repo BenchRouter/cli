@@ -75,7 +75,7 @@ export async function saveAccountToken(token, meta = {}) {
 
 /**
  * Resolve account control-plane credential.
- * Order: --account-token, BENCHROUTER_ACCOUNT_TOKEN, owner-only local config.
+ * Order: --account-token, BENCHROUTER_ACCOUNT_TOKEN, mode-0600 local config.
  * Never accepts runtime, repo-read, admin, or upgrade tokens.
  */
 export function resolveAccountToken(explicitToken) {
@@ -114,7 +114,7 @@ export async function saveAdminToken(token) {
 
 /**
  * Resolve admin bearer credential.
- * Order: --admin-token, BENCHROUTER_ADMIN_TOKEN, owner-only local config.
+ * Order: --admin-token, BENCHROUTER_ADMIN_TOKEN, mode-0600 local config.
  * Rejects runtime, repo-read, and account control tokens.
  */
 export function resolveAdminToken(explicitToken) {

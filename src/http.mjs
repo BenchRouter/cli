@@ -10,14 +10,6 @@ export class ApiError extends Error {
   }
 }
 
-export class MissingServerContractError extends Error {
-  constructor(requirement) {
-    super(requirement);
-    this.name = "MissingServerContractError";
-    this.requirement = requirement;
-  }
-}
-
 export function defaultApiUrl(value) {
   return String(value || "https://api.benchrouter.com").replace(/\/+$/, "");
 }
@@ -31,7 +23,7 @@ export function requireAccountCredential(explicitToken) {
   }
   if (!credential) {
     throw new Error(
-      "Missing account token. Pass --account-token, set BENCHROUTER_ACCOUNT_TOKEN, or save an owner-only br_ctrl_ token in local config."
+      "Missing account token. Pass --account-token, set BENCHROUTER_ACCOUNT_TOKEN, or save a br_ctrl_ token in private local config."
     );
   }
   return credential;
@@ -46,7 +38,7 @@ export function requireAdminCredential(explicitToken) {
   }
   if (!credential) {
     throw new Error(
-      "Missing admin token. Pass --admin-token, set BENCHROUTER_ADMIN_TOKEN, or save an owner-only bradm_ token in local config."
+      "Missing admin token. Pass --admin-token, set BENCHROUTER_ADMIN_TOKEN, or save a bradm_ token in private local config."
     );
   }
   return credential;

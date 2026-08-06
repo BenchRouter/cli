@@ -62,17 +62,24 @@ benchrouter billing top-up --amount 25 [--yes]
 benchrouter keys list|create|revoke
 benchrouter repos list
 benchrouter setup status [--repo owner/repo]
+benchrouter setup create --repository-id <id> --installation-id <id> [--intent initial|new_route]
+benchrouter setup session show <session-id>
+benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
 benchrouter routes list|show|catalog|archive|unarchive
 benchrouter evals list|run|failures
+benchrouter evals refresh-preview <route-key> <result-set-id> [--model <id>]
 benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
 benchrouter proposals list|approve|reject [--admin-token bradm_...]
 benchrouter admin providers|catalog|keys|token [--admin-token bradm_...]
+benchrouter admin catalog show|activity|model-maps|refresh-report|rebuild
+benchrouter admin catalog observations [add]|mappings [list|resolve|ignore]
+benchrouter admin keys list|revoke [--admin-token bradm_...]
 ```
 
 Account commands authenticate with a `br_ctrl_` account token
-(`--account-token`, then `BENCHROUTER_ACCOUNT_TOKEN`, then owner-only local
+(`--account-token`, then `BENCHROUTER_ACCOUNT_TOKEN`, then private local
 config). Proposal/admin commands use a `bradm_` admin token
-(`--admin-token`, then `BENCHROUTER_ADMIN_TOKEN`, then owner-only local config).
+(`--admin-token`, then `BENCHROUTER_ADMIN_TOKEN`, then private local config).
 Repo-read commands keep using the setup/read token. Tokens are never
 auto-substituted across scopes. Runtime API keys never authorize control-plane
 commands.
@@ -96,9 +103,29 @@ select the latest run for that model.
 is the incumbent, best pick, an eligible alternative, or outside the eligible
 frontier. Pass `--route` when a repository has more than one route.
 
-`admin keys list|mint|revoke` require a browser GitHub admin session; a `bradm_`
-bearer cannot call them. Use `admin token save` / `account token save` for
-already-minted tokens. Save commands never print the secret.
+`keys revoke <key-id>` calls `POST /v1/dashboard/api-keys/:keyId/revoke` and
+prints non-secret key metadata. Revocation is immediate: any application still
+using that key stops authenticating.
+
+`setup create` starts a setup session and prints a one-time setup code plus the
+server-authored `init` command. `setup upgrade-token` mints a single-use
+`br_upgrade_` token and prints it once. Both secrets are printed once and never
+saved; pass them to `init --setup-key` and `upgrade --upgrade-token`. Read
+`repository_id` and `installation_id` from `repos list`.
+
+`evals refresh-preview` re-dispatches an open-PR preview result set. The result
+set must be a PR preview; pass `--model` to refresh one model only.
+
+`admin catalog refresh-report` is `POST`, not `GET`. It is report-only: the
+server fetches upstream state and performs no writes.
+`admin catalog observations add` records a manual notice; pass structured fields
+through `--payload-json`, which must parse to a JSON object.
+
+`admin keys list` and `admin keys revoke <key-id>` accept a `bradm_` bearer and
+print non-secret metadata only. Minting an admin key requires a browser GitHub
+admin session, so the CLI has no mint command. Use `admin token save` /
+`account token save` for already-minted tokens. Save commands never print the
+secret.
 
 All read commands accept `--json` for scripts and agents.
 

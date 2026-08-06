@@ -5,12 +5,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
 import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config.mjs";
-import {
-  controlUsageText,
-  isControlPlaneCommand,
-  runControlCommand,
-  topLevelControlUsageLines
-} from "./commands.mjs";
+import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
+import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 
 const args = parseArgs(process.argv.slice(2));
