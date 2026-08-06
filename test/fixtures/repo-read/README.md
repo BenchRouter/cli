@@ -15,3 +15,8 @@ Captured on 2026-08-05 for process-level CLI replay tests.
 The replay server replaces only the external HTTP boundary. Each test starts the real
 `benchrouter` subprocess and exercises argument parsing, authentication headers,
 request construction, response parsing, and terminal output together.
+
+`explain` now calls `GET /v1/repo/:routeKey/models/:modelId` (server model-explanation).
+Enriched status/frontier/failures/explain bodies from the service worktree are not
+recorded here yet; path/spelling coverage for explain is pure, and final integration
+against those responses requires the service worktree.

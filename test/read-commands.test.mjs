@@ -5,6 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { explanationDetail, repoReadPath } from "../src/repo-read.mjs";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const cliPath = path.resolve(testDir, "../bin/benchrouter.mjs");
@@ -39,7 +40,7 @@ test("models renders stable human and JSON output through the real CLI process",
   assert.deepEqual(replay.requests.map((request) => request.pathname), ["/v1/models", "/v1/models"]);
 });
 
-test("status, frontier, failures, and explain replay server contracts end to end", async (t) => {
+test("status, frontier, and failures replay unchanged recorded contracts end to end", async (t) => {
   const replay = await startReplayServer(t);
   const common = ["--repo", "example/app", "--api-url", replay.url];
 
@@ -86,33 +87,35 @@ test("status, frontier, failures, and explain replay server contracts end to end
   assert.equal(failuresJson.status, 0, failuresJson.stderr);
   assert.deepEqual(JSON.parse(failuresJson.stdout), fixtures.failures);
 
-  const explainHuman = await runCli(
-    ["explain", "minimax/minimax-m2.7", "--route", "app/chat", ...common],
-    { BENCHROUTER_TOKEN: repoToken }
-  );
-  assert.equal(explainHuman.status, 0, explainHuman.stderr);
-  assert.equal(explainHuman.stdout, "minimax/minimax-m2.7: This is the route incumbent.\n");
-
-  const explainJson = await runCli(
-    ["explain", "openai/gpt-oss-20b", ...common, "--json"],
-    { BENCHROUTER_TOKEN: repoToken }
-  );
-  assert.equal(explainJson.status, 0, explainJson.stderr);
-  assert.deepEqual(JSON.parse(explainJson.stdout), {
-    ok: true,
-    model: "openai/gpt-oss-20b",
-    route_key: "app/chat",
-    standing: "not_eligible",
-    detail: "This model is not on the eligible frontier for this route."
-  });
-
-  assert.ok(replay.requests.length > 0);
   assert.ok(replay.requests.every((request) => request.authorization === `Bearer ${repoToken}`));
   assert.ok(replay.requests.some((request) => request.rawUrl === "/v1/repo/app%2Fchat/frontier"));
   assert.ok(
     replay.requests.some(
       (request) => request.rawUrl === "/v1/repo/app%2Fchat/failures?model=minimax%2Fminimax-m2.7"
     )
+  );
+});
+
+test("explain targets the model-explanation endpoint and preserves published spellings", () => {
+  assert.equal(
+    repoReadPath("explain", { routeKey: "app/chat", modelId: "minimax/minimax-m2.7" }),
+    "/v1/repo/app%2Fchat/models/minimax%2Fminimax-m2.7"
+  );
+  assert.equal(
+    explanationDetail({ state: "original" }),
+    "This is the route incumbent."
+  );
+  assert.equal(
+    explanationDetail({ state: "best" }),
+    "This is the current best pick on the Personal Pareto Frontier."
+  );
+  assert.equal(
+    explanationDetail({ state: "eligible", evidence: { eligible_rank: 2 } }),
+    "This is eligible alternative 2."
+  );
+  assert.equal(
+    explanationDetail({ state: "evaluated_ineligible" }),
+    "This model was evaluated and is not on the eligible frontier for this route."
   );
 });
 

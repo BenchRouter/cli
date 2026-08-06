@@ -6,12 +6,11 @@ import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
 import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config.mjs";
 import {
-  CUSTOMER_ROOT_COMMANDS,
-  customerUsageText,
-  isCustomerModelsShow,
-  runCustomerCommand,
-  topLevelCustomerUsageLines
-} from "./customer-commands.mjs";
+  controlUsageText,
+  isControlPlaneCommand,
+  runControlCommand,
+  topLevelControlUsageLines
+} from "./commands.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -42,8 +41,8 @@ const DOCTOR_UPLOAD_HELPER_SNIPPETS = [
   "head_sha"
 ];
 
-if (CUSTOMER_ROOT_COMMANDS.has(command) || isCustomerModelsShow(command, args._)) {
-  await runCustomerCommand({
+if (isControlPlaneCommand(command, args._)) {
+  await runControlCommand({
     args,
     command,
     stringArg,
@@ -1315,9 +1314,9 @@ function usage(status, commandName = "all", message) {
   if (message) {
     stream.write(`${message}\n\n`);
   }
-  const customerHelp = customerUsageText(commandName);
-  if (customerHelp) {
-    stream.write(customerHelp);
+  const controlHelp = controlUsageText(commandName);
+  if (controlHelp) {
+    stream.write(controlHelp);
     process.exit(status);
   }
   if (commandName === "init") {
@@ -1412,7 +1411,7 @@ Options:
   benchrouter frontier <route-key> [--json]
   benchrouter failures <route-key> [model] [--json]
   benchrouter explain <model> [--route product/route] [--json]
-${topLevelCustomerUsageLines()}
+${topLevelControlUsageLines()}
 `);
   }
   process.exit(status);

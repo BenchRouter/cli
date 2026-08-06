@@ -56,6 +56,7 @@ benchrouter frontier <route-key> [--json]
 benchrouter failures <route-key> [model] [--json]
 benchrouter explain <model> [--route <route-key>] [--json]
 benchrouter account show [--json]
+benchrouter account token save --account-token br_ctrl_...
 benchrouter billing show [--json]
 benchrouter billing top-up --amount 25 [--yes]
 benchrouter keys list|create|revoke
@@ -64,16 +65,22 @@ benchrouter setup status [--repo owner/repo]
 benchrouter routes list|show|catalog|archive|unarchive
 benchrouter evals list|run|failures
 benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
+benchrouter proposals list|approve|reject [--admin-token bradm_...]
+benchrouter admin providers|catalog|keys|token [--admin-token bradm_...]
 ```
 
 Account commands authenticate with a `br_ctrl_` account token
 (`--account-token`, then `BENCHROUTER_ACCOUNT_TOKEN`, then owner-only local
-config). Repo-read commands keep using the setup/read token. Runtime API keys
-never authorize control-plane commands.
+config). Proposal/admin commands use a `bradm_` admin token
+(`--admin-token`, then `BENCHROUTER_ADMIN_TOKEN`, then owner-only local config).
+Repo-read commands keep using the setup/read token. Tokens are never
+auto-substituted across scopes. Runtime API keys never authorize control-plane
+commands.
 
 Mutations print an exact action summary and prompt unless `--yes`. JSON mode
 never prompts and requires `--yes`. Billing top-up prints a checkout URL; it
-does not open a browser.
+does not open a browser. `billing show` reads billing fields from
+`GET /v1/dashboard/summary`.
 
 `status` shows each route, incumbent, current best model, production wiring state,
 latest eval state, and production result-set ID. Use `status --json` when an agent
@@ -85,9 +92,13 @@ the exact evidence used in production.
 `failures` shows failed cases from the latest model run. Pass a model ID to
 select the latest run for that model.
 
-`explain` states whether a model is the incumbent, best pick, an eligible
-alternative, or outside the eligible frontier. Pass `--route` when a repository
-has more than one route.
+`explain` calls the server model-explanation endpoint and states whether a model
+is the incumbent, best pick, an eligible alternative, or outside the eligible
+frontier. Pass `--route` when a repository has more than one route.
+
+`admin keys list|mint|revoke` require a browser GitHub admin session; a `bradm_`
+bearer cannot call them. Use `admin token save` / `account token save` for
+already-minted tokens. Save commands never print the secret.
 
 All read commands accept `--json` for scripts and agents.
 
@@ -99,9 +110,10 @@ Read commands resolve credentials in this order:
 2. `BENCHROUTER_TOKEN`
 3. the saved token for the detected or specified repository
 
-Saved credentials are isolated by repository. Set `BENCHROUTER_CONFIG_DIR` to
-move the entire configuration root. Tests and automation should always set this
-variable to a temporary directory.
+Saved credentials are isolated by repository (and account/admin files are
+owner-only mode `0600`). Set `BENCHROUTER_CONFIG_DIR` to move the entire
+configuration root. Tests and automation should always set this variable to a
+temporary directory.
 
 The CLI does not write runtime keys to disk. It never saves a setup token unless
 the user approves the write.

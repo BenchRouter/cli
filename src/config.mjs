@@ -1,9 +1,12 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 export const ACCOUNT_CONTROL_TOKEN_PREFIX = "br_ctrl_";
+export const ADMIN_TOKEN_PREFIX = "bradm_";
+const OWNER_FILE_MODE = 0o600;
+const OWNER_DIR_MODE = 0o700;
 
 export function benchRouterConfigDir() {
   const override = process.env.BENCHROUTER_CONFIG_DIR?.trim();
@@ -19,16 +22,20 @@ function accountTokenPath() {
   return path.join(benchRouterConfigDir(), "account.json");
 }
 
+function adminTokenPath() {
+  return path.join(benchRouterConfigDir(), "admin.json");
+}
+
 export async function saveRepoToken(repoFullName, token) {
   assertRepoToken(token);
   const normalizedRepo = normalizeRepoFullName(repoFullName);
   const target = repoTokenPath(normalizedRepo);
-  await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-  writeFileSync(
-    target,
-    `${JSON.stringify({ repo_full_name: normalizedRepo, token, saved_at: new Date().toISOString() }, null, 2)}\n`,
-    { encoding: "utf8", mode: 0o600 }
-  );
+  await mkdir(path.dirname(target), { recursive: true, mode: OWNER_DIR_MODE });
+  writeOwnerJson(target, {
+    repo_full_name: normalizedRepo,
+    token,
+    saved_at: new Date().toISOString()
+  });
   return target;
 }
 
@@ -44,12 +51,7 @@ export function resolveRepoToken(repoFullName, explicitToken) {
   if (!existsSync(target)) {
     return null;
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(target, "utf8"));
-  } catch {
-    throw new Error(`Stored BenchRouter credentials are not valid JSON: ${target}`);
-  }
+  const parsed = readJsonFile(target, "Stored BenchRouter credentials are not valid JSON");
   if (parsed?.repo_full_name !== normalizedRepo) {
     throw new Error(`Stored BenchRouter credentials do not match ${normalizedRepo}.`);
   }
@@ -61,21 +63,20 @@ export function resolveRepoToken(repoFullName, explicitToken) {
 export async function saveAccountToken(token, meta = {}) {
   assertAccountToken(token);
   const target = accountTokenPath();
-  await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-  const payload = {
+  await mkdir(path.dirname(target), { recursive: true, mode: OWNER_DIR_MODE });
+  writeOwnerJson(target, {
     token,
     saved_at: new Date().toISOString(),
     ...(typeof meta.account_id === "string" ? { account_id: meta.account_id } : {}),
     ...(typeof meta.account_slug === "string" ? { account_slug: meta.account_slug } : {})
-  };
-  writeFileSync(target, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  });
   return target;
 }
 
 /**
  * Resolve account control-plane credential.
  * Order: --account-token, BENCHROUTER_ACCOUNT_TOKEN, owner-only local config.
- * Never accepts a runtime (br_live_/br_test_) or repo-read (br_setup_) key.
+ * Never accepts runtime, repo-read, admin, or upgrade tokens.
  */
 export function resolveAccountToken(explicitToken) {
   const environmentToken = process.env.BENCHROUTER_ACCOUNT_TOKEN?.trim();
@@ -88,12 +89,7 @@ export function resolveAccountToken(explicitToken) {
   if (!existsSync(target)) {
     return null;
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(target, "utf8"));
-  } catch {
-    throw new Error(`Stored BenchRouter account credentials are not valid JSON: ${target}`);
-  }
+  const parsed = readJsonFile(target, "Stored BenchRouter account credentials are not valid JSON");
   assertAccountToken(parsed?.token);
   return {
     token: parsed.token,
@@ -102,6 +98,39 @@ export function resolveAccountToken(explicitToken) {
     account_id: typeof parsed.account_id === "string" ? parsed.account_id : undefined,
     account_slug: typeof parsed.account_slug === "string" ? parsed.account_slug : undefined
   };
+}
+
+/** Owner-only local admin bearer (bradm_). */
+export async function saveAdminToken(token) {
+  assertAdminToken(token);
+  const target = adminTokenPath();
+  await mkdir(path.dirname(target), { recursive: true, mode: OWNER_DIR_MODE });
+  writeOwnerJson(target, {
+    token,
+    saved_at: new Date().toISOString()
+  });
+  return target;
+}
+
+/**
+ * Resolve admin bearer credential.
+ * Order: --admin-token, BENCHROUTER_ADMIN_TOKEN, owner-only local config.
+ * Rejects runtime, repo-read, and account control tokens.
+ */
+export function resolveAdminToken(explicitToken) {
+  const environmentToken = process.env.BENCHROUTER_ADMIN_TOKEN?.trim();
+  const candidate = explicitToken?.trim() || environmentToken;
+  if (candidate) {
+    assertAdminToken(candidate);
+    return { token: candidate, source: explicitToken ? "argument" : "environment" };
+  }
+  const target = adminTokenPath();
+  if (!existsSync(target)) {
+    return null;
+  }
+  const parsed = readJsonFile(target, "Stored BenchRouter admin credentials are not valid JSON");
+  assertAdminToken(parsed?.token);
+  return { token: parsed.token, source: "config", path: target };
 }
 
 export function normalizeRepoFullName(repoFullName) {
@@ -121,20 +150,78 @@ function assertRepoToken(token) {
 }
 
 export function assertAccountToken(token) {
-  if (typeof token !== "string" || token.trim().length === 0) {
-    throw new Error("Account access requires a br_ctrl_ account token.");
-  }
-  const value = token.trim();
-  if (value.startsWith("br_live_") || value.startsWith("br_test_")) {
-    throw new Error("Runtime API keys cannot authorize control-plane commands. Use a br_ctrl_ account token.");
-  }
-  if (value.startsWith("br_setup_")) {
-    throw new Error("Repo setup/read tokens cannot authorize account commands. Use a br_ctrl_ account token.");
-  }
-  if (value.startsWith("br_upgrade_")) {
-    throw new Error("Upgrade tokens cannot authorize account commands. Use a br_ctrl_ account token.");
-  }
+  const value = requireNonEmptyToken(token, "Account access requires a br_ctrl_ account token.");
+  rejectWrongScope(value, {
+    runtime: "Runtime API keys cannot authorize control-plane commands. Use a br_ctrl_ account token.",
+    setup: "Repo setup/read tokens cannot authorize account commands. Use a br_ctrl_ account token.",
+    upgrade: "Upgrade tokens cannot authorize account commands. Use a br_ctrl_ account token.",
+    admin: "Admin tokens cannot authorize account commands. Use a br_ctrl_ account token."
+  });
   if (!value.startsWith(ACCOUNT_CONTROL_TOKEN_PREFIX)) {
     throw new Error("Account access requires a br_ctrl_ account token.");
+  }
+}
+
+export function assertAdminToken(token) {
+  const value = requireNonEmptyToken(token, "Admin access requires a bradm_ admin token.");
+  rejectWrongScope(value, {
+    runtime: "Runtime API keys cannot authorize admin commands. Use a bradm_ admin token.",
+    setup: "Repo setup/read tokens cannot authorize admin commands. Use a bradm_ admin token.",
+    account: "Account control tokens cannot authorize admin commands. Use a bradm_ admin token.",
+    upgrade: "Upgrade tokens cannot authorize admin commands. Use a bradm_ admin token."
+  });
+  if (!value.startsWith(ADMIN_TOKEN_PREFIX)) {
+    throw new Error("Admin access requires a bradm_ admin token.");
+  }
+}
+
+/** Write JSON and force mode 0600 even when overwriting a permissive file. */
+export function writeOwnerJson(target, payload) {
+  writeFileSync(target, `${JSON.stringify(payload, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: OWNER_FILE_MODE
+  });
+  chmodSync(target, OWNER_FILE_MODE);
+  assertOwnerFileMode(target);
+}
+
+export function assertOwnerFileMode(target) {
+  const mode = statSync(target).mode & 0o777;
+  if (mode !== OWNER_FILE_MODE) {
+    throw new Error(`Expected owner-only mode 0600 for ${target}, found ${mode.toString(8).padStart(3, "0")}.`);
+  }
+  return mode;
+}
+
+function requireNonEmptyToken(token, message) {
+  if (typeof token !== "string" || token.trim().length === 0) {
+    throw new Error(message);
+  }
+  return token.trim();
+}
+
+function rejectWrongScope(value, messages) {
+  if (value.startsWith("br_live_") || value.startsWith("br_test_")) {
+    throw new Error(messages.runtime);
+  }
+  if (value.startsWith("br_setup_")) {
+    throw new Error(messages.setup);
+  }
+  if (value.startsWith("br_upgrade_")) {
+    throw new Error(messages.upgrade);
+  }
+  if (messages.admin && value.startsWith(ADMIN_TOKEN_PREFIX)) {
+    throw new Error(messages.admin);
+  }
+  if (messages.account && value.startsWith(ACCOUNT_CONTROL_TOKEN_PREFIX)) {
+    throw new Error(messages.account);
+  }
+}
+
+function readJsonFile(target, message) {
+  try {
+    return JSON.parse(readFileSync(target, "utf8"));
+  } catch {
+    throw new Error(`${message}: ${target}`);
   }
 }

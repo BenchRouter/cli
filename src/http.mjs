@@ -1,4 +1,4 @@
-import { resolveAccountToken } from "./config.mjs";
+import { resolveAccountToken, resolveAdminToken } from "./config.mjs";
 
 export class ApiError extends Error {
   constructor(message, { status, code, body } = {}) {
@@ -37,7 +37,22 @@ export function requireAccountCredential(explicitToken) {
   return credential;
 }
 
-export async function accountRequest({
+export function requireAdminCredential(explicitToken) {
+  let credential;
+  try {
+    credential = resolveAdminToken(explicitToken);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : "Could not read admin credentials.");
+  }
+  if (!credential) {
+    throw new Error(
+      "Missing admin token. Pass --admin-token, set BENCHROUTER_ADMIN_TOKEN, or save an owner-only bradm_ token in local config."
+    );
+  }
+  return credential;
+}
+
+export async function apiRequest({
   apiUrl,
   token,
   method = "GET",
