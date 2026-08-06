@@ -78,8 +78,14 @@ function printStatus(body, json) {
   }
   for (const route of routes) {
     const run = route.latest_run?.status ? `; latest eval ${route.latest_run.status}` : "";
+    const wiring = route.wired ? "; wired in production" : "; not wired in production";
+    const evidence = route.production_result_set_id
+      ? `; production evidence ${route.production_result_set_id}`
+      : "";
     const best = route.gated ? "awaiting evidence" : `best ${route.best_model ?? "not selected"}`;
-    process.stdout.write(`- ${route.route_key}: ${best}; incumbent ${route.original_model ?? "unknown"}${run}\n`);
+    process.stdout.write(
+      `- ${route.route_key}: ${best}; incumbent ${route.original_model ?? "unknown"}${wiring}${run}${evidence}\n`
+    );
   }
 }
 

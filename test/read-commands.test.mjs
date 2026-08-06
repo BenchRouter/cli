@@ -47,7 +47,7 @@ test("status, frontier, failures, and explain replay server contracts end to end
   assert.equal(statusHuman.status, 0, statusHuman.stderr);
   assert.equal(
     statusHuman.stdout,
-    "example/app\n- app/chat: best minimax/minimax-m2.7; incumbent minimax/minimax-m2.7; latest eval decided\n"
+    "example/app\n- app/chat: best minimax/minimax-m2.7; incumbent minimax/minimax-m2.7; wired in production; latest eval decided; production evidence ers_recorded\n"
   );
   const statusJson = await runCli(["status", ...common, "--json"], { BENCHROUTER_TOKEN: repoToken });
   assert.equal(statusJson.status, 0, statusJson.stderr);

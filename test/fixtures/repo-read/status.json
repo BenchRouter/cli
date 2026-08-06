@@ -10,6 +10,8 @@
       "baseline_model": null,
       "original_model": "minimax/minimax-m2.7",
       "state": "active",
+      "wired": true,
+      "production_result_set_id": "ers_recorded",
       "latest_run": {
         "result_set_id": "ers_recorded",
         "status": "decided",

@@ -56,7 +56,10 @@ benchrouter failures <route-key> [model] [--json]
 benchrouter explain <model> [--route <route-key>] [--json]
 ```
 
-`status` shows each route, incumbent, current best model, and latest eval state.
+`status` shows each route, incumbent, current best model, production wiring state,
+latest eval state, and production result-set ID. Use `status --json` when an agent
+or script must prove that the route has received a production call and identify
+the exact evidence used in production.
 
 `frontier` shows the incumbent, best model, and ranked alternatives.
 
