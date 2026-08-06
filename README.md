@@ -50,11 +50,30 @@ benchrouter init --help
 benchrouter upgrade --help
 benchrouter doctor
 benchrouter models [--filter text] [--json]
+benchrouter models show <route-key> <model-id> [--account-token br_ctrl_...] [--json]
 benchrouter status [--json]
 benchrouter frontier <route-key> [--json]
 benchrouter failures <route-key> [model] [--json]
 benchrouter explain <model> [--route <route-key>] [--json]
+benchrouter account show [--json]
+benchrouter billing show [--json]
+benchrouter billing top-up --amount 25 [--yes]
+benchrouter keys list|create|revoke
+benchrouter repos list
+benchrouter setup status [--repo owner/repo]
+benchrouter routes list|show|catalog|archive|unarchive
+benchrouter evals list|run|failures
+benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
 ```
+
+Account commands authenticate with a `br_ctrl_` account token
+(`--account-token`, then `BENCHROUTER_ACCOUNT_TOKEN`, then owner-only local
+config). Repo-read commands keep using the setup/read token. Runtime API keys
+never authorize control-plane commands.
+
+Mutations print an exact action summary and prompt unless `--yes`. JSON mode
+never prompts and requires `--yes`. Billing top-up prints a checkout URL; it
+does not open a browser.
 
 `status` shows each route, incumbent, current best model, production wiring state,
 latest eval state, and production result-set ID. Use `status --json` when an agent

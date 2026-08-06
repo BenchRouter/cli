@@ -5,6 +5,13 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
 import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config.mjs";
+import {
+  CUSTOMER_ROOT_COMMANDS,
+  customerUsageText,
+  isCustomerModelsShow,
+  runCustomerCommand,
+  topLevelCustomerUsageLines
+} from "./customer-commands.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -35,7 +42,17 @@ const DOCTOR_UPLOAD_HELPER_SNIPPETS = [
   "head_sha"
 ];
 
-if (command === "init") {
+if (CUSTOMER_ROOT_COMMANDS.has(command) || isCustomerModelsShow(command, args._)) {
+  await runCustomerCommand({
+    args,
+    command,
+    stringArg,
+    fail,
+    usage,
+    confirmPrompt,
+    detectGitHubRepo
+  });
+} else if (command === "init") {
   await init();
 } else if (command === "doctor") {
   await doctor();
@@ -45,8 +62,10 @@ if (command === "init") {
   await upgrade();
 } else if (["status", "frontier", "failures", "explain"].includes(command)) {
   await readCommand(command);
+} else if (command === "help" || args.help) {
+  usage(0);
 } else {
-  usage(command === "help" || args.help ? 0 : 1);
+  usage(1, "all", `Unknown command: ${command}`);
 }
 
 async function init() {
@@ -469,6 +488,7 @@ async function models() {
   if (args.help) {
     usage(0, "models");
   }
+  // `models show` is handled by the customer command tree before this branch.
 
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
   const filter = stringArg("filter");
@@ -1295,6 +1315,11 @@ function usage(status, commandName = "all", message) {
   if (message) {
     stream.write(`${message}\n\n`);
   }
+  const customerHelp = customerUsageText(commandName);
+  if (customerHelp) {
+    stream.write(customerHelp);
+    process.exit(status);
+  }
   if (commandName === "init") {
     stream.write(`Usage:
   benchrouter init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model [options]
@@ -1326,6 +1351,7 @@ Options:
   } else if (commandName === "models") {
     stream.write(`Usage:
   benchrouter models [options]
+  benchrouter models show <route-key> <model-id> [--account-token br_ctrl_...] [--json]
 
 Options:
   --api-url <url>          Defaults to https://api.benchrouter.com.
@@ -1386,6 +1412,7 @@ Options:
   benchrouter frontier <route-key> [--json]
   benchrouter failures <route-key> [model] [--json]
   benchrouter explain <model> [--route product/route] [--json]
+${topLevelCustomerUsageLines()}
 `);
   }
   process.exit(status);

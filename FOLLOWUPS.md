@@ -1,19 +1,34 @@
 # CLI follow-ups
 
-These commands require server-side user authentication or APIs that do not exist
-yet. Do not add client-only placeholders.
+These items still depend on server-side account-control-token wiring or APIs
+that do not exist yet. The CLI command tree is present; do not invent client-only
+placeholders beyond the isolated missing-contract method already named in code.
 
-- User session: `login`, `logout`, `whoami` with a user-scoped `br_cli_` token.
-- Repository management: `repo list`, `repo connect`, `repo upgrade`.
-- Route management: `route list`, `route show`, `route archive`, `route unarchive`.
-- Eval control: `eval run`, `eval list`, and `eval show`.
-- Baseline changes: `route baseline set`.
-- Billing: `billing status` and a browser-assisted `billing top-up`.
-- API keys: `key list`, `key create`, and `key revoke`.
-- Admin catalog work: `catalog review`, `catalog activity`, and identity mappings.
+## Missing or incomplete server contracts
 
-The server owns policy, routing, billing, and catalog mutations. The CLI should
-remain a thin command, file-write, and presentation layer.
+- **AUTH-006 wiring:** Most customer control-plane paths still authenticate with
+  GitHub session/identity cookies. They must accept Bearer `br_ctrl_` account
+  control tokens without duplicating dashboard business logic. Today only
+  `GET /v1/account/control/me` is control-token authenticated.
+  Affected CLI commands after that lands: `billing *`, `keys list|create`,
+  `repos list`, `setup status`, `routes *`, `models show`, `evals *`,
+  `baseline set`.
+- **API key revoke:** No revoke endpoint exists for runtime `api_keys`.
+  Isolated client method: `revokeDashboardApiKey` in `src/customer-api.mjs`.
+  Required contract example:
+  `POST /v1/dashboard/api-keys/:id/revoke` with Bearer `br_ctrl_`, returning
+  non-secret key metadata.
+- **User session helpers:** `login`, `logout`, `whoami` with mint/save UX for
+  `br_ctrl_` tokens (mint today is browser-session-only via
+  `POST /v1/dashboard/control-tokens`).
+- **Admin catalog work:** `catalog review`, `catalog activity`, and identity
+  mappings remain operator/admin surfaces, not this customer CLI.
 
-Before the CLI package ships, update the BenchRouter server's generated setup
-packet and setup prompt so every generated command uses `@benchrouter/cli`.
+## Notes
+
+- Repo-read commands keep using `br_setup_` / `BENCHROUTER_TOKEN`.
+- Account commands use `--account-token`, then `BENCHROUTER_ACCOUNT_TOKEN`, then
+  the owner-only local config entry. Runtime keys are rejected.
+- Billing top-up prints a checkout URL only; it never opens a browser.
+- The server owns policy, routing, billing, and catalog mutations. The CLI is a
+  thin command, file-write, and presentation layer.
