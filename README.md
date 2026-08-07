@@ -179,8 +179,11 @@ routes.
 
 ## Upgrade
 
-`upgrade` previews a server-generated kit update, asks for confirmation, then
-applies the server-authoritative packet.
+`upgrade` previews a server-generated update for generated kit files, asks for
+confirmation, then applies it. The repository keeps ownership of
+`.benchrouter/benchrouter.yml` and `.benchrouter/.kit-state.json`. Upgrade keeps
+the full route index, changes only its kit version and generated-file hashes,
+and fails closed when the existing kit state is missing or invalid.
 
 ```bash
 benchrouter upgrade \

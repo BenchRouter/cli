@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { applyUpgradePacket } from "../src/upgrade-state.mjs";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, "..");
@@ -255,61 +257,114 @@ test("init gives an actionable setup-key expiry error", async (t) => {
   assert.equal(setupServer.requests.length, 1);
 });
 
-test("upgrade overwrites existing BenchRouter kit files without requiring --force", async (t) => {
+test("upgrade preserves the full multi-route kit state and updates only generated bookkeeping", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-upgrade-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, ".benchrouter"), { recursive: true });
-  await writeFile(path.join(root, ".benchrouter/.kit-state.json"), "{\"version\":\"0.0.9\"}\n");
-
-  const upgradeResponse = {
-    ok: true,
-    repo_full_name: "example/app",
-    route_id: routeId,
-    setup_kit_version: "0.0.10",
-    files: [
+  const oldUpload = "export const oldUpload = true;\n";
+  const existingState = {
+    version: "0.0.9",
+    generated_by: "benchrouter.setup_packet.v1",
+    product: {
+      slug: "app",
+      default_branch: "main",
+      repo_full_name: "example/app"
+    },
+    routes: [
       {
-        path: ".benchrouter/.kit-state.json",
-        content: "{\"version\":\"0.0.10\"}\n"
+        route_id: "app/compose",
+        route_slug: "compose",
+        name: "Compose",
+        incumbent_model: "anthropic/claude-haiku-4.5",
+        original_model: "anthropic/claude-haiku-4.5",
+        best_model: "openai/gpt-5.6-luna",
+        code_refs: ["src/compose.ts", "src/prompts/compose.ts"]
       },
       {
-        path: ".benchrouter/upload-results.mjs",
-        content: "export {};\n"
+        route_id: "app/summarize",
+        route_slug: "summarize",
+        name: "Summarize",
+        incumbent_model: "openai/gpt-5.4-nano",
+        original_model: "openai/gpt-5.4-nano",
+        best_model: "google/gemini-3.5-flash-lite",
+        code_refs: ["src/summarize.ts"]
       }
+    ],
+    files: [
+      { path: ".benchrouter/upload-results.mjs", sha256: sha256(oldUpload) },
+      { path: ".benchrouter/scorer.compose.js", sha256: "a".repeat(64) }
     ]
   };
-  const setupServer = await startFixtureProxy(t, {
-    status: 200,
-    body: upgradeResponse
+  await writeFile(
+    path.join(root, ".benchrouter/.kit-state.json"),
+    `${JSON.stringify(existingState, null, 2)}\n`
+  );
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), "routes:\n  - id: app/compose\n");
+  await writeFile(path.join(root, ".benchrouter/upload-results.mjs"), oldUpload);
+
+  const nextUpload = "export const upgradedUpload = true;\n";
+  const workflow = "name: BenchRouter Evals\n";
+  const events = [];
+  await applyUpgradePacket({
+    outputDir: root,
+    setupKitVersion: "0.0.10",
+    files: [
+      {
+        path: ".benchrouter/upload-results.mjs",
+        content: nextUpload,
+        sha256: sha256(nextUpload)
+      },
+      {
+        path: ".github/workflows/benchrouter-evals.yml",
+        content: workflow,
+        sha256: sha256(workflow)
+      }
+    ],
+    onFile(action, filePath) {
+      events.push(`${action} ${filePath}`);
+    }
   });
 
-  const result = await runCli(
-    [
-      "upgrade",
-      "--upgrade-token",
-      "br_upgrade_fixture",
-      "--repo",
-      "example/app",
-      "--route-id",
-      routeId,
-      "--api-url",
-      setupServer.url,
-      "--output-dir",
-      root,
-      "--yes"
-    ],
-    root
-  );
+  const upgradedState = JSON.parse(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"));
+  assert.deepEqual(upgradedState.routes, existingState.routes);
+  assert.equal(upgradedState.routes[0].original_model, "anthropic/claude-haiku-4.5");
+  assert.equal(upgradedState.routes[0].best_model, "openai/gpt-5.6-luna");
+  assert.deepEqual(upgradedState.routes[0].code_refs, ["src/compose.ts", "src/prompts/compose.ts"]);
+  assert.equal(upgradedState.version, "0.0.10");
+  assert.deepEqual(upgradedState.product, existingState.product);
+  assert.deepEqual(upgradedState.files, [
+    { path: ".benchrouter/upload-results.mjs", sha256: sha256(nextUpload) },
+    { path: ".benchrouter/scorer.compose.js", sha256: "a".repeat(64) },
+    { path: ".github/workflows/benchrouter-evals.yml", sha256: sha256(workflow) }
+  ]);
+  assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"), "routes:\n  - id: app/compose\n");
+  assert.equal(await readFile(path.join(root, ".benchrouter/upload-results.mjs"), "utf8"), nextUpload);
+  assert.equal(await readFile(path.join(root, ".github/workflows/benchrouter-evals.yml"), "utf8"), workflow);
+  assert.deepEqual(events, [
+    "updated .benchrouter/upload-results.mjs",
+    "created .github/workflows/benchrouter-evals.yml",
+    "updated .benchrouter/.kit-state.json"
+  ]);
+});
 
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /would write \.benchrouter\/\.kit-state\.json/);
-  assert.match(result.stdout, /updated \.benchrouter\/\.kit-state\.json/);
-  assert.match(result.stdout, /created \.benchrouter\/upload-results\.mjs/);
-  assert.equal(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"), "{\"version\":\"0.0.10\"}\n");
-  assert.equal(setupServer.requests.length, 2);
-  assert.equal(setupServer.requests[0].url, "/v1/setup/upgrade-packet/preview");
-  assert.equal(setupServer.requests[1].url, "/v1/control/setup-packet/upgrade");
-  assert.equal(setupServer.requests[0].authorization, "Bearer br_upgrade_fixture");
-  assert.equal(setupServer.requests[1].authorization, "Bearer br_upgrade_fixture");
+test("upgrade fails closed before HTTP when repository kit state is missing or invalid", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-upgrade-invalid-state-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const args = [
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", "http://127.0.0.1:1", "--output-dir", root, "--yes"
+  ];
+
+  const missing = await runCli(args, root);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /Cannot upgrade without \.benchrouter\/\.kit-state\.json/);
+  assert.match(missing.stderr, /benchrouter init/);
+
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, ".benchrouter/.kit-state.json"), "{broken json\n");
+  const invalid = await runCli(args, root);
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /\.kit-state\.json is not valid JSON/);
 });
 
 test("doctor fails when call_site.base_url_env is not referenced by route code_refs", async (t) => {
@@ -491,6 +546,10 @@ function readStringArrayConstant(name) {
   const match = cliSource.match(new RegExp(`const ${name} = \\[([\\s\\S]*?)\\];`));
   assert(match, `${name} not found in CLI source`);
   return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function manifestYaml() {

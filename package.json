@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check:syntax": "node --check bin/benchrouter.mjs && node --check src/cli.mjs && node --check src/config.mjs && node --check src/repo-read.mjs && node --check src/http.mjs && node --check src/control-api.mjs && node --check src/control-helpers.mjs && node --check src/commands.mjs && node --check src/usage-text.mjs && node --check src/render.mjs",
+    "check:syntax": "node --check bin/benchrouter.mjs && node --check src/cli.mjs && node --check src/config.mjs && node --check src/repo-read.mjs && node --check src/http.mjs && node --check src/control-api.mjs && node --check src/control-helpers.mjs && node --check src/commands.mjs && node --check src/usage-text.mjs && node --check src/render.mjs && node --check src/upgrade-state.mjs",
     "check": "npm run check:syntax && npm test && npm pack --dry-run"
   },
   "bin": {

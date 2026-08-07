@@ -8,6 +8,7 @@ import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
+import { applyUpgradePacket, mergeUpgradeKitState, readUpgradeKitState } from "./upgrade-state.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "help";
@@ -211,6 +212,15 @@ async function upgrade() {
     usage(1, "upgrade", "Missing --route-id.");
   }
 
+  // Validate repository-owned route state before previewing or consuming a
+  // single-use token. Upgrade packets intentionally do not own this file.
+  let existingKitState;
+  try {
+    existingKitState = readUpgradeKitState(outputDir);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not read the existing BenchRouter kit state.");
+  }
+
   // 1. Preview — does NOT consume the upgrade token. Preview only supports the
   //    single-use upgrade token flow; API-key auth goes straight to apply (which
   //    is idempotent and re-runnable for API keys).
@@ -222,11 +232,17 @@ async function upgrade() {
       routeId,
       mode: "preview"
     });
+    try {
+      mergeUpgradeKitState(existingKitState, preview.setup_kit_version, preview.files);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : "BenchRouter returned an invalid kit upgrade preview.");
+    }
 
     process.stdout.write(`Planned BenchRouter kit upgrade to ${preview.setup_kit_version} for ${preview.repo_full_name} / ${preview.route_id}\n`);
     for (const file of preview.files) {
       process.stdout.write(`would write ${file.path}\n`);
     }
+    process.stdout.write(`would update .benchrouter/.kit-state.json bookkeeping to ${preview.setup_kit_version}\n`);
 
     if (dryRun) {
       return;
@@ -252,6 +268,11 @@ async function upgrade() {
   // 2. Apply — for upgrade tokens this consumes the token, so the preview above
   //    must succeed first. Re-derive the packet server-side; do NOT reuse the
   //    preview response as if it were authoritative.
+  try {
+    readUpgradeKitState(outputDir);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not read the existing BenchRouter kit state.");
+  }
   const applied = await fetchUpgradePacket({
     apiUrl,
     bearer,
@@ -261,16 +282,17 @@ async function upgrade() {
   });
 
   process.stdout.write(`Upgrading BenchRouter kit to ${applied.setup_kit_version} for ${applied.repo_full_name} / ${applied.route_id}\n`);
-  for (const file of applied.files) {
-    const targetPath = safeTargetPath(outputDir, file.path);
-    const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
-    if (previous === file.content) {
-      process.stdout.write(`unchanged ${file.path}\n`);
-      continue;
-    }
-    await mkdir(path.dirname(targetPath), { recursive: true });
-    await writeFile(targetPath, file.content);
-    process.stdout.write(`${previous === null ? "created" : "updated"} ${file.path}\n`);
+  try {
+    await applyUpgradePacket({
+      outputDir,
+      setupKitVersion: applied.setup_kit_version,
+      files: applied.files,
+      onFile(action, filePath) {
+        process.stdout.write(`${action} ${filePath}\n`);
+      }
+    });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not apply the BenchRouter kit upgrade.");
   }
 
   process.stdout.write("\nNext steps:\n");
@@ -305,7 +327,7 @@ async function fetchUpgradePacket({ apiUrl, bearer, repoFullName, routeId, mode 
   }
 
   const body = parseJson(responseText);
-  if (!body || body.ok !== true || !Array.isArray(body.files)) {
+  if (!body || body.ok !== true || !Array.isArray(body.files) || typeof body.setup_kit_version !== "string") {
     fail("BenchRouter did not return a valid upgrade response.");
   }
   return body;
@@ -1360,7 +1382,10 @@ Options:
 
 The upgrade flow previews the planned changes (without consuming the single-use
 upgrade token), prompts for confirmation, then applies. Use --yes to skip the
-prompt.
+prompt. Upgrade preserves the existing .benchrouter/benchrouter.yml and full
+.benchrouter/.kit-state.json route index. It updates only generated files, the
+kit version, and generated-file hashes. Missing or invalid kit state requires
+init/re-onboarding.
 
 Options:
   --upgrade-token <token>  Single-use token from the dashboard "Upgrade BenchRouter kit" banner. Falls back to BENCHROUTER_UPGRADE_TOKEN.
