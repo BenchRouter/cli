@@ -179,11 +179,13 @@ routes.
 
 ## Upgrade
 
-`upgrade` previews a server-generated update for generated kit files, asks for
-confirmation, then applies it. The repository keeps ownership of
-`.benchrouter/benchrouter.yml` and `.benchrouter/.kit-state.json`. Upgrade keeps
-the full route index, changes only its kit version and generated-file hashes,
-and fails closed when the existing kit state is missing or invalid.
+`upgrade` previews a server-generated update for generic kit engines, asks for
+confirmation, then applies it. It preserves `.benchrouter/benchrouter.yml`
+byte-for-byte. That YAML is the single route declaration. Upgrade removes
+obsolete route declarations from `.benchrouter/.kit-state.json`, then updates
+its kit version and generated-file hashes. It never replaces cases, scorers,
+calibration fixtures, setup guides, or app files. Missing or invalid state
+requires re-onboarding.
 
 ```bash
 benchrouter upgrade \

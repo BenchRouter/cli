@@ -60,6 +60,35 @@ test("doctor skips live proxy ping when the runtime key is absent", async (t) =>
   assert.equal(proxy.requests.length, 0);
 });
 
+test("doctor reads distinct multi-route refs only from canonical YAML", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), multiRouteManifestYaml());
+  await writeFile(path.join(root, "src/summarize.js"), "const baseURL = process.env.SUMMARIZE_BASE_URL;\n");
+  await writeFile(path.join(root, ".benchrouter/scorer.summarize.js"), "export function score() { return { pass: true }; }\n");
+  await writeFile(path.join(root, ".benchrouter/cases.summarize.json"), '[{"id":"summary","input":{"messages":[{"role":"user","content":"summarize"}]}}]\n');
+  await writeFile(path.join(root, ".env.example"), "BENCHROUTER_API_KEY=\nOPENAI_BASE_URL=https://api.benchrouter.com/v1\nSUMMARIZE_BASE_URL=https://api.benchrouter.com/v1\n");
+
+  const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /runtime wiring .* 2 routes reference call_site\.base_url_env from code_refs/);
+  assert.match(result.stdout, /OPENAI_BASE_URL, SUMMARIZE_BASE_URL/);
+});
+
+test("doctor reports state routes only as obsolete cleanup", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  const statePath = path.join(root, ".benchrouter/.kit-state.json");
+  const state = JSON.parse(await readFile(statePath, "utf8"));
+  state.routes = [{ route_id: "wrong/stale", incumbent_model: "wrong/old" }];
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+
+  const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /contains obsolete route declarations.*benchrouter\.yml is canonical.*run benchrouter upgrade/);
+  assert.doesNotMatch(result.stderr, /only in|drift|wrong\/stale/);
+});
+
 test("doctor reports disabled BenchRouter Evals workflow from gh", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   const ghBin = await createFixtureGh(t);
@@ -257,11 +286,56 @@ test("init gives an actionable setup-key expiry error", async (t) => {
   assert.equal(setupServer.requests.length, 1);
 });
 
-test("upgrade preserves the full multi-route kit state and updates only generated bookkeeping", async (t) => {
+test("upgrade removes obsolete state routes while preserving canonical multi-route semantics", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-upgrade-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, ".benchrouter"), { recursive: true });
   const oldUpload = "export const oldUpload = true;\n";
+  const oldEvalRunner = "const DEFAULT_MODEL = 'wrong/older-model';\n";
+  const canonicalYaml = `version: 1
+
+product:
+  slug: app
+  repo: example/app
+  default_branch: main
+
+routes:
+  - id: compose
+    route_id: app/compose
+    name: Compose
+    code_refs:
+      - src/compose.ts
+      - src/prompts/compose.ts
+    call_site:
+      base_url_env: COMPOSE_BASE_URL
+      provider_id: anthropic
+      provider_ref: claude-haiku-4-5
+    seed:
+      incumbent_model: anthropic/claude-haiku-4.5
+    eval_pack:
+      workflow: .github/workflows/benchrouter-evals.yml
+      scorer: .benchrouter/scorer.compose.js
+      result_schema: benchrouter.result.v1
+      case_refs:
+        - .benchrouter/cases.compose.json
+  - id: summarize
+    route_id: app/summarize
+    name: Summarize
+    code_refs:
+      - src/summarize.ts
+    call_site:
+      base_url_env: SUMMARIZE_BASE_URL
+      provider_id: openai
+      provider_ref: gpt-5.4-nano
+    seed:
+      incumbent_model: openai/gpt-5.4-nano
+    eval_pack:
+      workflow: .github/workflows/benchrouter-evals.yml
+      scorer: .benchrouter/scorer.summarize.js
+      result_schema: benchrouter.result.v1
+      case_refs:
+        - .benchrouter/cases.summarize.json
+`;
   const existingState = {
     version: "0.0.9",
     generated_by: "benchrouter.setup_packet.v1",
@@ -292,6 +366,7 @@ test("upgrade preserves the full multi-route kit state and updates only generate
     ],
     files: [
       { path: ".benchrouter/upload-results.mjs", sha256: sha256(oldUpload) },
+      { path: ".benchrouter/benchrouter-eval.mjs", sha256: sha256(oldEvalRunner) },
       { path: ".benchrouter/scorer.compose.js", sha256: "a".repeat(64) }
     ]
   };
@@ -299,52 +374,85 @@ test("upgrade preserves the full multi-route kit state and updates only generate
     path.join(root, ".benchrouter/.kit-state.json"),
     `${JSON.stringify(existingState, null, 2)}\n`
   );
-  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), "routes:\n  - id: app/compose\n");
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), canonicalYaml);
   await writeFile(path.join(root, ".benchrouter/upload-results.mjs"), oldUpload);
+  await writeFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), oldEvalRunner);
+
+  const preservedFiles = new Map([
+    [".benchrouter/scorer.compose.js", "export const composeScorer = true;\n"],
+    [".benchrouter/scorer.summarize.js", "export const summarizeScorer = true;\n"],
+    [".benchrouter/cases.compose.json", '[{"id":"compose"}]\n'],
+    [".benchrouter/cases.summarize.json", '[{"id":"summarize"}]\n'],
+    [".benchrouter/calibration.compose.json", '{"fixtures":[]}\n'],
+    ["src/compose.ts", "export const compose = true;\n"],
+    ["src/prompts/compose.ts", "export const prompt = true;\n"],
+    ["src/summarize.ts", "export const summarize = true;\n"]
+  ]);
+  for (const [relativePath, contents] of preservedFiles) {
+    await mkdir(path.dirname(path.join(root, relativePath)), { recursive: true });
+    await writeFile(path.join(root, relativePath), contents);
+  }
 
   const nextUpload = "export const upgradedUpload = true;\n";
   const workflow = "name: BenchRouter Evals\n";
+  const nextEvalRunner = "// generic: reads .benchrouter/benchrouter.yml\n";
+  const nextCalibrateRunner = "// generic: reads .benchrouter/benchrouter.yml\n";
+  const nextSidecar = "// generic capture: reads .benchrouter/benchrouter.yml\n";
+  const readme = "# BenchRouter\nCanonical routes: .benchrouter/benchrouter.yml\n";
   const events = [];
+  const upgradeFiles = [
+    { path: ".benchrouter/upload-results.mjs", content: nextUpload, sha256: sha256(nextUpload) },
+    { path: ".benchrouter/benchrouter-eval.mjs", content: nextEvalRunner, sha256: sha256(nextEvalRunner) },
+    { path: ".benchrouter/benchrouter-calibrate.mjs", content: nextCalibrateRunner, sha256: sha256(nextCalibrateRunner) },
+    { path: ".benchrouter/sidecar.mjs", content: nextSidecar, sha256: sha256(nextSidecar) },
+    { path: ".github/workflows/benchrouter-evals.yml", content: workflow, sha256: sha256(workflow) },
+    { path: ".benchrouter/README.md", content: readme, sha256: sha256(readme) }
+  ];
+  assert.deepEqual(upgradeFiles.map((file) => file.path).sort(), [
+    ".benchrouter/README.md",
+    ".benchrouter/benchrouter-calibrate.mjs",
+    ".benchrouter/benchrouter-eval.mjs",
+    ".benchrouter/sidecar.mjs",
+    ".benchrouter/upload-results.mjs",
+    ".github/workflows/benchrouter-evals.yml"
+  ].sort());
+  await assert.rejects(
+    applyUpgradePacket({
+      outputDir: root,
+      setupKitVersion: "0.0.10",
+      files: [{
+        path: ".benchrouter/cases.compose.json",
+        content: "[]\n",
+        sha256: sha256("[]\n")
+      }]
+    }),
+    /unsupported path \.benchrouter\/cases\.compose\.json/
+  );
   await applyUpgradePacket({
     outputDir: root,
     setupKitVersion: "0.0.10",
-    files: [
-      {
-        path: ".benchrouter/upload-results.mjs",
-        content: nextUpload,
-        sha256: sha256(nextUpload)
-      },
-      {
-        path: ".github/workflows/benchrouter-evals.yml",
-        content: workflow,
-        sha256: sha256(workflow)
-      }
-    ],
+    files: upgradeFiles,
     onFile(action, filePath) {
       events.push(`${action} ${filePath}`);
     }
   });
 
   const upgradedState = JSON.parse(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"));
-  assert.deepEqual(upgradedState.routes, existingState.routes);
-  assert.equal(upgradedState.routes[0].original_model, "anthropic/claude-haiku-4.5");
-  assert.equal(upgradedState.routes[0].best_model, "openai/gpt-5.6-luna");
-  assert.deepEqual(upgradedState.routes[0].code_refs, ["src/compose.ts", "src/prompts/compose.ts"]);
+  assert.equal(Object.hasOwn(upgradedState, "routes"), false);
   assert.equal(upgradedState.version, "0.0.10");
   assert.deepEqual(upgradedState.product, existingState.product);
-  assert.deepEqual(upgradedState.files, [
-    { path: ".benchrouter/upload-results.mjs", sha256: sha256(nextUpload) },
-    { path: ".benchrouter/scorer.compose.js", sha256: "a".repeat(64) },
-    { path: ".github/workflows/benchrouter-evals.yml", sha256: sha256(workflow) }
-  ]);
-  assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"), "routes:\n  - id: app/compose\n");
+  assert.equal(upgradedState.files.find((file) => file.path === ".benchrouter/upload-results.mjs").sha256, sha256(nextUpload));
+  assert.equal(upgradedState.files.find((file) => file.path === ".benchrouter/benchrouter-eval.mjs").sha256, sha256(nextEvalRunner));
+  assert.equal(upgradedState.files.find((file) => file.path === ".benchrouter/scorer.compose.js").sha256, "a".repeat(64));
+  assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"), canonicalYaml);
   assert.equal(await readFile(path.join(root, ".benchrouter/upload-results.mjs"), "utf8"), nextUpload);
+  assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), "utf8"), nextEvalRunner);
+  assert.doesNotMatch(await readFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), "utf8"), /wrong\/older-model|DEFAULT_MODEL/);
   assert.equal(await readFile(path.join(root, ".github/workflows/benchrouter-evals.yml"), "utf8"), workflow);
-  assert.deepEqual(events, [
-    "updated .benchrouter/upload-results.mjs",
-    "created .github/workflows/benchrouter-evals.yml",
-    "updated .benchrouter/.kit-state.json"
-  ]);
+  for (const [relativePath, contents] of preservedFiles) {
+    assert.equal(await readFile(path.join(root, relativePath), "utf8"), contents);
+  }
+  assert.equal(events.at(-1), "updated .benchrouter/.kit-state.json");
 });
 
 test("upgrade fails closed before HTTP when repository kit state is missing or invalid", async (t) => {
@@ -449,20 +557,10 @@ async function createTargetRepo(t, { codeRefText }) {
   await writeFile(
     path.join(root, ".benchrouter/.kit-state.json"),
     `${JSON.stringify({
-      routes: [
-        {
-          route_id: routeId,
-          route_slug: "app/chat",
-          incumbent_model: "openai/gpt-4o-mini",
-          base_url_env: "OPENAI_BASE_URL",
-          code_refs: ["src/llm.js"],
-          scorer_path: ".benchrouter/scorer.app__chat.js",
-          cases_path: ".benchrouter/cases.app__chat.json"
-        }
-      ],
+      version: "0.0.10",
       files: [
-        { path: ".benchrouter/scorer.app__chat.js" },
-        { path: ".benchrouter/cases.app__chat.json" }
+        { path: ".benchrouter/scorer.app__chat.js", sha256: "a".repeat(64) },
+        { path: ".benchrouter/cases.app__chat.json", sha256: "b".repeat(64) }
       ]
     }, null, 2)}\n`
   );
@@ -472,6 +570,7 @@ async function createTargetRepo(t, { codeRefText }) {
   );
   await writeFile(path.join(root, ".benchrouter/sidecar.mjs"), "export {};\n");
   await writeFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), "export {};\n");
+  await writeFile(path.join(root, ".benchrouter/benchrouter-calibrate.mjs"), "export {};\n");
   await writeFile(path.join(root, ".benchrouter/scorer.app__chat.js"), "export function score() { return { pass: true, score: 1 }; }\n");
   await writeFile(
     path.join(root, ".benchrouter/cases.app__chat.json"),
@@ -580,6 +679,31 @@ routes:
       result_schema: benchrouter.result.v1
       case_refs:
         - .benchrouter/cases.app__chat.json
+`;
+}
+
+function multiRouteManifestYaml() {
+  return `${manifestYaml()}  - id: summarize
+    route_id: app/summarize
+    name: Summarize
+    code_refs:
+      - src/summarize.js
+    call_site:
+      base_url_env: SUMMARIZE_BASE_URL
+      provider_id: openai
+      provider_ref: gpt-5.4-nano
+    seed:
+      incumbent_model: openai/gpt-5.4-nano
+    eval_pack:
+      id: summarize_v1
+      config_path: .benchrouter/benchrouter.yml
+      workflow: .github/workflows/benchrouter-evals.yml
+      command: npm run benchrouter:eval
+      capture_command: npm test
+      scorer: .benchrouter/scorer.summarize.js
+      result_schema: benchrouter.result.v1
+      case_refs:
+        - .benchrouter/cases.summarize.json
 `;
 }
 

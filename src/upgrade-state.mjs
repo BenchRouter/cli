@@ -8,6 +8,14 @@ const REPOSITORY_OWNED_PATHS = new Set([
   KIT_STATE_RELATIVE_PATH,
   ".benchrouter/benchrouter.yml"
 ]);
+const UPGRADE_GENERATED_PATHS = new Set([
+  ".github/workflows/benchrouter-evals.yml",
+  ".benchrouter/upload-results.mjs",
+  ".benchrouter/benchrouter-eval.mjs",
+  ".benchrouter/benchrouter-calibrate.mjs",
+  ".benchrouter/sidecar.mjs",
+  ".benchrouter/README.md"
+]);
 
 /**
  * Read and validate the repository-owned kit state before an upgrade token is
@@ -36,8 +44,7 @@ export function readUpgradeKitState(outputDir) {
 
 /**
  * Apply only server-owned generated files, then update repository-owned
- * bookkeeping last. Route declarations and all other kit-state fields come
- * only from the existing repository state.
+ * bookkeeping last. Canonical route declarations stay in benchrouter.yml.
  */
 export async function applyUpgradePacket({ outputDir, setupKitVersion, files, onFile }) {
   const existingState = readUpgradeKitState(outputDir);
@@ -76,8 +83,9 @@ export function mergeUpgradeKitState(existingState, setupKitVersion, packetFiles
       mergedFiles.push({ path: file.path, sha256: file.sha256 });
     }
   }
+  const { routes: _obsoleteRoutes, ...bookkeeping } = existingState;
   return {
-    ...existingState,
+    ...bookkeeping,
     version: setupKitVersion,
     files: mergedFiles
   };
@@ -89,23 +97,6 @@ function validateKitState(state) {
   }
   if (typeof state.version !== "string" || state.version.length === 0) {
     throw invalidKitState("version is required");
-  }
-  if (!Array.isArray(state.routes) || state.routes.length === 0) {
-    throw invalidKitState("routes must contain at least one route");
-  }
-  for (const [index, route] of state.routes.entries()) {
-    if (!route || typeof route !== "object" || Array.isArray(route)) {
-      throw invalidKitState(`routes[${index}] must be an object`);
-    }
-    if (typeof route.route_id !== "string" || route.route_id.length === 0) {
-      throw invalidKitState(`routes[${index}].route_id is required`);
-    }
-    if (typeof route.incumbent_model !== "string" || route.incumbent_model.length === 0) {
-      throw invalidKitState(`routes[${index}].incumbent_model is required`);
-    }
-    if (!Array.isArray(route.code_refs) || route.code_refs.some((entry) => typeof entry !== "string")) {
-      throw invalidKitState(`routes[${index}].code_refs must be an array of paths`);
-    }
   }
   if (!Array.isArray(state.files)) {
     throw invalidKitState("files must be an array");
@@ -136,6 +127,9 @@ function validateUpgradeFiles(files) {
     }
     if (REPOSITORY_OWNED_PATHS.has(file.path)) {
       throw new Error(`BenchRouter upgrade response attempted to replace repository-owned ${file.path}.`);
+    }
+    if (!UPGRADE_GENERATED_PATHS.has(file.path)) {
+      throw new Error(`BenchRouter upgrade response attempted to replace unsupported path ${file.path}.`);
     }
     if (typeof file.content !== "string") {
       throw new Error(`BenchRouter upgrade response files[${index}].content is required.`);

@@ -8,6 +8,7 @@ import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
+import { readRouteManifest } from "./route-manifest.mjs";
 import { applyUpgradePacket, mergeUpgradeKitState, readUpgradeKitState } from "./upgrade-state.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -212,8 +213,7 @@ async function upgrade() {
     usage(1, "upgrade", "Missing --route-id.");
   }
 
-  // Validate repository-owned route state before previewing or consuming a
-  // single-use token. Upgrade packets intentionally do not own this file.
+  // Validate bookkeeping before previewing or consuming a single-use token.
   let existingKitState;
   try {
     existingKitState = readUpgradeKitState(outputDir);
@@ -242,7 +242,7 @@ async function upgrade() {
     for (const file of preview.files) {
       process.stdout.write(`would write ${file.path}\n`);
     }
-    process.stdout.write(`would update .benchrouter/.kit-state.json bookkeeping to ${preview.setup_kit_version}\n`);
+    process.stdout.write(`would remove obsolete route declarations from .benchrouter/.kit-state.json and update bookkeeping to ${preview.setup_kit_version}\n`);
 
     if (dryRun) {
       return;
@@ -296,7 +296,7 @@ async function upgrade() {
   }
 
   process.stdout.write("\nNext steps:\n");
-  process.stdout.write("- Review the dry-run/apply diff; it should only touch BenchRouter-generated kit/readme files.\n");
+  process.stdout.write("- Review the diff. benchrouter.yml and route-owned cases, scorers, calibration fixtures, and app files must be unchanged.\n");
   process.stdout.write(`- Run \`npx @benchrouter/cli doctor --repo ${repoFullName}\`.\n`);
   process.stdout.write("- Open a PR titled \"Upgrade BenchRouter kit\".\n");
 }
@@ -547,6 +547,8 @@ async function doctor() {
     ".benchrouter/.kit-state.json",
     ".benchrouter/README.md",
     ".benchrouter/SETUP_README.md",
+    ".benchrouter/benchrouter-eval.mjs",
+    ".benchrouter/benchrouter-calibrate.mjs",
     ".benchrouter/upload-results.mjs",
     ".benchrouter/sidecar.mjs",
     ".github/workflows/benchrouter-evals.yml"
@@ -558,13 +560,17 @@ async function doctor() {
     }
   }
 
-  // Discover per-route scorer + cases files from BenchRouter-owned kit metadata.
-  // Doctor must not interpret the user-authored manifest; the server owns YAML parsing.
+  let manifestRoutes = [];
+  try {
+    manifestRoutes = readRouteManifest(root).routes;
+  } catch (error) {
+    failures.push(error instanceof Error ? error.message : "could not read .benchrouter/benchrouter.yml");
+  }
   const kitStatePath = path.join(root, ".benchrouter/.kit-state.json");
-  const kitRoutes = loadKitStateRoutesForDoctor(kitStatePath, failures);
-  const routeFiles = discoverRouteFilesFromKitRoutes(kitRoutes, root);
+  inspectKitStateForDoctor(kitStatePath, failures);
+  const routeFiles = discoverRouteFilesFromManifest(manifestRoutes, root);
   if (routeFiles.length === 0) {
-    failures.push("could not discover route scorer/cases files from .benchrouter/.kit-state.json");
+    failures.push("could not discover route scorer/cases files from .benchrouter/benchrouter.yml");
   }
 
   // Validate each route: cases must have ≥1 real captured case, scorer must pass node --check.
@@ -623,7 +629,7 @@ async function doctor() {
     const envKeys = parseEnvExampleKeys(envExample);
     const expectedRuntimeKeys = new Set([
       "BENCHROUTER_API_KEY",
-      ...kitRoutes.map((route) => route.callSiteBaseUrlEnv).filter(Boolean)
+      ...manifestRoutes.map((route) => route.callSiteBaseUrlEnv).filter(Boolean)
     ]);
     for (const key of expectedRuntimeKeys) {
       if (!envKeys.includes(key)) {
@@ -644,16 +650,16 @@ async function doctor() {
     }
   }
 
-  for (const checklistItem of runtimeHostChecklist({ root, routes: kitRoutes, apiUrl })) {
+  for (const checklistItem of runtimeHostChecklist({ root, routes: manifestRoutes, apiUrl })) {
     checks.push(checklistItem);
   }
 
-  const wiringResult = validateRuntimeWiringForDoctor(root, kitRoutes, failures);
+  const wiringResult = validateRuntimeWiringForDoctor(root, manifestRoutes, failures);
   if (wiringResult.ok) {
     checks.push(`runtime wiring ✓ ${wiringResult.routesChecked} route${wiringResult.routesChecked === 1 ? "" : "s"} reference call_site.base_url_env from code_refs`);
   }
 
-  const routeForProxyPing = kitRoutes.find((route) => route.routeId)?.routeId;
+  const routeForProxyPing = manifestRoutes.find((route) => route.routeId)?.routeId;
   const proxyResult = await verifyProxyPingForDoctor({
     apiUrl,
     apiKey: process.env.BENCHROUTER_API_KEY,
@@ -718,56 +724,29 @@ async function fetchModelIds(apiUrl) {
   return ids;
 }
 
-function loadKitStateRoutesForDoctor(kitStatePath, failures) {
+function inspectKitStateForDoctor(kitStatePath, failures) {
   if (!existsSync(kitStatePath)) {
-    return [];
+    return;
   }
   let kitState;
   try {
     kitState = JSON.parse(readFileSync(kitStatePath, "utf8"));
   } catch (error) {
     failures.push(`.benchrouter/.kit-state.json is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`);
-    return [];
+    return;
   }
-  const rawRoutes = Array.isArray(kitState?.routes) ? kitState.routes : [];
-  return rawRoutes.map((route, index) => normalizeKitStateRouteForDoctor(route, index, failures)).filter(Boolean);
+  if (Object.hasOwn(kitState ?? {}, "routes")) {
+    failures.push(".benchrouter/.kit-state.json contains obsolete route declarations. benchrouter.yml is canonical; run benchrouter upgrade to remove obsolete state.");
+  }
 }
 
-function normalizeKitStateRouteForDoctor(route, index, failures) {
-  if (!route || typeof route !== "object" || Array.isArray(route)) {
-    failures.push(`.benchrouter/.kit-state.json routes[${index}] must be an object`);
-    return null;
-  }
-  const routeId = typeof route.route_id === "string" ? route.route_id.trim() : "";
-  const slug = typeof route.route_slug === "string" && route.route_slug.trim().length > 0 ? route.route_slug.trim() : routeId;
-  if (!routeId) {
-    failures.push(`.benchrouter/.kit-state.json routes[${index}].route_id is required`);
-    return null;
-  }
-  const token = routeFileToken(slug || routeId);
-  return {
-    routeId,
-    slug,
-    scorerPath: typeof route.scorer_path === "string" && route.scorer_path.trim().length > 0 ? route.scorer_path.trim() : `.benchrouter/scorer.${token}.js`,
-    casesPath: typeof route.cases_path === "string" && route.cases_path.trim().length > 0 ? route.cases_path.trim() : `.benchrouter/cases.${token}.json`,
-    codeRefs: Array.isArray(route.code_refs) ? route.code_refs.filter((ref) => typeof ref === "string" && ref.length > 0) : [],
-    callSiteBaseUrlEnv: typeof route.base_url_env === "string" ? route.base_url_env.trim() : ""
-  };
-}
-
-function discoverRouteFilesFromKitRoutes(routes, root) {
+function discoverRouteFilesFromManifest(routes, root) {
   return routes.map((route) => ({
-    token: routeFileToken(route.slug || route.routeId),
     scorerPath: path.join(root, route.scorerPath),
     scorerRelPath: route.scorerPath,
     casesPath: path.join(root, route.casesPath),
-    casesRelPath: route.casesPath,
-    kitCasesEntry: null
+    casesRelPath: route.casesPath
   }));
-}
-
-function routeFileToken(routeSlug) {
-  return String(routeSlug).split("/").join("__");
 }
 
 function validateCasesForDoctor(casesPath, relPath, failures) {
@@ -829,7 +808,7 @@ function parseJson(text) {
 function validateRuntimeWiringForDoctor(root, routes, failures) {
   const routeEntries = routes.filter((route) => route.routeId || route.slug);
   if (routeEntries.length === 0) {
-    failures.push("runtime wiring: .benchrouter/.kit-state.json has no routes to verify");
+    failures.push("runtime wiring: .benchrouter/benchrouter.yml has no routes to verify");
     return { ok: false, routesChecked: 0 };
   }
 
@@ -971,7 +950,7 @@ async function verifyProxyPingForDoctor({ apiUrl, apiKey, routeId, failures }) {
     return { ok: false, skipped: true, reason: "no BENCHROUTER_API_KEY in environment; live proxy ping not run" };
   }
   if (!routeId) {
-    failures.push("proxy ping route not found: .benchrouter/.kit-state.json has no route_id to test");
+    failures.push("proxy ping route not found: .benchrouter/benchrouter.yml has no route_id to test");
     return { ok: false };
   }
 
@@ -1347,7 +1326,8 @@ Multiple routes (paired in order; first triple is primary):
     --route-id product/route-b --name "Route B" --incumbent-model provider/model-b
 
 Routes share one product. Pass repeated route triples during init; the generated
-.benchrouter/.kit-state.json is the kit's route index.
+.benchrouter/benchrouter.yml is the single route declaration. Kit state stores
+generated-file bookkeeping only.
 
 Options:
   --repo owner/repo
@@ -1382,10 +1362,11 @@ Options:
 
 The upgrade flow previews the planned changes (without consuming the single-use
 upgrade token), prompts for confirmation, then applies. Use --yes to skip the
-prompt. Upgrade preserves the existing .benchrouter/benchrouter.yml and full
-.benchrouter/.kit-state.json route index. It updates only generated files, the
-kit version, and generated-file hashes. Missing or invalid kit state requires
-init/re-onboarding.
+prompt. Upgrade preserves the existing .benchrouter/benchrouter.yml byte-for-byte
+and preserves all route-owned assets. It replaces only generic generated engines and
+README content. It removes obsolete route declarations from kit state, then
+updates the kit version and generated-file hashes. Missing or invalid kit state
+requires init/re-onboarding.
 
 Options:
   --upgrade-token <token>  Single-use token from the dashboard "Upgrade BenchRouter kit" banner. Falls back to BENCHROUTER_UPGRADE_TOKEN.
