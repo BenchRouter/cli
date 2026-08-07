@@ -238,6 +238,16 @@ export const adminPaths = {
     label: "admin catalog refresh-report",
     body: {}
   }),
+  /**
+   * POST /v1/admin/catalog/drain-outbox — bounded operator recovery for the
+   * durable catalog outbox. The server default and maximum are both 25.
+   */
+  catalogDrainOutbox: (limit) => ({
+    method: "POST",
+    path: "/v1/admin/catalog/drain-outbox",
+    label: "admin catalog drain-outbox",
+    body: limit === undefined ? {} : { limit }
+  }),
   /** GET /v1/admin/model-id-maps — canonical to provider model-id pairs. */
   modelIdMaps: () => ({
     method: "GET",

@@ -245,6 +245,13 @@ test("newly wired admin routes build the exact documented request", () => {
   // Report-only, but the service only accepts POST here.
   assert.equal(adminPaths.catalogRefreshReport().method, "POST");
   assert.equal(adminPaths.catalogRefreshReport().path, "/v1/admin/catalog/refresh-report");
+  assert.deepEqual(adminPaths.catalogDrainOutbox(), {
+    method: "POST",
+    path: "/v1/admin/catalog/drain-outbox",
+    label: "admin catalog drain-outbox",
+    body: {}
+  });
+  assert.deepEqual(adminPaths.catalogDrainOutbox(12).body, { limit: 12 });
   assert.deepEqual(adminPaths.modelIdMaps(), {
     method: "GET",
     path: "/v1/admin/model-id-maps",
@@ -384,6 +391,29 @@ test("mutating commands refuse JSON mode without --yes before building a request
   }
 });
 
+test("catalog outbox drain validates its bounded limit before authentication", async () => {
+  const missingValue = await runCli([
+    "admin", "catalog", "drain-outbox", "--limit", "--admin-token", "bradm_recorded", "--yes"
+  ]);
+  assert.equal(missingValue.status, 1);
+  assert.match(missingValue.stderr, /--limit requires a value from 1 to 25/);
+
+  for (const limit of ["0", "26", "1.5", "not-a-number"]) {
+    const result = await runCli([
+      "admin", "catalog", "drain-outbox", "--limit", limit,
+      "--admin-token", "bradm_recorded", "--yes"
+    ]);
+    assert.equal(result.status, 1, limit);
+    assert.match(result.stderr, /--limit must be an integer from 1 to 25/, limit);
+  }
+
+  const confirmation = await runCli([
+    "admin", "catalog", "drain-outbox", "--admin-token", "bradm_recorded", "--json"
+  ]);
+  assert.equal(confirmation.status, 1);
+  assert.match(confirmation.stderr, /JSON mode requires --yes/);
+});
+
 test("token namespaces stay strict across every control command group", async () => {
   const admin = await runCli(["account", "show", "--account-token", "bradm_wrong_scope"]);
   assert.equal(admin.status, 1);
@@ -408,6 +438,7 @@ test("--help resolves to the deepest matching command and never sends a request"
   assert.equal(resolveControlUsageName(["admin", "catalog", "mappings", "resolve"]), "admin catalog mappings");
   assert.equal(resolveControlUsageName(["admin", "catalog", "observations", "add"]), "admin catalog observations");
   assert.equal(resolveControlUsageName(["admin", "catalog", "refresh-report"]), "admin catalog");
+  assert.equal(resolveControlUsageName(["admin", "catalog", "drain-outbox"]), "admin catalog drain-outbox");
   assert.equal(resolveControlUsageName(["admin", "keys", "list"]), "admin keys");
   assert.equal(resolveControlUsageName(["setup", "create"]), "setup create");
   assert.equal(resolveControlUsageName(["setup", "session", "show", "s_1"]), "setup session show");

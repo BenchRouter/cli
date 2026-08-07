@@ -534,6 +534,21 @@ export function renderAdminCatalogRefreshReport(body) {
 }
 
 /**
+ * POST /v1/admin/catalog/drain-outbox returns one bounded drain result. Counts
+ * describe completed work and the durable backlog that remains for later runs.
+ */
+export function renderAdminCatalogDrainOutbox(body) {
+  printLines([
+    `Catalog work selected: ${body.selected ?? "?"} across ${body.batches ?? "?"} batch(es)`,
+    `Published: ${body.published ?? "?"}; scheduled: ${body.scheduled ?? "?"}; no-op: ${body.noop ?? "?"}`,
+    `Deferred: ${body.deferred ?? "?"}; failed: ${body.failed ?? "?"}`,
+    `Budget exhausted: ${body.budget_exhausted === true ? "yes" : "no"}`,
+    `Remaining backlog: ${body.remaining_outbox ?? "?"} outbox event(s); ` +
+      `${body.remaining_eval_requests ?? "?"} eval request(s)`
+  ]);
+}
+
+/**
  * POST .../refresh-preview returns
  * { ok, outcome: { outcome, reason?, route_key, result_set_id }, plan: { result_set_id, models } }.
  */

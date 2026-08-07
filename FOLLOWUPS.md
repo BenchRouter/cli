@@ -59,8 +59,9 @@ built, or proof that still needs the service worktree.
   `{ ok: true, mappings: [...] }`. These envelopes differ; do not assume one.
 - `POST /v1/admin/catalog/refresh-report` is report-only (`writes_performed:
   false`), so the CLI does not ask for confirmation even though it is a POST.
-- Catalog mutations return `catalog_automation_report_only` (409) while the
-  automation rollout is frozen. That is a server state, not a CLI failure.
+- `POST /v1/admin/catalog/drain-outbox` is the bounded recovery mutation. It
+  accepts a limit from 1 to 25 and reports the remaining durable backlog. It
+  uses the existing `bradm_` admin boundary; `br_ctrl_` is intentionally denied.
 - Dashboard route keys stay slash-separated in the path. The service matches
   `/v1/dashboard/routes/([^/]+/[^/]+)/models/(.+)`, so percent-encoding the route
   key breaks the match. Repo-read paths percent-encode the route key instead.

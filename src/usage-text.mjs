@@ -292,7 +292,7 @@ Options:
 ${ADMIN_FLAGS}`,
   admin: `Usage:
   benchrouter admin providers list|key set|key delete|smoke|disable|enable
-  benchrouter admin catalog show|activity|model-maps|refresh-report|rebuild
+  benchrouter admin catalog show|activity|model-maps|refresh-report|drain-outbox|rebuild
   benchrouter admin catalog observations [add]|mappings [list|resolve|ignore]
   benchrouter admin keys list|revoke
   benchrouter admin token save --admin-token bradm_...
@@ -316,6 +316,7 @@ ${ADMIN_FLAGS}  --yes, -y
   "admin catalog": `Usage:
   benchrouter admin catalog show|activity|model-maps|rebuild
   benchrouter admin catalog refresh-report
+  benchrouter admin catalog drain-outbox [--limit 1..25] [--yes]
   benchrouter admin catalog observations [--source <s>] [--canonical-id <id>] [--limit <n>]
   benchrouter admin catalog observations add --source <s> --subject-kind <k> [--payload-json '{}']
   benchrouter admin catalog mappings [list]
@@ -325,9 +326,23 @@ ${ADMIN_FLAGS}  --yes, -y
 refresh-report is POST /v1/admin/catalog/refresh-report. It is report-only:
 the server fetches upstream state and performs no writes.
 
+drain-outbox publishes a bounded amount of durable catalog work. It requires a
+bradm_ admin bearer and confirmation. The default and maximum limit are 25.
+
 Options:
 ${ADMIN_FLAGS}  --yes, -y
 `,
+  "admin catalog drain-outbox": `Usage:
+  benchrouter admin catalog drain-outbox [--limit 1..25] [--yes] [--json]
+
+Publishes a bounded amount of durable catalog outbox work. The response reports
+completed work, failures, budget exhaustion, and the remaining backlog. Repeat
+the command when work remains. It never accepts a br_ctrl_ account token.
+
+Options:
+  --limit <n>                 Integer from 1 to 25. Defaults to 25.
+  --yes, -y                   Required with --json; skips confirmation.
+${ADMIN_FLAGS}`,
   "admin catalog observations": `Usage:
   benchrouter admin catalog observations [--source <s>] [--subject-kind <k>] [--canonical-id <id>] [--raw-source-id <id>] [--proposal-id <id>] [--limit <n>]
   benchrouter admin catalog observations add --source lab_notice|manual_admin --subject-kind model|target|provider|proposal [options]

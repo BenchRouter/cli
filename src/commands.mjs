@@ -471,7 +471,7 @@ async function runAdminCatalog(ctx) {
     return ctx.usage(
       1,
       "admin catalog",
-      "Missing subcommand. Try: show | activity | observations | mappings | model-maps | refresh-report | rebuild"
+      "Missing subcommand. Try: show | activity | observations | mappings | model-maps | refresh-report | drain-outbox | rebuild"
     );
   }
   if (action === "show") {
@@ -493,6 +493,22 @@ async function runAdminCatalog(ctx) {
     // needs no confirmation even though it is a POST.
     const body = await adminRequest(ctx, adminPaths.catalogRefreshReport());
     return emit(ctx, body, () => render.renderAdminCatalogRefreshReport(body));
+  }
+  if (action === "drain-outbox") {
+    const limitArg = ctx.stringArg("limit");
+    if (ctx.args.limit !== undefined && limitArg === undefined) {
+      return ctx.usage(1, "admin catalog drain-outbox", "--limit requires a value from 1 to 25.");
+    }
+    const limit = limitArg === undefined ? 25 : Number(limitArg);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 25) {
+      return ctx.usage(1, "admin catalog drain-outbox", "--limit must be an integer from 1 to 25.");
+    }
+    await requireMutationConfirmation(
+      ctx,
+      render.mutationSummary("Drain durable catalog work", `limit=${limit}`)
+    );
+    const body = await adminRequest(ctx, adminPaths.catalogDrainOutbox(limit));
+    return emit(ctx, body, () => render.renderAdminCatalogDrainOutbox(body));
   }
   if (action === "rebuild") {
     await requireMutationConfirmation(ctx, "Rebuild catalog snapshot");

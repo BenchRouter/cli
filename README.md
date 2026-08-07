@@ -71,7 +71,7 @@ benchrouter evals refresh-preview <route-key> <result-set-id> [--model <id>]
 benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
 benchrouter proposals list|approve|reject [--admin-token bradm_...]
 benchrouter admin providers|catalog|keys|token [--admin-token bradm_...]
-benchrouter admin catalog show|activity|model-maps|refresh-report|rebuild
+benchrouter admin catalog show|activity|model-maps|refresh-report|drain-outbox|rebuild
 benchrouter admin catalog observations [add]|mappings [list|resolve|ignore]
 benchrouter admin keys list|revoke [--admin-token bradm_...]
 ```
@@ -118,6 +118,10 @@ set must be a PR preview; pass `--model` to refresh one model only.
 
 `admin catalog refresh-report` is `POST`, not `GET`. It is report-only: the
 server fetches upstream state and performs no writes.
+`admin catalog drain-outbox [--limit 1..25]` publishes a bounded amount of
+durable catalog work and reports both completed work and the remaining backlog.
+It is an admin mutation, so it requires a `bradm_` token and confirmation (or
+`--yes`). A `br_ctrl_` account token cannot authorize it.
 `admin catalog observations add` records a manual notice; pass structured fields
 through `--payload-json`, which must parse to a JSON object.
 
