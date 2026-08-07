@@ -213,12 +213,14 @@ async function upgrade() {
     usage(1, "upgrade", "Missing --route-id.");
   }
 
-  // Validate bookkeeping before previewing or consuming a single-use token.
+  // Validate canonical route truth and bookkeeping before previewing or
+  // consuming a single-use token.
   let existingKitState;
   try {
+    readRouteManifest(outputDir);
     existingKitState = readUpgradeKitState(outputDir);
   } catch (error) {
-    fail(error instanceof Error ? error.message : "Could not read the existing BenchRouter kit state.");
+    fail(error instanceof Error ? error.message : "Could not validate the existing BenchRouter kit.");
   }
 
   // 1. Preview — does NOT consume the upgrade token. Preview only supports the
@@ -269,9 +271,10 @@ async function upgrade() {
   //    must succeed first. Re-derive the packet server-side; do NOT reuse the
   //    preview response as if it were authoritative.
   try {
+    readRouteManifest(outputDir);
     readUpgradeKitState(outputDir);
   } catch (error) {
-    fail(error instanceof Error ? error.message : "Could not read the existing BenchRouter kit state.");
+    fail(error instanceof Error ? error.message : "Could not validate the existing BenchRouter kit.");
   }
   const applied = await fetchUpgradePacket({
     apiUrl,

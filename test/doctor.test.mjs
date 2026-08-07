@@ -455,9 +455,124 @@ routes:
   assert.equal(events.at(-1), "updated .benchrouter/.kit-state.json");
 });
 
+test("upgrade validates canonical YAML before any preview or token consumption", async (t) => {
+  const root = await createUpgradeTarget(t, { writeManifest: false });
+  const originalState = await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8");
+  const server = await startFixtureProxy(t, {
+    status: 200,
+    body: upgradePacketBody(exactUpgradeFiles())
+  });
+  const args = [
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
+  ];
+
+  const missing = await runCli(args, root);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /benchrouter\.yml is not valid YAML.*ENOENT/);
+  assert.equal(server.requests.length, 0);
+  assert.equal(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"), originalState);
+
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), "routes:\n  - [broken\n");
+  const invalid = await runCli(args, root);
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /benchrouter\.yml is not valid YAML/);
+  assert.equal(server.requests.length, 0);
+  assert.equal(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"), originalState);
+});
+
+test("upgrade revalidates canonical YAML immediately before apply", async (t) => {
+  const root = await createUpgradeTarget(t);
+  const statePath = path.join(root, ".benchrouter/.kit-state.json");
+  const originalState = await readFile(statePath, "utf8");
+  const server = await startFixtureProxy(t, {
+    status: 200,
+    body: upgradePacketBody(exactUpgradeFiles()),
+    async onRequest({ requestIndex }) {
+      if (requestIndex === 0) {
+        await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), "routes:\n  - [broken\n");
+      }
+    }
+  });
+
+  const result = await runCli([
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
+  ], root);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /benchrouter\.yml is not valid YAML/);
+  assert.equal(server.requests.length, 1);
+  assert.equal(await readFile(statePath, "utf8"), originalState);
+  assert.equal(Object.hasOwn(JSON.parse(originalState), "routes"), true);
+});
+
+test("upgrade rejects legacy, subset, and duplicate generated packets before writes", async (t) => {
+  const exact = exactUpgradeFiles();
+  const cases = [
+    ["legacy three-file packet", exact.filter((file) => [
+      ".github/workflows/benchrouter-evals.yml",
+      ".benchrouter/upload-results.mjs",
+      ".benchrouter/README.md"
+    ].includes(file.path))],
+    ["five-file subset", exact.slice(0, 5)],
+    ["duplicate path", [...exact.slice(0, 5), exact[0]]]
+  ];
+
+  for (const [label, files] of cases) {
+    await t.test(label, async (subtest) => {
+      const root = await createUpgradeTarget(subtest);
+      const originalState = await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8");
+      const server = await startFixtureProxy(subtest, {
+        status: 200,
+        body: upgradePacketBody(files)
+      });
+      const result = await runCli([
+        "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+        "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+      ], root);
+
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /must contain exactly one of each generated path/);
+      assert.equal(server.requests.length, 1);
+      assert.equal(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"), originalState);
+      assert.equal(Object.hasOwn(JSON.parse(originalState), "routes"), true);
+    });
+  }
+});
+
+test("upgrade removes state routes only after valid YAML and an exact six-file apply", async (t) => {
+  const root = await createUpgradeTarget(t);
+  const yamlBefore = await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8");
+  const files = exactUpgradeFiles();
+  const server = await startFixtureProxy(t, {
+    status: 200,
+    body: upgradePacketBody(files)
+  });
+
+  const result = await runCli([
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
+  ], root);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(server.requests.length, 2);
+  assert.match(server.requests[0].url, /\/v1\/setup\/upgrade-packet\/preview$/);
+  assert.match(server.requests[1].url, /\/v1\/control\/setup-packet\/upgrade$/);
+  const state = JSON.parse(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"));
+  assert.equal(Object.hasOwn(state, "routes"), false);
+  assert.equal(state.version, "0.0.10");
+  assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"), yamlBefore);
+  for (const file of files) {
+    assert.equal(await readFile(path.join(root, file.path), "utf8"), file.content);
+  }
+});
+
 test("upgrade fails closed before HTTP when repository kit state is missing or invalid", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-upgrade-invalid-state-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifestYaml());
   const args = [
     "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", "http://127.0.0.1:1", "--output-dir", root, "--yes"
@@ -468,7 +583,6 @@ test("upgrade fails closed before HTTP when repository kit state is missing or i
   assert.match(missing.stderr, /Cannot upgrade without \.benchrouter\/\.kit-state\.json/);
   assert.match(missing.stderr, /benchrouter init/);
 
-  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
   await writeFile(path.join(root, ".benchrouter/.kit-state.json"), "{broken json\n");
   const invalid = await runCli(args, root);
   assert.equal(invalid.status, 1);
@@ -541,6 +655,51 @@ test("doctor reports proxy ping failure classes", async (t) => {
     assert.match(result.stderr, /proxy ping network:/);
   });
 });
+
+async function createUpgradeTarget(t, { writeManifest = true } = {}) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-upgrade-target-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  if (writeManifest) {
+    await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifestYaml());
+  }
+  await writeFile(
+    path.join(root, ".benchrouter/.kit-state.json"),
+    `${JSON.stringify({
+      version: "0.0.9",
+      generated_by: "benchrouter.setup_packet.v1",
+      product: { slug: "app", default_branch: "main", repo_full_name: "example/app" },
+      routes: [{ route_id: routeId, incumbent_model: "wrong/old-model" }],
+      files: []
+    }, null, 2)}\n`
+  );
+  return root;
+}
+
+function exactUpgradeFiles() {
+  return [
+    generatedUpgradeFile(".github/workflows/benchrouter-evals.yml", "name: BenchRouter Evals\n"),
+    generatedUpgradeFile(".benchrouter/upload-results.mjs", "// generic upload helper\n"),
+    generatedUpgradeFile(".benchrouter/benchrouter-eval.mjs", "// generic eval runner\n"),
+    generatedUpgradeFile(".benchrouter/benchrouter-calibrate.mjs", "// generic calibration runner\n"),
+    generatedUpgradeFile(".benchrouter/sidecar.mjs", "// generic capture sidecar\n"),
+    generatedUpgradeFile(".benchrouter/README.md", "# BenchRouter\n")
+  ];
+}
+
+function generatedUpgradeFile(filePath, content) {
+  return { path: filePath, content, sha256: sha256(content) };
+}
+
+function upgradePacketBody(files) {
+  return {
+    ok: true,
+    repo_full_name: "example/app",
+    route_id: routeId,
+    setup_kit_version: "0.0.10",
+    files
+  };
+}
 
 async function createTargetRepo(t, { codeRefText }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-doctor-"));
@@ -722,6 +881,7 @@ async function startFixtureProxy(t, responseFixture) {
       contentType: request.headers["content-type"],
       body: JSON.parse(rawBody)
     });
+    await responseFixture.onRequest?.({ requestIndex: requests.length - 1, request, rawBody });
 
     const responseBody = JSON.stringify(responseFixture.body);
     response.writeHead(responseFixture.status, {

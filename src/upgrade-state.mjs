@@ -118,7 +118,7 @@ function validateUpgradeFiles(files) {
   if (!Array.isArray(files)) {
     throw new Error("BenchRouter upgrade response has no generated files.");
   }
-  return files.map((file, index) => {
+  const validated = files.map((file, index) => {
     if (!file || typeof file !== "object" || Array.isArray(file)) {
       throw new Error(`BenchRouter upgrade response files[${index}] must be an object.`);
     }
@@ -143,6 +143,24 @@ function validateUpgradeFiles(files) {
     }
     return file;
   });
+  const counts = new Map();
+  for (const file of validated) {
+    counts.set(file.path, (counts.get(file.path) ?? 0) + 1);
+  }
+  const duplicates = [...counts.entries()]
+    .filter(([, count]) => count !== 1)
+    .map(([filePath]) => filePath)
+    .sort();
+  const missing = [...UPGRADE_GENERATED_PATHS]
+    .filter((filePath) => !counts.has(filePath))
+    .sort();
+  if (duplicates.length > 0 || missing.length > 0 || validated.length !== UPGRADE_GENERATED_PATHS.size) {
+    throw new Error(
+      "BenchRouter upgrade response must contain exactly one of each generated path. " +
+      `Missing: ${missing.join(", ") || "none"}. Duplicates: ${duplicates.join(", ") || "none"}.`
+    );
+  }
+  return validated;
 }
 
 function safeUpgradePath(root, relativePath) {
