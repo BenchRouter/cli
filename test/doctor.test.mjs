@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -129,9 +130,31 @@ test("doctor confirms active BenchRouter Evals workflow from gh", async (t) => {
   assert.match(result.stdout, /BenchRouter Evals uses keyless OIDC/);
 });
 
+test("doctor accepts a local workflow before GitHub registers the first push", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  const ghBin = await createFixtureGh(t);
+  const proxy = await startFixtureProxy(t, {
+    status: 200,
+    headers: { "x-benchrouter-selected-model": fixture.model },
+    body: fixture
+  });
+
+  const result = await runCli(["doctor", "--output-dir", root, "--api-url", proxy.url, "--repo", "example/app"], root, {
+    BENCHROUTER_API_KEY: "br_test_fixture",
+    GH_WORKFLOW_MISSING: "1",
+    PATH: `${ghBin}${path.delimiter}${process.env.PATH ?? ""}`
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /GitHub workflow not registered yet; this is expected before the generated workflow is pushed/);
+  assert.match(result.stdout, /BenchRouter doctor passed/);
+});
+
 test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only env example", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-init-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, ".benchrouter/sidecar.mjs"), "// stale generated sidecar\n");
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ scripts: {} }, null, 2)}\n`);
 
   const setupServer = await startFixtureProxy(t, {
@@ -151,6 +174,10 @@ test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only e
           {
             path: ".benchrouter/benchrouter.yml",
             content: "version: 1\n"
+          },
+          {
+            path: ".benchrouter/sidecar.mjs",
+            content: "// current generated sidecar\n"
           }
         ],
         package_json: {
@@ -189,6 +216,7 @@ test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only e
       "OPENAI_BASE_URL",
       "--code-ref",
       "src/llm.js",
+      "--force",
       "--api-url",
       setupServer.url,
       "--output-dir",
@@ -205,18 +233,152 @@ test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only e
   assert.match(result.stdout, /call-site patch, eval evidence, scorer, calibration, and env-var install/);
   assert.match(result.stdout, /installing runtime BENCHROUTER_API_KEY in the app host/);
   assert.match(result.stdout, /BenchRouter Evals uses GitHub OIDC/);
+  assert.match(result.stdout, /npx --yes --package @benchrouter\/cli benchrouter doctor/);
+  assert.equal(await readFile(path.join(root, ".benchrouter/sidecar.mjs"), "utf8"), "// current generated sidecar\n");
 
   const envExample = await readFile(path.join(root, ".env.example"), "utf8");
   assert.match(envExample, /^BENCHROUTER_API_KEY= # runtime key/m);
   assert.match(envExample, /^OPENAI_BASE_URL=https:\/\/api\.benchrouter\.com\/v1 # point this call site's LLM base URL at BenchRouter/m);
   assert.doesNotMatch(envExample, /BENCHROUTER_EVAL_API_KEY/);
   assert.doesNotMatch(envExample, /BENCHROUTER_EVAL_RUN_ID/);
-  assert.equal(setupServer.requests.length, 1);
+  assert.equal(setupServer.requests.length, 2);
   assert.equal(setupServer.requests[0].authorization, "Bearer br_setup_fixture");
-  assert.equal(setupServer.requests[0].body.route.provider_id, "openai");
-  assert.equal(setupServer.requests[0].body.route.provider_ref, "gpt-4o-mini-2024-07-18");
-  assert.equal(setupServer.requests[0].body.route.base_url_env, "OPENAI_BASE_URL");
-  assert.deepEqual(setupServer.requests[0].body.route.code_refs, ["src/llm.js"]);
+  assert.equal(setupServer.requests[0].body.dry_run, true);
+  assert.equal(Object.hasOwn(setupServer.requests[1].body, "dry_run"), false);
+  assert.equal(setupServer.requests[1].body.route.provider_id, "openai");
+  assert.equal(setupServer.requests[1].body.route.provider_ref, "gpt-4o-mini-2024-07-18");
+  assert.equal(setupServer.requests[1].body.route.base_url_env, "OPENAI_BASE_URL");
+  assert.deepEqual(setupServer.requests[1].body.route.code_refs, ["src/llm.js"]);
+});
+
+test("add-route init merges only requested preview routes and preserves local manifest config", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-add-route-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  const existingManifest = `# local manifest comment
+version: 1
+product:
+  slug: app
+  repo: example/app
+  default_branch: custom-release # preserve branch comment
+custom_local_config:
+  owner: product-team
+routes:
+  - id: chat
+    route_id: app/chat
+    name: Local Chat Name
+    code_refs: [src/local-chat.ts]
+    call_site:
+      base_url_env: LOCAL_CHAT_BASE_URL
+    seed:
+      incumbent_model: local/incumbent
+    eval_pack:
+      workflow: .github/workflows/benchrouter-evals.yml
+      scorer: .benchrouter/scorer.chat.js
+      result_schema: benchrouter.result.v1
+      case_refs: [.benchrouter/cases.chat.json]
+`;
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), existingManifest);
+  await writeFile(path.join(root, "package.json"), '{"scripts":{}}\n');
+  const previewManifest = `version: 1
+product:
+  slug: app
+  repo: example/app
+  default_branch: main
+routes:
+  - id: chat
+    route_id: app/chat
+    name: Server Reconstructed Chat
+    code_refs: []
+    call_site: { base_url_env: WRONG_BASE_URL }
+    seed: { incumbent_model: wrong/model }
+    eval_pack: { workflow: wrong, scorer: wrong, result_schema: wrong, case_refs: [wrong] }
+  - id: summarize
+    route_id: app/summarize
+    name: Summarize
+    code_refs: [src/summarize.ts]
+    call_site: { base_url_env: SUMMARIZE_BASE_URL }
+    seed: { incumbent_model: openai/gpt-5.4-nano }
+    eval_pack: { workflow: .github/workflows/benchrouter-evals.yml, scorer: .benchrouter/scorer.summarize.js, result_schema: benchrouter.result.v1, case_refs: [.benchrouter/cases.summarize.json] }
+  - id: classify
+    route_id: app/classify
+    name: Classify
+    code_refs: [src/classify.ts]
+    call_site: { base_url_env: CLASSIFY_BASE_URL }
+    seed: { incumbent_model: google/gemini-2.5-flash-lite }
+    eval_pack: { workflow: .github/workflows/benchrouter-evals.yml, scorer: .benchrouter/scorer.classify.js, result_schema: benchrouter.result.v1, case_refs: [.benchrouter/cases.classify.json] }
+`;
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: {
+      repo_full_name: "example/app",
+      setup_packet: {
+        files: [
+          { path: ".benchrouter/benchrouter.yml", content: previewManifest },
+          { path: ".benchrouter/scorer.summarize.js", content: "export const summarize = true;\n" },
+          { path: ".benchrouter/scorer.classify.js", content: "export const classify = true;\n" }
+        ],
+        package_json: { scripts: {}, dev_dependencies: [] },
+        runtime_env: {},
+        setup_api_keys: { production: { key: "br_live_add_route" } }
+      }
+    }
+  });
+  const command = [
+    "init", "--setup-key", "br_setup_add_route", "--repo", "example/app",
+    "--route-id", "app/summarize", "--name", "Summarize", "--incumbent-model", "openai/gpt-5.4-nano",
+    "--route-id", "app/classify", "--name", "Classify", "--incumbent-model", "google/gemini-2.5-flash-lite",
+    "--api-url", setupServer.url, "--output-dir", root
+  ];
+
+  const first = await runCli(command, root);
+  assert.equal(first.status, 0, first.stderr);
+  const merged = await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8");
+  assert.match(merged, /# local manifest comment/);
+  assert.match(merged, /default_branch: custom-release # preserve branch comment/);
+  assert.match(merged, /custom_local_config:\n  owner: product-team/);
+  assert.match(merged, /name: Local Chat Name/);
+  assert.match(merged, /LOCAL_CHAT_BASE_URL/);
+  assert.doesNotMatch(merged, /Server Reconstructed Chat|WRONG_BASE_URL|wrong\/model/);
+  assert.equal((merged.match(/route_id: app\/chat/g) ?? []).length, 1);
+  assert.equal((merged.match(/route_id: app\/summarize/g) ?? []).length, 1);
+  assert.equal((merged.match(/route_id: app\/classify/g) ?? []).length, 1);
+  assert.equal(setupServer.requests.length, 2);
+  assert.equal(setupServer.requests[0].body.dry_run, true);
+  assert.equal(Object.hasOwn(setupServer.requests[1].body, "dry_run"), false);
+  assert.equal(setupServer.requests[1].body.routes.length, 1);
+
+  const second = await runCli(command, root);
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"), merged);
+  assert.equal(setupServer.requests.length, 4);
+});
+
+test("init does not commit the server packet before local file application succeeds", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-local-write-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, ".benchrouter"), "blocks generated directory creation\n");
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: {
+      repo_full_name: "example/app",
+      setup_packet: {
+        files: [{ path: ".benchrouter/README.md", content: "# BenchRouter\n" }],
+        package_json: { scripts: {}, dev_dependencies: [] },
+        runtime_env: {}
+      }
+    }
+  });
+
+  const result = await runCli([
+    "init", "--setup-key", "br_setup_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
+    "--api-url", setupServer.url, "--output-dir", root
+  ], root);
+
+  assert.equal(result.status, 1);
+  assert.equal(setupServer.requests.length, 1);
+  assert.equal(setupServer.requests[0].body.dry_run, true);
 });
 
 test("init requires direct-provider identity flags together", async (t) => {
@@ -246,7 +408,7 @@ test("init requires direct-provider identity flags together", async (t) => {
   assert.match(result.stderr, /^Pass --provider-id and --provider-ref together\./);
 });
 
-test("init gives an actionable setup-key expiry error", async (t) => {
+test("init gives an actionable initial-setup key expiry error", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-expired-setup-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const setupServer = await startFixtureProxy(t, {
@@ -281,9 +443,95 @@ test("init gives an actionable setup-key expiry error", async (t) => {
   assert.equal(result.status, 1);
   assert.equal(
     result.stderr,
-    "Setup key expired. Refresh it at https://benchrouter.com/setup/new and run init again.\n"
+    "Setup access expired. Refresh it at https://benchrouter.com/cli and run init again.\n"
   );
   assert.equal(setupServer.requests.length, 1);
+});
+
+test("init sends expired add-route setup scope back to the add-route flow", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-expired-add-route-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), "version: 1\n");
+  const setupServer = await startFixtureProxy(t, {
+    status: 401,
+    body: {
+      error: "setup_scope_expired",
+      message: "BenchRouter setup access has expired"
+    }
+  });
+
+  const result = await runCli(
+    [
+      "init",
+      "--setup-key",
+      "br_setup_expired_fixture",
+      "--route-id",
+      routeId,
+      "--name",
+      "Chat",
+      "--incumbent-model",
+      "openai/gpt-4o-mini",
+      "--api-url",
+      setupServer.url,
+      "--output-dir",
+      root
+    ],
+    root
+  );
+
+  assert.equal(result.status, 1);
+  assert.equal(
+    result.stderr,
+    "Setup access expired. Refresh it at https://benchrouter.com/cli/new and run init again.\n"
+  );
+  assert.equal(setupServer.requests.length, 1);
+});
+
+test("init stops before local writes when preview reports the one-time runtime key was already provisioned", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-provisioned-key-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: {
+      repo_full_name: "example/app",
+      setup_packet: {
+        keys_already_provisioned: true,
+        rotate_url: "https://benchrouter.com/account",
+        files: [{ path: ".benchrouter/README.md", content: "# must not be written\n" }],
+        package_json: { scripts: {}, dev_dependencies: [] },
+        runtime_env: {}
+      }
+    }
+  });
+
+  const result = await runCli(
+    [
+      "init",
+      "--setup-key",
+      "br_setup_used_fixture",
+      "--route-id",
+      routeId,
+      "--name",
+      "Chat",
+      "--incumbent-model",
+      "openai/gpt-4o-mini",
+      "--api-url",
+      setupServer.url,
+      "--output-dir",
+      root
+    ],
+    root
+  );
+
+  assert.equal(result.status, 1);
+  assert.equal(
+    result.stderr,
+    "This setup session already provisioned its one-time runtime key. Create a replacement key at https://benchrouter.com/account, then start a new setup session and run init again.\n"
+  );
+  assert.equal(existsSync(path.join(root, ".benchrouter/README.md")), false);
+  assert.equal(setupServer.requests.length, 1);
+  assert.equal(setupServer.requests[0].body.dry_run, true);
 });
 
 test("upgrade removes obsolete state routes while preserving canonical multi-route semantics", async (t) => {
@@ -566,6 +814,7 @@ test("upgrade removes state routes only after valid YAML and an exact six-file a
   for (const file of files) {
     assert.equal(await readFile(path.join(root, file.path), "utf8"), file.content);
   }
+  assert.match(result.stdout, /npx --yes --package @benchrouter\/cli benchrouter doctor --repo example\/app/);
 });
 
 test("upgrade fails closed before HTTP when repository kit state is missing or invalid", async (t) => {
@@ -773,6 +1022,10 @@ async function createFixtureGh(t) {
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "api" && args[1] === "repos/example/app/actions/workflows") {
+  if (process.env.GH_WORKFLOW_MISSING === "1") {
+    process.stdout.write(JSON.stringify({ total_count: 0, workflows: [] }));
+    process.exit(0);
+  }
   process.stdout.write(JSON.stringify({
     total_count: 1,
     workflows: [{
@@ -883,7 +1136,10 @@ async function startFixtureProxy(t, responseFixture) {
     });
     await responseFixture.onRequest?.({ requestIndex: requests.length - 1, request, rawBody });
 
-    const responseBody = JSON.stringify(responseFixture.body);
+    const body = typeof responseFixture.body === "function"
+      ? responseFixture.body({ requestIndex: requests.length - 1, requestBody: requests.at(-1).body })
+      : responseFixture.body;
+    const responseBody = JSON.stringify(body);
     response.writeHead(responseFixture.status, {
       "content-type": "application/json",
       ...(responseFixture.headers ?? {})

@@ -75,7 +75,7 @@ async function fetchRepoJson(apiUrl, pathname, token, label) {
   const body = parseJson(text);
   if (!response.ok) {
     if (["read_scope_expired", "read_token_invalid", "read_token_missing"].includes(body?.error)) {
-      const url = typeof body.authorize_url === "string" ? body.authorize_url : "https://benchrouter.com/setup";
+      const url = typeof body.authorize_url === "string" ? body.authorize_url : "https://benchrouter.com/cli";
       throw new Error(`BenchRouter repo access expired or is invalid. Open ${url} to create a new repo token.`);
     }
     const message = typeof body?.message === "string" ? body.message : text.slice(0, 800);

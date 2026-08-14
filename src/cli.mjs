@@ -4,6 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
+import { isMap, isSeq, parseDocument } from "yaml";
 import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config.mjs";
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
@@ -120,20 +121,30 @@ async function init() {
   const routeName = routeSpecs[0].name;
   const incumbentModel = routeSpecs[0].incumbent_model;
 
-  const packetResponse = await fetchSetupPacket({
+  const recoveryUrl = existsSync(path.join(outputDir, ".benchrouter/benchrouter.yml"))
+    ? "https://benchrouter.com/cli/new"
+    : "https://benchrouter.com/cli";
+  const previewResponse = await fetchSetupPacket({
     apiUrl,
     setupCode,
     repoFullName,
     routeSpecs,
-    dryRun
+    dryRun: true,
+    recoveryUrl
   });
-  const packet = packetResponse.setup_packet;
-  const setupApiKeys = packet.setup_api_keys;
-  const targetRepo = repoFullName ?? packetResponse.repo_full_name;
+  const previewPacket = previewResponse.setup_packet;
+  const targetRepo = repoFullName ?? previewResponse.repo_full_name;
+
+  if (previewPacket.keys_already_provisioned) {
+    const rotateUrl = typeof previewPacket.rotate_url === "string" && previewPacket.rotate_url.length > 0
+      ? previewPacket.rotate_url
+      : "https://benchrouter.com/account";
+    fail(`This setup session already provisioned its one-time runtime key. Create a replacement key at ${rotateUrl}, then start a new setup session and run init again.`);
+  }
 
   if (dryRun) {
     process.stdout.write(`Dry run for ${targetRepo}\n`);
-    for (const file of packet.files) {
+    for (const file of previewPacket.files) {
       process.stdout.write(`would write ${file.path}\n`);
     }
     process.stdout.write("would update package.json scripts/devDependencies when package.json exists\n");
@@ -143,9 +154,20 @@ async function init() {
   }
 
   const writtenPaths = [];
-  for (const file of packet.files) {
+  for (const file of previewPacket.files) {
     const targetPath = safeTargetPath(outputDir, file.path);
     const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
+    if (file.path === ".benchrouter/benchrouter.yml" && previous !== null) {
+      const merged = mergeRequestedRoutesIntoManifest(previous, file.content, routeIds);
+      if (merged === previous) {
+        process.stdout.write(`unchanged ${file.path}\n`);
+      } else {
+        await writeFile(targetPath, merged);
+        process.stdout.write(`updated ${file.path}\n`);
+      }
+      writtenPaths.push(file.path);
+      continue;
+    }
     if (previous === file.content) {
       process.stdout.write(`unchanged ${file.path}\n`);
       writtenPaths.push(file.path);
@@ -163,7 +185,7 @@ async function init() {
 
   const packageJsonPath = path.join(outputDir, "package.json");
   if (existsSync(packageJsonPath)) {
-    const updated = updatePackageJson(packageJsonPath, packet.package_json);
+    const updated = updatePackageJson(packageJsonPath, previewPacket.package_json);
     if (updated) {
       writtenPaths.push("package.json");
       process.stdout.write("updated package.json\n");
@@ -174,18 +196,81 @@ async function init() {
     process.stdout.write("skipped package.json update; no package.json found\n");
   }
 
-  const envUpdated = await updateEnvExample(outputDir, packet.runtime_env);
+  const envUpdated = await updateEnvExample(outputDir, previewPacket.runtime_env);
   process.stdout.write(`${envUpdated ? "updated" : "unchanged"} .env.example\n`);
   if (envUpdated) {
     writtenPaths.push(".env.example");
   }
 
-  printSetupApiKeys(setupApiKeys);
+  const commitResponse = await fetchSetupPacket({
+    apiUrl,
+    setupCode,
+    repoFullName,
+    routeSpecs,
+    dryRun: false,
+    recoveryUrl
+  });
+  const committedPacket = commitResponse.setup_packet;
+  if (committedPacket.keys_already_provisioned) {
+    const rotateUrl = typeof committedPacket.rotate_url === "string" && committedPacket.rotate_url.length > 0
+      ? committedPacket.rotate_url
+      : "https://benchrouter.com/account";
+    fail(`This setup session already provisioned its one-time runtime key. Create a replacement key at ${rotateUrl}, then start a new setup session and run init again.`);
+  }
+  printSetupApiKeys(committedPacket.setup_api_keys);
   await maybeSaveRepoReadToken(setupCode, targetRepo);
   printInitNextSteps();
 
   process.stdout.write("\nSuggested PR body:\n");
   process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }));
+}
+
+function mergeRequestedRoutesIntoManifest(existingSource, previewSource, requestedRouteIds) {
+  const existingDocument = parseDocument(existingSource);
+  const previewDocument = parseDocument(previewSource);
+  if (existingDocument.errors.length > 0) {
+    throw new Error(`.benchrouter/benchrouter.yml is not valid YAML: ${existingDocument.errors[0].message}`);
+  }
+  if (previewDocument.errors.length > 0) {
+    throw new Error(`Preview .benchrouter/benchrouter.yml is not valid YAML: ${previewDocument.errors[0].message}`);
+  }
+
+  const existingRoutes = existingDocument.get("routes", true);
+  const previewRoutes = previewDocument.get("routes", true);
+  if (!isSeq(existingRoutes) || !isSeq(previewRoutes)) {
+    throw new Error("Both the local and preview .benchrouter/benchrouter.yml files must contain a routes sequence.");
+  }
+
+  const requested = new Set(requestedRouteIds);
+  const existingIds = new Set(
+    existingRoutes.items
+      .filter(isMap)
+      .map((route) => route.get("route_id"))
+      .filter((routeId) => typeof routeId === "string")
+  );
+  let changed = false;
+  for (const previewRoute of previewRoutes.items) {
+    if (!isMap(previewRoute)) {
+      continue;
+    }
+    const routeId = previewRoute.get("route_id");
+    if (typeof routeId !== "string" || !requested.has(routeId) || existingIds.has(routeId)) {
+      continue;
+    }
+    existingRoutes.add(existingDocument.createNode(previewRoute.toJSON()));
+    existingIds.add(routeId);
+    changed = true;
+  }
+
+  const missingRequestedRoute = requestedRouteIds.find((routeId) => !existingIds.has(routeId));
+  if (missingRequestedRoute) {
+    throw new Error(`Preview .benchrouter/benchrouter.yml is missing requested route ${missingRequestedRoute}.`);
+  }
+
+  if (!changed) {
+    return existingSource;
+  }
+  return existingDocument.toString();
 }
 
 async function upgrade() {
@@ -300,7 +385,7 @@ async function upgrade() {
 
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Review the diff. benchrouter.yml and route-owned cases, scorers, calibration fixtures, and app files must be unchanged.\n");
-  process.stdout.write(`- Run \`npx @benchrouter/cli doctor --repo ${repoFullName}\`.\n`);
+  process.stdout.write(`- Run \`npx --yes --package @benchrouter/cli benchrouter doctor --repo ${repoFullName}\`.\n`);
   process.stdout.write("- Open a PR titled \"Upgrade BenchRouter kit\".\n");
 }
 
@@ -389,7 +474,7 @@ function printSetupApiKeys(setupApiKeys) {
   }
   process.stdout.write("\nBenchRouter generated a runtime API key. It is shown once:\n");
   process.stdout.write(`- Runtime/host BENCHROUTER_API_KEY: ${setupApiKeys.production.key}\n`);
-  process.stdout.write("Store it now. If it is lost, return to the setup page to create a new key.\n");
+  process.stdout.write("Store it now. If it is lost, create a replacement under Account → API keys.\n");
 }
 
 function printInitNextSteps() {
@@ -397,10 +482,10 @@ function printInitNextSteps() {
   process.stdout.write("- Tell your coding agent: read .benchrouter/SETUP_README.md before editing. It explains the call-site patch, eval evidence, scorer, calibration, and env-var install.\n");
   process.stdout.write("- Ask the user once before installing runtime BENCHROUTER_API_KEY in the app host.\n");
   process.stdout.write("- BenchRouter Evals uses GitHub OIDC. Do not add an eval API key to GitHub Actions.\n");
-  process.stdout.write("- Run relevant product tests/build and `npx @benchrouter/cli doctor` before opening the PR.\n");
+  process.stdout.write("- Run relevant product tests/build and `npx --yes --package @benchrouter/cli benchrouter doctor` before opening the PR.\n");
 }
 
-async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, dryRun }) {
+async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, dryRun, recoveryUrl }) {
   const [primary, ...additional] = routeSpecs;
   const body = {
     repo_full_name: repoFullName,
@@ -442,8 +527,9 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
   if (!response.ok) {
     const parsed = parseJson(responseText);
     const error = parsed?.error;
-    if (error?.code === "setup_code_expired") {
-      fail("Setup key expired. Refresh it at https://benchrouter.com/setup/new and run init again.");
+    const errorCode = typeof error === "string" ? error : error?.code;
+    if (errorCode === "setup_code_expired" || errorCode === "setup_scope_expired") {
+      fail(`Setup access expired. Refresh it at ${recoveryUrl} and run init again.`);
     }
     if (isUnsupportedIncumbentModel(response.status, error)) {
       fail(unsupportedIncumbentMessage(primary.incumbent_model));
@@ -1048,7 +1134,7 @@ function verifyGitHubWorkflowState(repoFullName, failures, checks) {
     ? workflows.find((entry) => entry && entry.path === ".github/workflows/benchrouter-evals.yml")
     : null;
   if (!workflow) {
-    failures.push("BenchRouter Evals workflow is missing in GitHub Actions");
+    checks.push("GitHub workflow not registered yet; this is expected before the generated workflow is pushed");
     return;
   }
   const state = typeof workflow.state === "string" ? workflow.state : "unknown";
@@ -1112,6 +1198,7 @@ function isBenchRouterKitFile(relativePath) {
     ".benchrouter/SETUP_README.md",
     ".benchrouter/benchrouter-calibrate.mjs",
     ".benchrouter/benchrouter-eval.mjs",
+    ".benchrouter/sidecar.mjs",
     ".benchrouter/upload-results.mjs",
     ".github/workflows/benchrouter-evals.yml"
   ].includes(relativePath);

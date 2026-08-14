@@ -135,7 +135,7 @@ test("repo reads give actionable errors for missing and invalid access", async (
   assert.equal(invalid.status, 1);
   assert.equal(
     invalid.stderr,
-    "BenchRouter repo access expired or is invalid. Open https://benchrouter.com/setup to create a new repo token.\n"
+    "BenchRouter repo access expired or is invalid. Open https://benchrouter.com/cli to create a new repo token.\n"
   );
   assert.equal(replay.requests.length, 1);
 });
