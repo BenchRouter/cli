@@ -82,6 +82,7 @@ async function init() {
   const incumbentModels = arrayArg("incumbent-model");
   const providerIds = arrayArg("provider-id");
   const providerRefs = arrayArg("provider-ref");
+  const approvedBaselineModels = arrayArg("approved-baseline-model");
   const codeRefs = arrayArg("code-ref");
   const baseUrlEnvs = arrayArg("base-url-env");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
@@ -104,6 +105,9 @@ async function init() {
   if (providerIds.length > 0 && (providerIds.length !== routeIds.length || providerRefs.length !== routeIds.length)) {
     usage(1, "init", "Pass one --provider-id and --provider-ref per route, or omit both.");
   }
+  if (approvedBaselineModels.length > 0 && approvedBaselineModels.length !== routeIds.length) {
+    usage(1, "init", "Pass one --approved-baseline-model per route, or omit it until the user approves a replacement.");
+  }
   if (baseUrlEnvs.length > 1 && baseUrlEnvs.length !== routeIds.length) {
     usage(1, "init", "When repeating --base-url-env, pass one value per --route-id (in the same order), or pass it once for all routes.");
   }
@@ -114,6 +118,7 @@ async function init() {
     incumbent_model: incumbentModels[index],
     provider_id: providerIds[index],
     provider_ref: providerRefs[index],
+    approved_baseline_model: approvedBaselineModels[index],
     code_refs: codeRefs,
     base_url_env: baseUrlEnvs[index] ?? baseUrlEnvs[0] ?? ""
   }));
@@ -496,6 +501,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
       incumbent_model: primary.incumbent_model,
       provider_id: primary.provider_id,
       provider_ref: primary.provider_ref,
+      approved_baseline_model: primary.approved_baseline_model,
       code_refs: primary.code_refs.length > 0 ? primary.code_refs : undefined,
       base_url_env: primary.base_url_env || undefined
     },
@@ -506,6 +512,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
           incumbent_model: spec.incumbent_model,
           provider_id: spec.provider_id,
           provider_ref: spec.provider_ref,
+          approved_baseline_model: spec.approved_baseline_model,
           code_refs: spec.code_refs.length > 0 ? spec.code_refs : undefined,
           base_url_env: spec.base_url_env || undefined
         }))
@@ -533,6 +540,9 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
     }
     if (isUnsupportedIncumbentModel(response.status, error)) {
       fail(unsupportedIncumbentMessage(primary.incumbent_model));
+    }
+    if (errorCode === "model_replacement_confirmation_required" || errorCode === "baseline_selection_required") {
+      fail(modelSelectionMessage(error));
     }
     fail(`Setup packet request failed (${response.status}): ${responseText.slice(0, 800)}`);
   }
@@ -884,6 +894,20 @@ function unsupportedIncumbentMessage(modelId) {
 Do not substitute another model. Confirm the exact model ID.
 For a direct provider, also pass --provider-id and --provider-ref.
 List catalog IDs with: npx --yes --package @benchrouter/cli benchrouter models`;
+}
+
+function modelSelectionMessage(error) {
+  const observed = String(error.observed_model ?? "the observed model");
+  const recommended = typeof error.recommended_model === "string" ? error.recommended_model : null;
+  const alternatives = Array.isArray(error.alternatives)
+    ? error.alternatives.filter((value) => typeof value === "string")
+    : [];
+  const choices = alternatives.length > 0 ? `\nCatalog choices: ${alternatives.join(", ")}` : "";
+  const recommendation = recommended ? `\nRecommended replacement: ${recommended}` : "";
+  return `BenchRouter cannot use ${observed} as the starting baseline.${recommendation}${choices}
+Ask the user which active catalog model to use. Do not choose or substitute one yourself.
+After approval, rerun the same init command with:
+  --approved-baseline-model <approved-catalog-model>`;
 }
 
 function parseJson(text) {
@@ -1426,6 +1450,8 @@ Options:
   --incumbent-model <id>  Repeatable. Incumbent model for the matching --route-id.
   --provider-id <id>      Repeatable. Direct provider for the matching route.
   --provider-ref <ref>    Repeatable. Exact provider model ref; requires --provider-id.
+  --approved-baseline-model <id>
+                           Repeatable. User-approved active replacement for a retired observed model.
   --code-ref <path>       Repeatable. Call-site files recorded on the primary route.
   --base-url-env <name>   Repeatable. Env var the call site uses for its LLM base URL.
   --api-url <url>          Defaults to https://api.benchrouter.com.

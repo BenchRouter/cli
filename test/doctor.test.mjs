@@ -488,6 +488,44 @@ test("init sends expired add-route setup scope back to the add-route flow", asyn
   assert.equal(setupServer.requests.length, 1);
 });
 
+test("init stops for user approval and prints catalog-backed replacement choices", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-model-choice-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const setupServer = await startFixtureProxy(t, {
+    status: 409,
+    body: {
+      error: {
+        code: "model_replacement_confirmation_required",
+        observed_model: "grok-4-1-fast-reasoning-latest",
+        recommended_model: "x-ai/grok-4.3",
+        alternatives: ["x-ai/grok-4.3", "x-ai/grok-4.6"]
+      }
+    }
+  });
+
+  const result = await runCli(
+    [
+      "init",
+      "--setup-key", "br_setup_model_choice_fixture",
+      "--route-id", routeId,
+      "--name", "Chat",
+      "--incumbent-model", "grok-4-1-fast-reasoning-latest",
+      "--provider-id", "xai",
+      "--provider-ref", "grok-4-1-fast-reasoning-latest",
+      "--api-url", setupServer.url,
+      "--output-dir", root
+    ],
+    root
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Recommended replacement: x-ai\/grok-4\.3/);
+  assert.match(result.stderr, /Catalog choices: x-ai\/grok-4\.3, x-ai\/grok-4\.6/);
+  assert.match(result.stderr, /Do not choose or substitute one yourself/);
+  assert.match(result.stderr, /--approved-baseline-model <approved-catalog-model>/);
+  assert.equal(setupServer.requests.length, 1);
+});
+
 test("init stops before local writes when preview reports the one-time runtime key was already provisioned", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-provisioned-key-"));
   t.after(() => rm(root, { recursive: true, force: true }));
