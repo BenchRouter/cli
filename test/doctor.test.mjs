@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,8 +17,6 @@ const routeId = "app/chat";
 const fixture = JSON.parse(
   await readFile(path.join(testDir, "fixtures/benchrouter-proxy/chat-completion.json"), "utf8")
 );
-const cliSource = await readFile(path.join(repoRoot, "src/cli.mjs"), "utf8");
-
 test("doctor passes with wired code_refs and a proxy fixture replay", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   const proxy = await startFixtureProxy(t, {
@@ -59,6 +57,16 @@ test("doctor skips live proxy ping when the runtime key is absent", async (t) =>
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /auth skipped: no BENCHROUTER_API_KEY in environment; live proxy ping not run/);
   assert.equal(proxy.requests.length, 0);
+});
+
+test("doctor accepts the repository env.template convention", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  await rename(path.join(root, ".env.example"), path.join(root, "env.template"));
+
+  const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /BenchRouter doctor passed/);
 });
 
 test("doctor reads distinct multi-route refs only from canonical YAML", async (t) => {
@@ -1012,7 +1020,13 @@ async function createTargetRepo(t, { codeRefText }) {
   );
   await writeFile(
     path.join(root, ".benchrouter/upload-results.mjs"),
-    `const snippets = ${JSON.stringify(doctorUploadHelperSnippets())};\nvoid snippets;\n`
+    [
+      "const commands = ['prepare', 'validate-dispatch', 'report-snapshot', 'plan-pr', 'import-main', 'run-session', 'run-pack'];",
+      "const paths = ['/v1/control/eval-plan', '/v1/control/eval-session/next', '/v1/route-snapshots', '/v1/eval-model-runs/'];",
+      "const fields = ['pull_request_number', 'head_sha'];",
+      "void commands; void paths; void fields;",
+      ""
+    ].join("\n")
   );
   await writeFile(path.join(root, ".benchrouter/sidecar.mjs"), "export {};\n");
   await writeFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), "export {};\n");
@@ -1032,11 +1046,12 @@ async function createTargetRepo(t, { codeRefText }) {
       "jobs:",
       "  eval:",
       "    steps:",
-      "      - run: node .benchrouter/upload-results.mjs",
+      "      - name: Test route models and update the PPF",
+      "        run: node .benchrouter/upload-results.mjs run-session",
       "        env:",
-      "          BENCHROUTER_MODEL_RUN_ID: x",
-      "          BENCHROUTER_UPLOAD_RESULTS: '1'",
-      ...doctorWorkflowSnippets().map((snippet) => `      # doctor-contract: ${snippet}`)
+      "          BENCHROUTER_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
+      "      - run: node .benchrouter/upload-results.mjs run-pack",
+      "      # workflow_dispatch benchrouter_plan pull_request id-token: write"
     ].join("\n")
   );
   await writeFile(
@@ -1081,20 +1096,6 @@ process.exit(1);
   );
   await chmod(ghPath, 0o755);
   return dir;
-}
-
-function doctorWorkflowSnippets() {
-  return readStringArrayConstant("DOCTOR_WORKFLOW_SNIPPETS");
-}
-
-function doctorUploadHelperSnippets() {
-  return readStringArrayConstant("DOCTOR_UPLOAD_HELPER_SNIPPETS");
-}
-
-function readStringArrayConstant(name) {
-  const match = cliSource.match(new RegExp(`const ${name} = \\[([\\s\\S]*?)\\];`));
-  assert(match, `${name} not found in CLI source`);
-  return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
 }
 
 function sha256(value) {
