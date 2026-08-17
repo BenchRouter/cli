@@ -19,10 +19,10 @@ const DOCTOR_WORKFLOW_SNIPPETS = [
   "pull_request",
   "workflow_dispatch",
   "benchrouter_plan",
-  "BENCHROUTER_MODEL_RUN_ID",
-  "BENCHROUTER_UPLOAD_RESULTS",
-  "run-model",
-  "upload-results",
+  "BENCHROUTER_PR_HEAD_SHA",
+  "run-session",
+  "run-pack",
+  "Test route models and update the PPF",
   "id-token: write"
 ];
 const DOCTOR_UPLOAD_HELPER_SNIPPETS = [
@@ -31,9 +31,10 @@ const DOCTOR_UPLOAD_HELPER_SNIPPETS = [
   "report-snapshot",
   "plan-pr",
   "import-main",
-  "run-model",
-  "upload-results",
+  "run-session",
+  "run-pack",
   "/v1/control/eval-plan",
+  "/v1/control/eval-session/next",
   "/v1/route-snapshots",
   "/v1/eval-model-runs/",
   "pull_request_number",
@@ -720,11 +721,11 @@ async function doctor() {
     validateBenchRouterEvalScriptForDoctor(root, parsed.scripts?.["benchrouter:eval"], failures);
   }
 
-  const envExamplePath = path.join(root, ".env.example");
-  if (!existsSync(envExamplePath)) {
-    failures.push("missing .env.example");
+  const envTemplate = resolveRuntimeEnvTemplate(root);
+  if (!envTemplate) {
+    failures.push("missing .env.example or env.template");
   } else {
-    const envExample = readFileSync(envExamplePath, "utf8");
+    const envExample = readFileSync(envTemplate.path, "utf8");
     const envKeys = parseEnvExampleKeys(envExample);
     const expectedRuntimeKeys = new Set([
       "BENCHROUTER_API_KEY",
@@ -732,20 +733,20 @@ async function doctor() {
     ]);
     for (const key of expectedRuntimeKeys) {
       if (!envKeys.includes(key)) {
-        failures.push(`.env.example missing ${key}`);
+        failures.push(`${envTemplate.relativePath} missing ${key}`);
       }
     }
     if (envKeys.includes("BENCHROUTER_EVAL_API_KEY")) {
-      failures.push(".env.example must not include BENCHROUTER_EVAL_API_KEY; GitHub Actions authenticates with OIDC");
+      failures.push(`${envTemplate.relativePath} must not include BENCHROUTER_EVAL_API_KEY; GitHub Actions authenticates with OIDC`);
     }
     const ciOnlyBenchRouterKeys = envKeys.filter(
       (key) => key.startsWith("BENCHROUTER_") && key !== "BENCHROUTER_API_KEY" && key !== "BENCHROUTER_EVAL_API_KEY"
     );
     if (ciOnlyBenchRouterKeys.length > 0) {
-      failures.push(`.env.example includes CI-only BenchRouter env vars: ${ciOnlyBenchRouterKeys.join(", ")}`);
+      failures.push(`${envTemplate.relativePath} includes CI-only BenchRouter env vars: ${ciOnlyBenchRouterKeys.join(", ")}`);
     }
     if (/br_(live|test|setup)_[A-Za-z0-9_-]+/.test(envExample)) {
-      failures.push(".env.example appears to contain a raw BenchRouter secret");
+      failures.push(`${envTemplate.relativePath} appears to contain a raw BenchRouter secret`);
     }
   }
 
@@ -1015,7 +1016,7 @@ function runtimeHostChecklist({ root, routes, apiUrl }) {
   ];
   const fallbackKeys = detectFallbackProviderEnvKeys(root);
   if (fallbackKeys.length > 0) {
-    checklist.push(`optional fallback provider key detected in .env.example: ${fallbackKeys.join(", ")} (only needed if the app keeps a direct-provider fallback)`);
+    checklist.push(`optional fallback provider key detected in the runtime env template: ${fallbackKeys.join(", ")} (only needed if the app keeps a direct-provider fallback)`);
   }
   return checklist;
 }
@@ -1025,15 +1026,21 @@ function proxyBaseUrl(apiUrl) {
 }
 
 function detectFallbackProviderEnvKeys(root) {
-  const envExamplePath = path.join(root, ".env.example");
-  if (!existsSync(envExamplePath)) {
-    return [];
-  }
-  const keys = parseEnvExampleKeys(readFileSync(envExamplePath, "utf8"));
+  const envTemplate = resolveRuntimeEnvTemplate(root);
+  if (!envTemplate) return [];
+  const keys = parseEnvExampleKeys(readFileSync(envTemplate.path, "utf8"));
   return keys
     .filter((key) => key.endsWith("_API_KEY"))
     .filter((key) => !key.startsWith("BENCHROUTER_"))
     .sort();
+}
+
+function resolveRuntimeEnvTemplate(root) {
+  for (const relativePath of [".env.example", "env.template"]) {
+    const candidate = path.join(root, relativePath);
+    if (existsSync(candidate)) return { path: candidate, relativePath };
+  }
+  return null;
 }
 
 function parseEnvExampleKeys(text) {
