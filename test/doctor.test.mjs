@@ -17,6 +17,18 @@ const routeId = "app/chat";
 const fixture = JSON.parse(
   await readFile(path.join(testDir, "fixtures/benchrouter-proxy/chat-completion.json"), "utf8")
 );
+const replacementConfirmationFixture = JSON.parse(
+  await readFile(
+    path.join(testDir, "fixtures/setup-packet/model-replacement-confirmation-required.json"),
+    "utf8"
+  )
+);
+const providerIdentityReviewFixture = JSON.parse(
+  await readFile(
+    path.join(testDir, "fixtures/setup-packet/provider-identity-review-required.json"),
+    "utf8"
+  )
+);
 test("doctor passes with wired code_refs and a proxy fixture replay", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   const proxy = await startFixtureProxy(t, {
@@ -496,19 +508,12 @@ test("init sends expired add-route setup scope back to the add-route flow", asyn
   assert.equal(setupServer.requests.length, 1);
 });
 
-test("init stops for user approval and prints catalog-backed replacement choices", async (t) => {
+test("init stops for bound user approval and preserves the exact observed incumbent", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-model-choice-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const setupServer = await startFixtureProxy(t, {
     status: 409,
-    body: {
-      error: {
-        code: "model_replacement_confirmation_required",
-        observed_model: "grok-4-1-fast-reasoning-latest",
-        recommended_model: "x-ai/grok-4.3",
-        alternatives: ["x-ai/grok-4.3", "x-ai/grok-4.6"]
-      }
-    }
+    body: replacementConfirmationFixture
   });
 
   const result = await runCli(
@@ -527,11 +532,108 @@ test("init stops for user approval and prints catalog-backed replacement choices
   );
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Recommended replacement: x-ai\/grok-4\.3/);
-  assert.match(result.stderr, /Catalog choices: x-ai\/grok-4\.3, x-ai\/grok-4\.6/);
+  assert.match(result.stderr, /Observed model: grok-4-1-fast-reasoning-latest/);
+  assert.match(result.stderr, /Provider: xai/);
+  assert.match(result.stderr, /Exact provider reference: grok-4-1-fast-reasoning-latest/);
+  assert.match(result.stderr, /Canonical original: x-ai\/grok-4\.1-fast/);
+  assert.match(result.stderr, /x-ai\/grok-4\.3 \(provider_successor; input \$0\.2\/1M, output \$0\.5\/1M, 1x incumbent price\)/);
+  assert.match(result.stderr, /Approval context expires at: 2026-08-19T20:00:00\.000Z/);
   assert.match(result.stderr, /Do not choose or substitute one yourself/);
-  assert.match(result.stderr, /--approved-baseline-model <approved-catalog-model>/);
+  assert.match(result.stderr, /Keep --incumbent-model, --provider-id, and --provider-ref unchanged/);
+  assert.match(result.stderr, /--approved-baseline-model <listed-canonical-id>/);
+  assert.match(result.stderr, /--incumbent-approval-context-id iac_fixture_grok_41_fast/);
   assert.equal(setupServer.requests.length, 1);
+  assert.deepEqual(setupServer.requests[0].body.route, {
+    route_id: routeId,
+    name: "Chat",
+    incumbent_model: "grok-4-1-fast-reasoning-latest",
+    provider_id: "xai",
+    provider_ref: "grok-4-1-fast-reasoning-latest"
+  });
+});
+
+test("init sends replacement approval only with its server-bound context", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-bound-model-choice-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const setupServer = await startFixtureProxy(t, {
+    status: 409,
+    body: replacementConfirmationFixture
+  });
+  const baseArgs = [
+    "init",
+    "--setup-key", "br_setup_model_choice_fixture",
+    "--route-id", routeId,
+    "--name", "Chat",
+    "--incumbent-model", "grok-4-1-fast-reasoning-latest",
+    "--provider-id", "xai",
+    "--provider-ref", "grok-4-1-fast-reasoning-latest",
+    "--api-url", setupServer.url,
+    "--output-dir", root
+  ];
+
+  const missingContext = await runCli([
+    ...baseArgs,
+    "--approved-baseline-model", "x-ai/grok-4.3"
+  ], root);
+
+  assert.equal(missingContext.status, 1);
+  assert.match(missingContext.stderr, /Pass --approved-baseline-model and --incumbent-approval-context-id together/);
+  assert.equal(setupServer.requests.length, 0);
+
+  const approved = await runCli([
+    ...baseArgs,
+    "--approved-baseline-model", "x-ai/grok-4.3",
+    "--incumbent-approval-context-id", "iac_fixture_grok_41_fast"
+  ], root);
+
+  assert.equal(approved.status, 1);
+  assert.equal(setupServer.requests.length, 1);
+  assert.deepEqual(setupServer.requests[0].body.route, {
+    route_id: routeId,
+    name: "Chat",
+    incumbent_model: "grok-4-1-fast-reasoning-latest",
+    provider_id: "xai",
+    provider_ref: "grok-4-1-fast-reasoning-latest",
+    approved_baseline_model: "x-ai/grok-4.3",
+    incumbent_approval_context_id: "iac_fixture_grok_41_fast"
+  });
+});
+
+test("init sends an unknown provider identity to review without offering substitution", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-provider-review-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const setupServer = await startFixtureProxy(t, {
+    status: 409,
+    body: providerIdentityReviewFixture
+  });
+
+  const result = await runCli([
+    "init",
+    "--setup-key", "br_setup_provider_review_fixture",
+    "--route-id", routeId,
+    "--name", "Synopsis",
+    "--incumbent-model", "claude-haiku-4-5-20991231",
+    "--provider-id", "anthropic",
+    "--provider-ref", "claude-haiku-4-5-20991231",
+    "--api-url", setupServer.url,
+    "--output-dir", root
+  ], root);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cannot prove the identity of the observed incumbent/);
+  assert.match(result.stderr, /Observed model: claude-haiku-4-5-20991231/);
+  assert.match(result.stderr, /Provider: anthropic/);
+  assert.match(result.stderr, /Exact provider reference: claude-haiku-4-5-20991231/);
+  assert.match(result.stderr, /Do not substitute a model or remove provider metadata/);
+  assert.doesNotMatch(result.stderr, /--approved-baseline-model/);
+  assert.equal(setupServer.requests.length, 1);
+  assert.deepEqual(setupServer.requests[0].body.route, {
+    route_id: routeId,
+    name: "Synopsis",
+    incumbent_model: "claude-haiku-4-5-20991231",
+    provider_id: "anthropic",
+    provider_ref: "claude-haiku-4-5-20991231"
+  });
 });
 
 test("init stops before local writes when preview reports the one-time runtime key was already provisioned", async (t) => {

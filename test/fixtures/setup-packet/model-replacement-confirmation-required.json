@@ -1,0 +1,24 @@
+{
+  "error": {
+    "code": "model_replacement_confirmation_required",
+    "message": "The canonical incumbent cannot serve. Confirm one evidence-backed replacement before setup continues.",
+    "approval_context_id": "iac_fixture_grok_41_fast",
+    "observed_incumbent": {
+      "observed_model": "grok-4-1-fast-reasoning-latest",
+      "provider_id": "xai",
+      "provider_ref": "grok-4-1-fast-reasoning-latest"
+    },
+    "canonical_original_model": "x-ai/grok-4.1-fast",
+    "approval_expires_at": "2026-08-19T20:00:00.000Z",
+    "alternatives": [
+      {
+        "canonical_id": "x-ai/grok-4.3",
+        "relation_type": "provider_successor",
+        "reason": "xAI directs retired Grok 4.1 Fast reasoning workloads to Grok 4.3",
+        "input_usd_per_million": 0.2,
+        "output_usd_per_million": 0.5,
+        "price_multiple": 1
+      }
+    ]
+  }
+}

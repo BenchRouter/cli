@@ -24,6 +24,22 @@ npx @benchrouter/cli init \
 For a direct-provider incumbent, also pass `--provider-id <id>` and
 `--provider-ref <exact-ref>`. Pass both or neither.
 
+BenchRouter preserves that exact observed tuple during setup. If the canonical
+incumbent cannot serve, `init` stops and lists only replacements backed by
+catalog evidence. Ask the user to select one. Then rerun the same command with
+the unchanged incumbent and provider flags plus both approval flags:
+
+```bash
+benchrouter init ... \
+  --approved-baseline-model provider/approved-model \
+  --incumbent-approval-context-id iac_...
+```
+
+The server binds the approval context to the setup session, route, exact
+observed model, provider, and provider reference. The CLI sends neither approval
+field alone. An unknown identity stops for catalog review. It does not become a
+free-form model selection.
+
 The setup key comes from the signed-in BenchRouter setup page. It is scoped to
 one GitHub repository. A successful setup can return one runtime key:
 `BENCHROUTER_API_KEY`. Install that key only in the application host.
@@ -201,5 +217,6 @@ Use `--dry-run` to preview a single-use upgrade token without applying it. Use
 
 `models` prints the current BenchRouter catalog. A route incumbent can be an
 exact OpenRouter model that is not an automatic candidate. If BenchRouter cannot
-resolve the incumbent, stop and ask the user for one exact replacement. Do not
-substitute a model automatically.
+resolve the incumbent identity, stop for catalog review. Do not substitute a
+model or remove the observed provider metadata. If a resolved incumbent cannot
+serve, use only the server-listed replacements and its bound approval context.

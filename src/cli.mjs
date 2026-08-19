@@ -84,6 +84,7 @@ async function init() {
   const providerIds = arrayArg("provider-id");
   const providerRefs = arrayArg("provider-ref");
   const approvedBaselineModels = arrayArg("approved-baseline-model");
+  const incumbentApprovalContextIds = arrayArg("incumbent-approval-context-id");
   const codeRefs = arrayArg("code-ref");
   const baseUrlEnvs = arrayArg("base-url-env");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
@@ -109,6 +110,12 @@ async function init() {
   if (approvedBaselineModels.length > 0 && approvedBaselineModels.length !== routeIds.length) {
     usage(1, "init", "Pass one --approved-baseline-model per route, or omit it until the user approves a replacement.");
   }
+  if (incumbentApprovalContextIds.length > 0 && incumbentApprovalContextIds.length !== routeIds.length) {
+    usage(1, "init", "Pass one --incumbent-approval-context-id per route, or omit it until BenchRouter requests replacement approval.");
+  }
+  if ((approvedBaselineModels.length === 0) !== (incumbentApprovalContextIds.length === 0)) {
+    usage(1, "init", "Pass --approved-baseline-model and --incumbent-approval-context-id together. The approval context binds the replacement to the observed incumbent.");
+  }
   if (baseUrlEnvs.length > 1 && baseUrlEnvs.length !== routeIds.length) {
     usage(1, "init", "When repeating --base-url-env, pass one value per --route-id (in the same order), or pass it once for all routes.");
   }
@@ -120,6 +127,7 @@ async function init() {
     provider_id: providerIds[index],
     provider_ref: providerRefs[index],
     approved_baseline_model: approvedBaselineModels[index],
+    incumbent_approval_context_id: incumbentApprovalContextIds[index],
     code_refs: codeRefs,
     base_url_env: baseUrlEnvs[index] ?? baseUrlEnvs[0] ?? ""
   }));
@@ -503,6 +511,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
       provider_id: primary.provider_id,
       provider_ref: primary.provider_ref,
       approved_baseline_model: primary.approved_baseline_model,
+      incumbent_approval_context_id: primary.incumbent_approval_context_id,
       code_refs: primary.code_refs.length > 0 ? primary.code_refs : undefined,
       base_url_env: primary.base_url_env || undefined
     },
@@ -514,6 +523,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
           provider_id: spec.provider_id,
           provider_ref: spec.provider_ref,
           approved_baseline_model: spec.approved_baseline_model,
+          incumbent_approval_context_id: spec.incumbent_approval_context_id,
           code_refs: spec.code_refs.length > 0 ? spec.code_refs : undefined,
           base_url_env: spec.base_url_env || undefined
         }))
@@ -542,8 +552,17 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
     if (isUnsupportedIncumbentModel(response.status, error)) {
       fail(unsupportedIncumbentMessage(primary.incumbent_model));
     }
-    if (errorCode === "model_replacement_confirmation_required" || errorCode === "baseline_selection_required") {
-      fail(modelSelectionMessage(error));
+    if (errorCode === "model_replacement_confirmation_required") {
+      fail(modelReplacementMessage(error, primary));
+    }
+    if (errorCode === "provider_identity_review_required") {
+      fail(providerIdentityReviewMessage(error, primary));
+    }
+    if (errorCode === "incumbent_approval_context_invalid" || errorCode === "approved_baseline_not_available") {
+      fail(incumbentApprovalErrorMessage(errorCode, primary));
+    }
+    if (errorCode === "incumbent_observation_changed") {
+      fail(incumbentObservationChangedMessage(primary));
     }
     fail(`Setup packet request failed (${response.status}): ${responseText.slice(0, 800)}`);
   }
@@ -897,18 +916,94 @@ For a direct provider, also pass --provider-id and --provider-ref.
 List catalog IDs with: npx --yes --package @benchrouter/cli benchrouter models`;
 }
 
-function modelSelectionMessage(error) {
-  const observed = String(error.observed_model ?? "the observed model");
-  const recommended = typeof error.recommended_model === "string" ? error.recommended_model : null;
+function modelReplacementMessage(error, routeSpec) {
+  const approvalContextId = typeof error.approval_context_id === "string" ? error.approval_context_id : null;
+  const canonicalOriginal = typeof error.canonical_original_model === "string"
+    ? error.canonical_original_model
+    : null;
   const alternatives = Array.isArray(error.alternatives)
-    ? error.alternatives.filter((value) => typeof value === "string")
+    ? error.alternatives.filter(isReplacementAlternative)
     : [];
-  const choices = alternatives.length > 0 ? `\nCatalog choices: ${alternatives.join(", ")}` : "";
-  const recommendation = recommended ? `\nRecommended replacement: ${recommended}` : "";
-  return `BenchRouter cannot use ${observed} as the starting baseline.${recommendation}${choices}
-Ask the user which active catalog model to use. Do not choose or substitute one yourself.
-After approval, rerun the same init command with:
-  --approved-baseline-model <approved-catalog-model>`;
+  if (!approvalContextId || !canonicalOriginal || alternatives.length === 0 || !matchesObservedIncumbent(error.observed_incumbent, routeSpec)) {
+    return `BenchRouter requires a replacement for the observed incumbent, but it did not return complete matching approval evidence.
+Do not choose or substitute a model. Start a new setup session and run the same init command again.`;
+  }
+  const choices = `\nApproved replacement choices:\n${alternatives.map(formatReplacementAlternative).join("\n")}`;
+  const expires = typeof error.approval_expires_at === "string"
+    ? `\nApproval context expires at: ${error.approval_expires_at}`
+    : "";
+  return `The observed incumbent cannot serve and needs an explicit replacement.
+Observed model: ${routeSpec.incumbent_model}
+Provider: ${routeSpec.provider_id ?? "not supplied"}
+Exact provider reference: ${routeSpec.provider_ref ?? "not supplied"}
+Canonical original: ${canonicalOriginal}${choices}${expires}
+Ask the user which listed replacement to approve. Do not choose or substitute one yourself.
+Rerun the same init command. Keep --incumbent-model, --provider-id, and --provider-ref unchanged. Add:
+  --approved-baseline-model <listed-canonical-id>
+  --incumbent-approval-context-id ${approvalContextId}`;
+}
+
+function matchesObservedIncumbent(observed, routeSpec) {
+  if (!observed || typeof observed !== "object") {
+    return false;
+  }
+  const providerId = typeof observed.provider_id === "string" ? observed.provider_id : undefined;
+  const providerRef = typeof observed.provider_ref === "string" ? observed.provider_ref : undefined;
+  return observed.observed_model === routeSpec.incumbent_model
+    && providerId === routeSpec.provider_id
+    && providerRef === routeSpec.provider_ref;
+}
+
+function isReplacementAlternative(value) {
+  return value
+    && typeof value === "object"
+    && typeof value.canonical_id === "string"
+    && typeof value.relation_type === "string"
+    && typeof value.reason === "string";
+}
+
+function formatReplacementAlternative(alternative) {
+  const prices = [];
+  if (typeof alternative.input_usd_per_million === "number") {
+    prices.push(`input $${alternative.input_usd_per_million}/1M`);
+  }
+  if (typeof alternative.output_usd_per_million === "number") {
+    prices.push(`output $${alternative.output_usd_per_million}/1M`);
+  }
+  if (typeof alternative.price_multiple === "number") {
+    prices.push(`${alternative.price_multiple}x incumbent price`);
+  }
+  const priceText = prices.length > 0 ? `; ${prices.join(", ")}` : "";
+  return `- ${alternative.canonical_id} (${alternative.relation_type}${priceText}): ${alternative.reason}`;
+}
+
+function providerIdentityReviewMessage(error, routeSpec) {
+  const reason = typeof error.message === "string" ? `\nReason: ${error.message}` : "";
+  return `BenchRouter cannot prove the identity of the observed incumbent.
+Observed model: ${routeSpec.incumbent_model}
+Provider: ${routeSpec.provider_id ?? "not supplied"}
+Exact provider reference: ${routeSpec.provider_ref ?? "not supplied"}${reason}
+Do not substitute a model or remove provider metadata. The catalog mapping needs review before setup can continue.`;
+}
+
+function incumbentApprovalErrorMessage(errorCode, routeSpec) {
+  const problem = errorCode === "approved_baseline_not_available"
+    ? "The approved baseline is not an available replacement in this approval context."
+    : "The incumbent replacement approval context is invalid, expired, or does not match this route.";
+  return `${problem}
+Keep these observed-incumbent inputs unchanged:
+  --incumbent-model ${routeSpec.incumbent_model}
+  --provider-id ${routeSpec.provider_id ?? "<same-provider-id>"}
+  --provider-ref ${routeSpec.provider_ref ?? "<same-provider-ref>"}
+Run init without replacement approval flags to request a new bound approval context.`;
+}
+
+function incumbentObservationChangedMessage(routeSpec) {
+  return `The observed incumbent changed after BenchRouter created the replacement approval context.
+Current model: ${routeSpec.incumbent_model}
+Current provider: ${routeSpec.provider_id ?? "not supplied"}
+Current provider reference: ${routeSpec.provider_ref ?? "not supplied"}
+Do not substitute a model or remove provider metadata. Restore the exact observed inputs, or start a new setup session if the original observation was wrong.`;
 }
 
 function parseJson(text) {
@@ -1458,7 +1553,9 @@ Options:
   --provider-id <id>      Repeatable. Direct provider for the matching route.
   --provider-ref <ref>    Repeatable. Exact provider model ref; requires --provider-id.
   --approved-baseline-model <id>
-                           Repeatable. User-approved active replacement for a retired observed model.
+                           Repeatable. User-approved replacement returned by BenchRouter.
+  --incumbent-approval-context-id <id>
+                           Repeatable. Server-bound context for the matching approved replacement.
   --code-ref <path>       Repeatable. Call-site files recorded on the primary route.
   --base-url-env <name>   Repeatable. Env var the call site uses for its LLM base URL.
   --api-url <url>          Defaults to https://api.benchrouter.com.
