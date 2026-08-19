@@ -40,6 +40,29 @@ const DOCTOR_UPLOAD_HELPER_SNIPPETS = [
   "pull_request_number",
   "head_sha"
 ];
+const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
+  "mode",
+  "id",
+  "config_path",
+  "workflow",
+  "command",
+  "scorer",
+  "result_schema",
+  "case_refs",
+  "argv",
+  "runtime",
+  "runtime_version",
+  "lockfile",
+  "input_refs",
+  "acceptance_refs",
+  "result_path",
+  "primary_metric",
+  "max_model_calls",
+  "max_cost_usd",
+  "max_cost_per_call_usd",
+  "timeout_minutes",
+  "secret_env"
+]);
 
 if (isControlPlaneCommand(command, args._)) {
   await runControlCommand({
@@ -85,6 +108,7 @@ async function init() {
   const providerRefs = arrayArg("provider-ref");
   const approvedBaselineModels = arrayArg("approved-baseline-model");
   const incumbentApprovalContextIds = arrayArg("incumbent-approval-context-id");
+  const evalPackPaths = arrayArg("eval-pack");
   const codeRefs = arrayArg("code-ref");
   const baseUrlEnvs = arrayArg("base-url-env");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
@@ -116,10 +140,16 @@ async function init() {
   if ((approvedBaselineModels.length === 0) !== (incumbentApprovalContextIds.length === 0)) {
     usage(1, "init", "Pass --approved-baseline-model and --incumbent-approval-context-id together. The approval context binds the replacement to the observed incumbent.");
   }
+  if (evalPackPaths.length > 0 && evalPackPaths.length !== routeIds.length) {
+    usage(1, "init", "Pass one --eval-pack JSON file per route, in the same order, or omit it for every route.");
+  }
   if (baseUrlEnvs.length > 1 && baseUrlEnvs.length !== routeIds.length) {
     usage(1, "init", "When repeating --base-url-env, pass one value per --route-id (in the same order), or pass it once for all routes.");
   }
 
+  const evalPacks = evalPackPaths.map((evalPackPath, index) =>
+    readExecutableEvalPack(evalPackPath, routeIds[index], outputDir)
+  );
   const routeSpecs = routeIds.map((id, index) => ({
     route_id: id,
     name: routeNames[index],
@@ -128,6 +158,7 @@ async function init() {
     provider_ref: providerRefs[index],
     approved_baseline_model: approvedBaselineModels[index],
     incumbent_approval_context_id: incumbentApprovalContextIds[index],
+    eval_pack: evalPacks[index],
     code_refs: codeRefs,
     base_url_env: baseUrlEnvs[index] ?? baseUrlEnvs[0] ?? ""
   }));
@@ -512,6 +543,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
       provider_ref: primary.provider_ref,
       approved_baseline_model: primary.approved_baseline_model,
       incumbent_approval_context_id: primary.incumbent_approval_context_id,
+      eval_pack: primary.eval_pack,
       code_refs: primary.code_refs.length > 0 ? primary.code_refs : undefined,
       base_url_env: primary.base_url_env || undefined
     },
@@ -524,6 +556,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
           provider_ref: spec.provider_ref,
           approved_baseline_model: spec.approved_baseline_model,
           incumbent_approval_context_id: spec.incumbent_approval_context_id,
+          eval_pack: spec.eval_pack,
           code_refs: spec.code_refs.length > 0 ? spec.code_refs : undefined,
           base_url_env: spec.base_url_env || undefined
         }))
@@ -1440,6 +1473,131 @@ function safeTargetPath(root, relativePath) {
   return target;
 }
 
+function readExecutableEvalPack(evalPackPath, routeId, outputDir) {
+  const sourcePath = path.resolve(outputDir, evalPackPath);
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(sourcePath, "utf8"));
+  } catch (error) {
+    fail(`Invalid --eval-pack for route ${routeId}: cannot read valid JSON from ${evalPackPath}: ${error instanceof Error ? error.message : "read failed"}`);
+  }
+  validateExecutableEvalPack(parsed, routeId, outputDir);
+  return parsed;
+}
+
+function validateExecutableEvalPack(pack, routeId, outputDir) {
+  const at = `--eval-pack for route ${routeId}`;
+  if (!pack || typeof pack !== "object" || Array.isArray(pack)) {
+    fail(`${at} must contain one JSON object.`);
+  }
+  const unknownField = Object.keys(pack).find((field) => !EXECUTABLE_EVAL_PACK_FIELDS.has(field));
+  if (unknownField) {
+    fail(`${at} contains unknown field ${unknownField}.`);
+  }
+  if (pack.mode !== "repository_executable") {
+    fail(`${at}.mode must be repository_executable.`);
+  }
+  for (const field of ["id", "config_path", "workflow", "command", "scorer", "result_path", "primary_metric"]) {
+    requireNonEmptyString(pack[field], `${at}.${field}`);
+  }
+  if (pack.result_schema !== "benchrouter.executable_result.v1") {
+    fail(`${at}.result_schema must be benchrouter.executable_result.v1.`);
+  }
+  if (pack.runtime !== "node" && pack.runtime !== "bun") {
+    fail(`${at}.runtime must be node or bun.`);
+  }
+  if (typeof pack.runtime_version !== "string" || !/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pack.runtime_version)) {
+    fail(`${at}.runtime_version must be an exact version such as 22.18.0, not a mutable alias.`);
+  }
+  const allowedLockfiles = pack.runtime === "bun"
+    ? new Set(["bun.lock", "bun.lockb"])
+    : new Set(["package-lock.json", "npm-shrinkwrap.json"]);
+  if (!allowedLockfiles.has(pack.lockfile)) {
+    fail(`${at}.lockfile is not valid for runtime ${pack.runtime}.`);
+  }
+  for (const field of ["case_refs", "argv", "input_refs", "acceptance_refs"]) {
+    requireNonEmptyStringArray(pack[field], `${at}.${field}`);
+  }
+  if (!Array.isArray(pack.secret_env) || pack.secret_env.some((name) => typeof name !== "string")) {
+    fail(`${at}.secret_env must be an array of declared environment-variable names.`);
+  }
+  const duplicateSecret = pack.secret_env.find((name, index) => pack.secret_env.indexOf(name) !== index);
+  if (duplicateSecret) {
+    fail(`${at}.secret_env contains duplicate name ${duplicateSecret}.`);
+  }
+  const invalidSecret = pack.secret_env.find(
+    (name) => !/^[A-Z][A-Z0-9_]*$/.test(name) || /^(BENCHROUTER|ACTIONS|GITHUB)_/.test(name)
+  );
+  if (invalidSecret) {
+    fail(`${at}.secret_env contains reserved or invalid name ${invalidSecret}.`);
+  }
+  requirePositiveInteger(pack.max_model_calls, `${at}.max_model_calls`);
+  requirePositiveNumber(pack.max_cost_usd, `${at}.max_cost_usd`);
+  requirePositiveNumber(pack.max_cost_per_call_usd, `${at}.max_cost_per_call_usd`);
+  if (pack.max_cost_per_call_usd > pack.max_cost_usd) {
+    fail(`${at}.max_cost_per_call_usd must not exceed max_cost_usd.`);
+  }
+  requirePositiveInteger(pack.timeout_minutes, `${at}.timeout_minutes`);
+  if (pack.timeout_minutes > 350) {
+    fail(`${at}.timeout_minutes must be from 1 through 350 so the workflow keeps its install and upload buffer.`);
+  }
+  for (const field of ["config_path", "workflow", "scorer", "result_path", "lockfile"]) {
+    requireSafeRepoPath(pack[field], `${at}.${field}`);
+  }
+  for (const field of ["case_refs", "input_refs", "acceptance_refs"]) {
+    for (const [index, ref] of pack[field].entries()) {
+      requireSafeRepoPath(ref, `${at}.${field}[${index}]`);
+    }
+  }
+  const requiredExistingRefs = new Set([pack.lockfile, ...pack.case_refs, ...pack.input_refs, ...pack.acceptance_refs]);
+  for (const ref of requiredExistingRefs) {
+    if (!existsSync(path.resolve(outputDir, ref))) {
+      fail(`${at} references missing repository file ${ref}.`);
+    }
+  }
+}
+
+function requireNonEmptyString(value, label) {
+  if (typeof value !== "string" || value.trim().length === 0 || value.trim() !== value) {
+    fail(`${label} must be a non-empty string without surrounding whitespace.`);
+  }
+}
+
+function requireNonEmptyStringArray(value, label) {
+  if (!Array.isArray(value) || value.length === 0) {
+    fail(`${label} must be a non-empty string array.`);
+  }
+  for (const [index, item] of value.entries()) {
+    requireNonEmptyString(item, `${label}[${index}]`);
+  }
+}
+
+function requirePositiveInteger(value, label) {
+  if (!Number.isInteger(value) || value <= 0) {
+    fail(`${label} must be a positive integer.`);
+  }
+}
+
+function requirePositiveNumber(value, label) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    fail(`${label} must be a positive number.`);
+  }
+}
+
+function requireSafeRepoPath(value, label) {
+  if (typeof value !== "string"
+    || value.length === 0
+    || value.includes("\0")
+    || value.includes("\\")
+    || path.isAbsolute(value)
+    || path.win32.isAbsolute(value)
+    || value.split("/").includes("..")
+    || path.posix.normalize(value) !== value
+    || value === ".") {
+    fail(`${label} must be a normalized repository-relative path without traversal.`);
+  }
+}
+
 function parseArgs(values) {
   const parsed = { _: [] };
   for (let index = 0; index < values.length; index += 1) {
@@ -1556,6 +1714,7 @@ Options:
                            Repeatable. User-approved replacement returned by BenchRouter.
   --incumbent-approval-context-id <id>
                            Repeatable. Server-bound context for the matching approved replacement.
+  --eval-pack <path>       Repeatable. Repository-executable eval JSON for the matching route.
   --code-ref <path>       Repeatable. Call-site files recorded on the primary route.
   --base-url-env <name>   Repeatable. Env var the call site uses for its LLM base URL.
   --api-url <url>          Defaults to https://api.benchrouter.com.

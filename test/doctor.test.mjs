@@ -636,6 +636,106 @@ test("init sends an unknown provider identity to review without offering substit
   });
 });
 
+test("init maps validated repository-executable eval packs to matching routes", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-executable-packs-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "eval"), { recursive: true });
+  await writeFile(path.join(root, "package-lock.json"), "{}\n");
+  for (const file of [
+    "route-a.mjs", "route-b.mjs", "corpus-a.json", "corpus-b.json",
+    "queries-a.json", "queries-b.json", "qrels-a.json", "qrels-b.json"
+  ]) {
+    await writeFile(path.join(root, "eval", file), file.endsWith(".mjs") ? "// executable eval\n" : "{}\n");
+  }
+  const firstPack = repositoryExecutableEvalPack({
+    id: "route_a_retrieval_v1",
+    command: "node eval/route-a.mjs",
+    scorer: ".benchrouter/scorer.route-a.js",
+    case_refs: ["eval/queries-a.json"],
+    argv: ["node", "eval/route-a.mjs"],
+    input_refs: ["eval/route-a.mjs", "eval/corpus-a.json"],
+    acceptance_refs: ["eval/queries-a.json", "eval/qrels-a.json"],
+    primary_metric: "recall_at_5"
+  });
+  const secondPack = repositoryExecutableEvalPack({
+    id: "route_b_retrieval_v1",
+    command: "node eval/route-b.mjs",
+    scorer: ".benchrouter/scorer.route-b.js",
+    case_refs: ["eval/queries-b.json"],
+    argv: ["node", "eval/route-b.mjs"],
+    input_refs: ["eval/route-b.mjs", "eval/corpus-b.json"],
+    acceptance_refs: ["eval/queries-b.json", "eval/qrels-b.json"],
+    primary_metric: "recall_at_10",
+    timeout_minutes: 350,
+    secret_env: ["EMBEDDING_API_KEY"]
+  });
+  await writeFile(path.join(root, "route-a-pack.json"), `${JSON.stringify(firstPack, null, 2)}\n`);
+  await writeFile(path.join(root, "route-b-pack.json"), `${JSON.stringify(secondPack, null, 2)}\n`);
+  const setupServer = await startFixtureProxy(t, {
+    status: 401,
+    body: { error: "setup_scope_expired", message: "BenchRouter setup access has expired" }
+  });
+
+  const result = await runCli([
+    "init",
+    "--setup-key", "br_setup_executable_pack_fixture",
+    "--route-id", "app/route-a",
+    "--name", "Route A",
+    "--incumbent-model", "openai/gpt-4o-mini",
+    "--eval-pack", "route-a-pack.json",
+    "--route-id", "app/route-b",
+    "--name", "Route B",
+    "--incumbent-model", "openai/gpt-4o-mini",
+    "--eval-pack", "route-b-pack.json",
+    "--api-url", setupServer.url,
+    "--output-dir", root
+  ], root);
+
+  assert.equal(result.status, 1);
+  assert.equal(setupServer.requests.length, 1);
+  assert.deepEqual(setupServer.requests[0].body.route.eval_pack, firstPack);
+  assert.deepEqual(setupServer.requests[0].body.routes[0].eval_pack, secondPack);
+});
+
+test("init rejects an unsafe or mutable executable eval pack before HTTP", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-invalid-executable-pack-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "eval"), { recursive: true });
+  await writeFile(path.join(root, "package-lock.json"), "{}\n");
+  await writeFile(path.join(root, "eval/evaluator.mjs"), "// executable eval\n");
+  await writeFile(path.join(root, "eval/cases.json"), "{}\n");
+  await writeFile(path.join(root, "eval/qrels.json"), "{}\n");
+  const packPath = path.join(root, "eval-pack.json");
+  const command = [
+    "init",
+    "--setup-key", "br_setup_invalid_executable_pack",
+    "--route-id", routeId,
+    "--name", "Chat",
+    "--incumbent-model", "openai/gpt-4o-mini",
+    "--eval-pack", "eval-pack.json",
+    "--api-url", "http://127.0.0.1:9",
+    "--output-dir", root
+  ];
+
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ runtime_version: "latest" }))}\n`);
+  const mutableRuntime = await runCli(command, root);
+  assert.equal(mutableRuntime.status, 1);
+  assert.match(mutableRuntime.stderr, /runtime_version must be an exact version/);
+  assert.doesNotMatch(mutableRuntime.stderr, /fetch failed/);
+
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ acceptance_refs: ["../qrels.json"] }))}\n`);
+  const traversal = await runCli(command, root);
+  assert.equal(traversal.status, 1);
+  assert.match(traversal.stderr, /acceptance_refs\[0\] must be a normalized repository-relative path/);
+  assert.doesNotMatch(traversal.stderr, /fetch failed/);
+
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ timeout_minutes: 351 }))}\n`);
+  const excessiveTimeout = await runCli(command, root);
+  assert.equal(excessiveTimeout.status, 1);
+  assert.match(excessiveTimeout.stderr, /timeout_minutes must be from 1 through 350/);
+  assert.doesNotMatch(excessiveTimeout.stderr, /fetch failed/);
+});
+
 test("init stops before local writes when preview reports the one-time runtime key was already provisioned", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-provisioned-key-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -1258,6 +1358,33 @@ function multiRouteManifestYaml() {
       case_refs:
         - .benchrouter/cases.summarize.json
 `;
+}
+
+function repositoryExecutableEvalPack(overrides = {}) {
+  return {
+    mode: "repository_executable",
+    id: "app_chat_repository_v1",
+    config_path: ".benchrouter/benchrouter.yml",
+    workflow: ".github/workflows/benchrouter-evals.yml",
+    command: "node eval/evaluator.mjs",
+    scorer: ".benchrouter/scorer.app__chat.js",
+    result_schema: "benchrouter.executable_result.v1",
+    case_refs: ["eval/cases.json"],
+    argv: ["node", "eval/evaluator.mjs"],
+    runtime: "node",
+    runtime_version: "22.18.0",
+    lockfile: "package-lock.json",
+    input_refs: ["eval/evaluator.mjs", "eval/cases.json"],
+    acceptance_refs: ["eval/qrels.json"],
+    result_path: ".benchrouter/executable-result.json",
+    primary_metric: "recall_at_5",
+    max_model_calls: 100,
+    max_cost_usd: 10,
+    max_cost_per_call_usd: 0.1,
+    timeout_minutes: 60,
+    secret_env: [],
+    ...overrides
+  };
 }
 
 async function startFixtureProxy(t, responseFixture) {
