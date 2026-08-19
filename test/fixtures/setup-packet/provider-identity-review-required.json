@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "provider_identity_review_required",
+    "message": "BenchRouter does not have enough durable evidence to map this exact provider reference.",
+    "observed_incumbent": {
+      "observed_model": "claude-haiku-4-5-20991231",
+      "provider_id": "anthropic",
+      "provider_ref": "claude-haiku-4-5-20991231"
+    }
+  }
+}
