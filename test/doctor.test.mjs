@@ -41,6 +41,7 @@ test("doctor passes with wired code_refs and a proxy fixture replay", async (t) 
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /runtime host checklist: set BENCHROUTER_API_KEY .* OPENAI_BASE_URL/);
+  assert.match(result.stdout, /OPENAI_BASE_URL to .*\/v1/);
   assert.match(result.stdout, /GitHub Actions checklist: ensure BenchRouter Evals is enabled; CI authenticates with GitHub OIDC/);
   assert.match(result.stdout, /optional fallback provider key detected .* OPENAI_API_KEY/);
   assert.match(result.stdout, /runtime wiring/);
@@ -93,7 +94,32 @@ test("doctor reads distinct multi-route refs only from canonical YAML", async (t
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /runtime wiring .* 2 routes reference call_site\.base_url_env from code_refs/);
-  assert.match(result.stdout, /OPENAI_BASE_URL, SUMMARIZE_BASE_URL/);
+  assert.match(result.stdout, /OPENAI_BASE_URL to .*\/v1; set SUMMARIZE_BASE_URL to .*\/v1/);
+});
+
+test("doctor uses the Anthropic API root and validates repository-executable refs without replay shapes", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.ANTHROPIC_BASE_URL;" });
+  await mkdir(path.join(root, "eval"), { recursive: true });
+  await writeFile(path.join(root, "package-lock.json"), "{}\n");
+  await writeFile(path.join(root, "eval/evaluator.mjs"), "export {};\n");
+  await writeFile(path.join(root, "eval/corpus.json"), '{"documents":[]}\n');
+  await writeFile(path.join(root, "eval/qrels.json"), '{"query-1":{"document-1":1}}\n');
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), repositoryExecutableManifestYaml());
+  await writeFile(
+    path.join(root, ".env.example"),
+    "BENCHROUTER_API_KEY=\nANTHROPIC_BASE_URL=https://api.benchrouter.com\nANTHROPIC_API_KEY=\n"
+  );
+  await rm(path.join(root, ".benchrouter/scorer.app__chat.js"), { force: true });
+
+  const result = await runDoctor(root, "https://api.benchrouter.com", { BENCHROUTER_API_KEY: undefined });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /runtime host checklist: set BENCHROUTER_API_KEY .* ANTHROPIC_BASE_URL to https:\/\/api\.benchrouter\.com(?:\s|$)/
+  );
+  assert.doesNotMatch(result.stdout, /ANTHROPIC_BASE_URL to https:\/\/api\.benchrouter\.com\/v1/);
+  assert.doesNotMatch(result.stderr, /must be a JSON array|no runnable cases|scorer/);
 });
 
 test("doctor reports state routes only as obsolete cleanup", async (t) => {
@@ -1357,6 +1383,57 @@ function multiRouteManifestYaml() {
       result_schema: benchrouter.result.v1
       case_refs:
         - .benchrouter/cases.summarize.json
+`;
+}
+
+function repositoryExecutableManifestYaml() {
+  return `version: 1
+
+product:
+  slug: app
+  repo: example/app
+  default_branch: main
+
+routes:
+  - id: chat
+    route_id: ${routeId}
+    name: Chat
+    code_refs:
+      - src/llm.js
+    call_site:
+      base_url_env: ANTHROPIC_BASE_URL
+      provider_id: anthropic
+      provider_ref: claude-haiku-4-5-20251001
+    seed:
+      incumbent_model: anthropic/claude-haiku-4.5
+    eval_pack:
+      mode: repository_executable
+      id: chat_repository_v1
+      config_path: .benchrouter/benchrouter.yml
+      workflow: .github/workflows/benchrouter-evals.yml
+      command: node eval/evaluator.mjs
+      scorer: .benchrouter/scorer.app__chat.js
+      result_schema: benchrouter.executable_result.v1
+      case_refs:
+        - eval/qrels.json
+      argv:
+        - node
+        - eval/evaluator.mjs
+      runtime: node
+      runtime_version: 22.18.0
+      lockfile: package-lock.json
+      input_refs:
+        - eval/evaluator.mjs
+        - eval/corpus.json
+      acceptance_refs:
+        - eval/qrels.json
+      result_path: .benchrouter/executable-result.json
+      primary_metric: recall_at_5
+      max_model_calls: 100
+      max_cost_usd: 10
+      max_cost_per_call_usd: 0.1
+      timeout_minutes: 60
+      secret_env: []
 `;
 }
 

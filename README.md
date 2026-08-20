@@ -210,9 +210,18 @@ the user approves the write.
 
 ## Doctor
 
-`doctor` checks the generated files, runnable eval cases, scorer syntax,
-package-script wiring, runtime call-site wiring, and the GitHub OIDC workflow.
-It can also make one real proxy call when `BENCHROUTER_API_KEY` is present.
+`doctor` checks the generated files, package-script wiring, runtime call-site
+wiring, and the GitHub OIDC workflow. For isolated replay, it also checks
+runnable case arrays and scorer syntax. For `repository_executable`, it checks
+that the declared lockfile, case, input, and acceptance refs exist. It does not
+apply isolated-replay JSON shapes or scorer execution to repository files.
+
+The runtime checklist uses the route's `call_site.base_url_env`. It prints
+`https://api.benchrouter.com/v1` for OpenAI-compatible base URLs and
+`https://api.benchrouter.com` for `ANTHROPIC_BASE_URL`, because the Anthropic SDK
+adds its own `/v1/messages` path.
+
+`doctor` can also make one real proxy call when `BENCHROUTER_API_KEY` is present.
 
 ```bash
 benchrouter doctor --repo owner/repo --skip-github-workflow
