@@ -725,11 +725,19 @@ async function doctor() {
     failures.push("could not discover route scorer/cases files from .benchrouter/benchrouter.yml");
   }
 
-  // Validate each route: cases must have ≥1 real captured case, scorer must pass node --check.
-  for (const { casesPath, casesRelPath } of routeFiles) {
-    validateCasesForDoctor(casesPath, casesRelPath, failures);
+  // Isolated replay validates runnable case arrays and standalone scorers. Repository-executable
+  // routes validate their declared repository inputs without imposing replay-only file shapes.
+  for (const routeFile of routeFiles) {
+    if (routeFile.evalMode === "repository_executable") {
+      validateRepositoryExecutableFilesForDoctor(root, routeFile.repositoryExecutableRefs, failures);
+    } else {
+      validateCasesForDoctor(routeFile.casesPath, routeFile.casesRelPath, failures);
+    }
   }
-  for (const { scorerPath, scorerRelPath } of routeFiles) {
+  for (const { evalMode, scorerPath, scorerRelPath } of routeFiles) {
+    if (evalMode === "repository_executable") {
+      continue;
+    }
     if (existsSync(scorerPath)) {
       const check = spawnSync(process.execPath, ["--check", scorerPath], { encoding: "utf8" });
       if (check.status !== 0) {
@@ -894,11 +902,26 @@ function inspectKitStateForDoctor(kitStatePath, failures) {
 
 function discoverRouteFilesFromManifest(routes, root) {
   return routes.map((route) => ({
+    evalMode: route.evalMode,
     scorerPath: path.join(root, route.scorerPath),
     scorerRelPath: route.scorerPath,
     casesPath: path.join(root, route.casesPath),
-    casesRelPath: route.casesPath
+    casesRelPath: route.casesPath,
+    repositoryExecutableRefs: route.repositoryExecutableRefs
   }));
+}
+
+function validateRepositoryExecutableFilesForDoctor(root, refs, failures) {
+  for (const ref of refs) {
+    const resolved = resolveDoctorRelativePath(root, ref);
+    if (!resolved.ok) {
+      failures.push(`repository-executable eval ref ${ref} is invalid: ${resolved.error}`);
+      continue;
+    }
+    if (!existsSync(resolved.path)) {
+      failures.push(`missing repository-executable eval ref ${ref}`);
+    }
+  }
 }
 
 function validateCasesForDoctor(casesPath, relPath, failures) {
@@ -1134,12 +1157,17 @@ function benchRouterEvalRunnerFromCommand(command) {
 }
 
 function runtimeHostChecklist({ root, routes, apiUrl }) {
-  const baseUrlEnvNames = Array.from(new Set(routes.map((route) => route.callSiteBaseUrlEnv).filter(Boolean)));
-  const baseUrlLabel = baseUrlEnvNames.length > 0
-    ? baseUrlEnvNames.join(", ")
-    : "call_site.base_url_env (record the real env var in .benchrouter/benchrouter.yml)";
+  const baseUrlAssignments = Array.from(new Set(
+    routes
+      .map((route) => route.callSiteBaseUrlEnv)
+      .filter(Boolean)
+      .map((envName) => `${envName} to ${proxyBaseUrlForEnv(apiUrl, envName)}`)
+  ));
+  const baseUrlLabel = baseUrlAssignments.length > 0
+    ? baseUrlAssignments.join("; set ")
+    : `call_site.base_url_env to ${proxyBaseUrl(apiUrl)} (record the real env var in .benchrouter/benchrouter.yml)`;
   const checklist = [
-    `runtime host checklist: set BENCHROUTER_API_KEY in your runtime host and set ${baseUrlLabel} to ${proxyBaseUrl(apiUrl)}`,
+    `runtime host checklist: set BENCHROUTER_API_KEY in your runtime host and set ${baseUrlLabel}`,
     "GitHub Actions checklist: ensure BenchRouter Evals is enabled; CI authenticates with GitHub OIDC (no stored eval API key)"
   ];
   const fallbackKeys = detectFallbackProviderEnvKeys(root);
@@ -1151,6 +1179,12 @@ function runtimeHostChecklist({ root, routes, apiUrl }) {
 
 function proxyBaseUrl(apiUrl) {
   return `${apiUrl.replace(/\/+$/, "")}/v1`;
+}
+
+function proxyBaseUrlForEnv(apiUrl, envName) {
+  return envName === "ANTHROPIC_BASE_URL"
+    ? apiUrl.replace(/\/+$/, "")
+    : proxyBaseUrl(apiUrl);
 }
 
 function detectFallbackProviderEnvKeys(root) {

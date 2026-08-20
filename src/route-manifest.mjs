@@ -53,6 +53,13 @@ function normalizeRoute(route, index) {
     throw new Error(`${prefix}.eval_pack.case_refs must include at least one path.`);
   }
   const caseRefs = evalPack.case_refs.map((entry, caseIndex) => requiredString(entry, `${prefix}.eval_pack.case_refs[${caseIndex}]`));
+  const evalMode = evalPack.mode === "repository_executable" ? "repository_executable" : "isolated_replay";
+  const inputRefs = evalMode === "repository_executable"
+    ? requiredStringList(evalPack.input_refs, `${prefix}.eval_pack.input_refs`)
+    : [];
+  const acceptanceRefs = evalMode === "repository_executable"
+    ? requiredStringList(evalPack.acceptance_refs, `${prefix}.eval_pack.acceptance_refs`)
+    : [];
   return {
     routeId: requiredString(value.route_id, `${prefix}.route_id`),
     slug: requiredString(value.id, `${prefix}.id`),
@@ -63,12 +70,28 @@ function normalizeRoute(route, index) {
     providerRef: optionalString(callSite.provider_ref),
     incumbentModel: requiredString(seed.incumbent_model, `${prefix}.seed.incumbent_model`),
     evalArchetype: optionalString(metadata.eval_archetype),
+    evalMode,
     scorerPath: requiredString(evalPack.scorer, `${prefix}.eval_pack.scorer`),
     casesPath: caseRefs[0],
     caseRefs,
     workflowPath: requiredString(evalPack.workflow, `${prefix}.eval_pack.workflow`),
-    resultSchema: requiredString(evalPack.result_schema, `${prefix}.eval_pack.result_schema`)
+    resultSchema: requiredString(evalPack.result_schema, `${prefix}.eval_pack.result_schema`),
+    repositoryExecutableRefs: evalMode === "repository_executable"
+      ? Array.from(new Set([
+          requiredString(evalPack.lockfile, `${prefix}.eval_pack.lockfile`),
+          ...caseRefs,
+          ...inputRefs,
+          ...acceptanceRefs
+        ]))
+      : []
   };
+}
+
+function requiredStringList(value, label) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label} must include at least one path.`);
+  }
+  return value.map((entry, index) => requiredString(entry, `${label}[${index}]`));
 }
 
 function objectValue(value, label) {
