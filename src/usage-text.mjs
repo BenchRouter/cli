@@ -170,12 +170,25 @@ ${ACCOUNT_FLAGS}`,
   routes: `Usage:
   benchrouter routes list
   benchrouter routes show <route-key>
+  benchrouter routes inspect [route-key]
   benchrouter routes catalog <route-key>
   benchrouter routes archive <route-key>
   benchrouter routes unarchive <route-id>
 
+inspect reads the local .benchrouter/benchrouter.yml and case files. It does
+not use an account token.
+
 Options:
 ${ACCOUNT_FLAGS}  --yes, -y
+`,
+  "routes inspect": `Usage:
+  benchrouter routes inspect [route-key]
+
+Reads the local route declaration and groups declared cases by method. It does not use an account token. Use this before deciding whether a route should be partitioned.
+
+Options:
+  --output-dir <path>        Defaults to current directory.
+  --json                     Print machine-readable JSON.
 `,
   "routes list": `Usage:
   benchrouter routes list
@@ -211,12 +224,25 @@ Options:
 ${ACCOUNT_FLAGS}`,
   evals: `Usage:
   benchrouter evals list <route-key>
+  benchrouter evals cases [route-key] [--group method|archetype|critical]
   benchrouter evals run <route-key> --model <model-id>
   benchrouter evals failures <route-key> <model-id>
   benchrouter evals refresh-preview <route-key> <result-set-id> [--model <model-id>]
 
+cases reads local declared-case JSON. It does not use an account token.
+
 Options:
 ${ACCOUNT_FLAGS}  --yes, -y
+`,
+  "evals cases": `Usage:
+  benchrouter evals cases [route-key] [--group method|archetype|critical]
+
+Inventory local declared cases for partition and eval-authoring skills.
+
+Options:
+  --group method|archetype|critical   Defaults to method.
+  --output-dir <path>                 Defaults to current directory.
+  --json                              Print machine-readable JSON.
 `,
   "evals refresh-preview": `Usage:
   benchrouter evals refresh-preview <route-key> <result-set-id> [--model <model-id>]
@@ -399,7 +425,60 @@ ${ADMIN_FLAGS}`,
   benchrouter admin token save --admin-token bradm_...
 
 Options:
-${ADMIN_FLAGS}`
+${ADMIN_FLAGS}`,
+  skills: `Usage:
+  benchrouter skills list
+  benchrouter skills show <name>
+  benchrouter skills install [name...] [--agent cursor,claude,codex]
+  benchrouter skills update [name...] [--agent cursor,claude,codex]
+
+Installs Agent Skills from this CLI package into .cursor/skills, .claude/skills,
+and .agents/skills. Skills teach a coding agent BenchRouter workflows. They do
+not register routes or edit benchrouter.yml.
+
+Options:
+  --agent cursor,claude,codex,all   Defaults to all three.
+  --output-dir <path>               Defaults to current directory.
+  --yes, -y                         Skip confirmation for install/update.
+  --json                            Print machine-readable JSON.
+`,
+  "skills list": `Usage:
+  benchrouter skills list [--json]
+
+Options:
+  --json
+`,
+  "skills show": `Usage:
+  benchrouter skills show <name> [--json]
+
+Prints the packaged SKILL.md.
+
+Options:
+  --json
+`,
+  "skills install": `Usage:
+  benchrouter skills install [name...] [--agent cursor,claude,codex] [--yes]
+
+Writes the packaged skills into the selected agent skill directories. Omit
+names to install the full pack. JSON mode requires --yes.
+
+Options:
+  --agent cursor,claude,codex,all
+  --output-dir <path>
+  --yes, -y
+  --json
+`,
+  "skills update": `Usage:
+  benchrouter skills update [name...] [--agent cursor,claude,codex] [--yes]
+
+Same as install. Overwrites packaged skill files; leaves unknown extra files.
+
+Options:
+  --agent cursor,claude,codex,all
+  --output-dir <path>
+  --yes, -y
+  --json
+`
 };
 
 export function controlUsageText(commandName) {
@@ -427,9 +506,10 @@ export function topLevelControlUsageLines() {
   benchrouter keys list|create|revoke [--json]
   benchrouter repos list [--json]
   benchrouter setup status|create|session show|upgrade-token [--json]
-  benchrouter routes list|show|catalog|archive|unarchive [--json]
+  benchrouter routes list|show|inspect|catalog|archive|unarchive [--json]
   benchrouter models show <route-key> <model-id> [--json]
-  benchrouter evals list|run|failures|refresh-preview [--json]
+  benchrouter evals list|cases|run|failures|refresh-preview [--json]
+  benchrouter skills list|show|install|update [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
   benchrouter proposals list|approve|reject [--json]
   benchrouter admin providers|catalog|keys|token [--json]`;

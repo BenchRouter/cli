@@ -124,8 +124,9 @@ benchrouter setup status [--repo owner/repo]
 benchrouter setup create --repository-id <id> --installation-id <id> [--intent initial|new_route]
 benchrouter setup session show <session-id>
 benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
-benchrouter routes list|show|catalog|archive|unarchive
-benchrouter evals list|run|failures
+benchrouter routes list|show|inspect|catalog|archive|unarchive
+benchrouter evals list|cases|run|failures
+benchrouter skills list|show|install|update
 benchrouter evals refresh-preview <route-key> <result-set-id> [--model <id>]
 benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
 benchrouter proposals list|approve|reject [--admin-token bradm_...]
@@ -161,6 +162,15 @@ select the latest run for that model.
 `explain` calls the server model-explanation endpoint and states whether a model
 is the incumbent, best pick, an eligible alternative, or outside the eligible
 frontier. Pass `--route` when a repository has more than one route.
+
+`skills` installs Agent Skills from this package into `.cursor/skills`,
+`.claude/skills`, and `.agents/skills`. They teach a coding agent BenchRouter
+workflows (partition a fat route, add a route, author an eval, read a frontier,
+fix doctor). `init` and `upgrade` install the same pack. Skills never register
+routes or edit `benchrouter.yml`.
+
+`routes inspect` and `evals cases` read the local kit. They need no account
+token. Use them before deciding whether one route should become several.
 
 `keys revoke <key-id>` calls `POST /v1/dashboard/api-keys/:keyId/revoke` and
 prints non-secret key metadata. Revocation is immediate: any application still
