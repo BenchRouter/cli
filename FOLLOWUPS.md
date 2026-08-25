@@ -39,6 +39,16 @@ built, or proof that still needs the service worktree.
   browser approval, single exchange, saved owner-only config, and account self
   request before publication.
 
+## Local agent helpers
+
+- **Skills and local inspect:** `skills`, `routes inspect`, and `evals cases`
+  are local. They do not call the control plane. The skill pack lives in this
+  package and is copied into agent skill directories. Route registration still
+  goes through `init` / `/cli/new`.
+- **Next on `feat/cli-skills`:** dogfood `partition-route` on
+  `mrtron/astroturfed` / `astroturfed/crm-activity-generation` before publishing
+  this CLI. Use the local package, not npm, until that pass lands.
+
 ## Notes
 
 - Repo-read commands keep using `br_setup_` / `BENCHROUTER_TOKEN`.

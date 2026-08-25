@@ -9,7 +9,15 @@ import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
+import { inspectCases, inspectRoutes } from "./inspect.mjs";
 import { readRouteManifest } from "./route-manifest.mjs";
+import {
+  applySkillInstall,
+  listSkills,
+  parseAgents,
+  planSkillInstall,
+  readSkill
+} from "./skills.mjs";
 import { applyUpgradePacket, mergeUpgradeKitState, readUpgradeKitState } from "./upgrade-state.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -70,7 +78,13 @@ const EXECUTABLE_API_FAMILIES = new Set([
   "openai_responses"
 ]);
 
-if (isControlPlaneCommand(command, args._)) {
+if (command === "skills") {
+  await runSkills();
+} else if (command === "routes" && args._[1] === "inspect") {
+  await runRoutesInspect();
+} else if (command === "evals" && args._[1] === "cases") {
+  await runEvalsCases();
+} else if (isControlPlaneCommand(command, args._)) {
   await runControlCommand({
     args,
     command,
@@ -182,6 +196,7 @@ async function init() {
     }
     process.stdout.write("would update package.json scripts/devDependencies when package.json exists\n");
     process.stdout.write("runtime env configuration is deferred until activation\n");
+    writeDefaultSkills(outputDir, { dryRun: true });
     process.stdout.write("would request Runtime/host BENCHROUTER_API_KEY during a real init\n");
     return;
   }
@@ -253,6 +268,7 @@ async function init() {
     process.stdout.write(`Runtime key already issued. Reuse the stored product key at activation. If it is lost, create a replacement at ${rotateUrl} or use benchrouter login followed by benchrouter keys create --product-id <product-id>. Do not restart setup to recover a key.\n`);
   }
   printSetupApiKeys(committedPacket.setup_api_keys);
+  writeDefaultSkills(outputDir, { dryRun: false });
   await maybeSaveRepoReadToken(setupCode, targetRepo);
   printInitNextSteps();
 
@@ -365,6 +381,7 @@ async function upgrade() {
       process.stdout.write(`would write ${file.path}\n`);
     }
     process.stdout.write(`would remove obsolete route declarations from .benchrouter/.kit-state.json and update bookkeeping to ${preview.setup_kit_version}\n`);
+    writeDefaultSkills(outputDir, { dryRun: true });
 
     if (dryRun) {
       return;
@@ -418,6 +435,7 @@ async function upgrade() {
     fail(error instanceof Error ? error.message : "Could not apply the BenchRouter kit upgrade.");
   }
 
+  writeDefaultSkills(outputDir, { dryRun: false });
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Review the diff. benchrouter.yml and route-owned cases, scorers, calibration fixtures, and app files must be unchanged.\n");
   process.stdout.write(`- Run \`npx --yes --package @benchrouter/cli benchrouter doctor --repo ${repoFullName}\`.\n`);
@@ -516,6 +534,7 @@ function printInitNextSteps() {
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Tell your coding agent: read .benchrouter/SETUP_README.md before editing. It explains the evaluation PR, eval evidence, scorer, calibration, and later activation.\n");
   process.stdout.write("- Keep production code and host configuration unchanged in the evaluation PR. Store the runtime key for later activation; it does not expire with the setup code.\n");
+  process.stdout.write("- Coding-agent skills are installed under .cursor/skills, .claude/skills, and .agents/skills. Use partition-route before splitting a fat route.\n");
   process.stdout.write("- BenchRouter Evals uses GitHub OIDC. Do not add an eval API key to GitHub Actions.\n");
   process.stdout.write("- Run relevant product tests/build and `npx --yes --package @benchrouter/cli benchrouter doctor --phase evaluation` before opening the PR.\n");
 }
@@ -668,6 +687,163 @@ async function models() {
   }
   for (const id of filtered) {
     process.stdout.write(`${id}\n`);
+  }
+}
+
+async function runSkills() {
+  if (args.help) {
+    usage(0, args._[1] ? `skills ${args._[1]}` : "skills");
+  }
+  const sub = args._[1];
+  if (!sub) {
+    usage(1, "skills", "Missing subcommand. Try: skills list | show | install | update");
+  }
+  const root = path.resolve(stringArg("output-dir", process.cwd()));
+  try {
+    if (sub === "list") {
+      const skills = listSkills();
+      const payload = { ok: true, skills: skills.map((skill) => ({ name: skill.name, description: skill.description })) };
+      if (args.json) {
+        process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+        return;
+      }
+      for (const skill of payload.skills) {
+        process.stdout.write(`${skill.name}\n  ${skill.description}\n`);
+      }
+      return;
+    }
+    if (sub === "show") {
+      const name = args._[2];
+      if (!name) usage(1, "skills show", "Missing skill name.");
+      const skill = readSkill(name);
+      if (args.json) {
+        process.stdout.write(`${JSON.stringify({ ok: true, name: skill.name, description: skill.description, content: skill.content }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(skill.content.endsWith("\n") ? skill.content : `${skill.content}\n`);
+      return;
+    }
+    if (sub === "install" || sub === "update") {
+      const names = args._.slice(2);
+      const agents = parseAgents(args.agent);
+      const plan = planSkillInstall({ root, agents, names: names.length > 0 ? names : undefined });
+      const changing = plan.files.filter((file) => file.action !== "unchanged");
+      if (changing.length === 0) {
+        const payload = { ...plan, written: [] };
+        if (args.json) {
+          process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+          return;
+        }
+        process.stdout.write("BenchRouter skills already installed.\n");
+        return;
+      }
+      const summary = `Install BenchRouter skills (${plan.skills.map((skill) => skill.name).join(", ")}) for ${agents.join(", ")}`;
+      if (args.json && !args.yes) {
+        fail("JSON mode requires --yes for mutations (no interactive prompts).", "confirmation_required");
+      }
+      if (!args.yes) {
+        const confirmed = await confirmPrompt(`${summary}. Continue? [y/N] `);
+        if (!confirmed) {
+          process.stdout.write("Declined. No changes made.\n");
+          return;
+        }
+      }
+      applySkillInstall(plan, root);
+      if (args.json) {
+        process.stdout.write(`${JSON.stringify({ ...plan, written: changing.map((file) => file.path) }, null, 2)}\n`);
+        return;
+      }
+      for (const file of plan.files) {
+        process.stdout.write(`${file.action === "create" ? "created" : file.action === "update" ? "updated" : "unchanged"} ${file.path}\n`);
+      }
+      return;
+    }
+    usage(1, "skills", `Unknown command: skills ${sub}`);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "BenchRouter skills command failed.");
+  }
+}
+
+async function runRoutesInspect() {
+  if (args.help) {
+    usage(0, "routes inspect");
+  }
+  const root = path.resolve(stringArg("output-dir", process.cwd()));
+  const routeKey = args._[2];
+  try {
+    const payload = inspectRoutes(root, routeKey);
+    writeInspectOutput(payload, () => renderRoutesInspect(payload));
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not inspect routes.");
+  }
+}
+
+async function runEvalsCases() {
+  if (args.help) {
+    usage(0, "evals cases");
+  }
+  const root = path.resolve(stringArg("output-dir", process.cwd()));
+  const routeKey = args._[2];
+  const groupBy = stringArg("group", "method");
+  try {
+    const payload = inspectCases(root, routeKey, groupBy);
+    writeInspectOutput(payload, () => renderEvalsCases(payload));
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not inventory eval cases.");
+  }
+}
+
+function writeInspectOutput(payload, render) {
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  render();
+}
+
+function renderRoutesInspect(payload) {
+  process.stdout.write(`${payload.product.repo} (${payload.product.slug})\n`);
+  for (const route of payload.routes) {
+    process.stdout.write(`\n${route.route_id}  ${route.name}\n`);
+    process.stdout.write(`  incumbent  ${route.incumbent_model}\n`);
+    process.stdout.write(`  archetype  ${route.eval_archetype ?? "unlabeled"}  mode ${route.eval_mode}\n`);
+    process.stdout.write(`  call site  ${route.call_site_base_url_env}\n`);
+    process.stdout.write(`  code refs  ${route.code_refs.join(", ") || "(none)"}\n`);
+    if (route.missing_code_refs.length > 0) {
+      process.stdout.write(`  missing code refs  ${route.missing_code_refs.join(", ")}\n`);
+    }
+    if (route.cases_error) {
+      process.stdout.write(`  cases  ${route.cases_error}\n`);
+      continue;
+    }
+    process.stdout.write(`  cases  ${route.cases.count}  groups ${route.cases.groups.map((group) => `${group.key}:${group.count}`).join(", ")}\n`);
+  }
+}
+
+function renderEvalsCases(payload) {
+  for (const route of payload.routes) {
+    process.stdout.write(`${route.route_id}\n`);
+    if (route.cases_error || !route.inventory) {
+      process.stdout.write(`  ${route.cases_error ?? "no cases"}\n`);
+      continue;
+    }
+    for (const group of route.inventory.groups) {
+      process.stdout.write(`  ${group.key}  ${group.count}  ${group.case_ids.join(", ")}\n`);
+    }
+  }
+}
+
+function writeDefaultSkills(outputDir, { dryRun }) {
+  const plan = planSkillInstall({ root: outputDir });
+  if (dryRun) {
+    for (const file of plan.files) {
+      process.stdout.write(`would write ${file.path}\n`);
+    }
+    return;
+  }
+  applySkillInstall(plan, outputDir);
+  for (const file of plan.files) {
+    process.stdout.write(`${file.action === "create" ? "created" : file.action === "update" ? "updated" : "unchanged"} ${file.path}\n`);
   }
 }
 
@@ -1792,6 +1968,7 @@ Options:
   benchrouter init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
   benchrouter upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
   benchrouter doctor
+  benchrouter skills list|show|install|update [--json]
   benchrouter models [--json]
   benchrouter status [--json]
   benchrouter frontier <route-key> [--json]
