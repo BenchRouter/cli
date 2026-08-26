@@ -54,6 +54,7 @@ The file must use this contract:
 ```json
 {
   "mode": "repository_executable",
+  "api_family": "openai_chat_completions",
   "id": "contextual_synopsis_v1",
   "config_path": ".benchrouter/benchrouter.yml",
   "workflow": ".github/workflows/benchrouter-evals.yml",
@@ -76,6 +77,10 @@ The file must use this contract:
   "secret_env": ["OPENAI_API_KEY"]
 }
 ```
+
+`api_family` is required. Use exactly one of `openai_chat_completions`,
+`anthropic_messages`, or `openai_responses` to match the evaluator's wire
+protocol.
 
 The CLI rejects mutable runtime versions, unsafe paths, missing referenced
 files, invalid or reserved secret names, fractional count and timeout limits,

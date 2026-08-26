@@ -54,6 +54,9 @@ function normalizeRoute(route, index) {
   }
   const caseRefs = evalPack.case_refs.map((entry, caseIndex) => requiredString(entry, `${prefix}.eval_pack.case_refs[${caseIndex}]`));
   const evalMode = evalPack.mode === "repository_executable" ? "repository_executable" : "isolated_replay";
+  const apiFamily = evalMode === "repository_executable"
+    ? requiredExecutableApiFamily(evalPack.api_family, `${prefix}.eval_pack.api_family`)
+    : "";
   const inputRefs = evalMode === "repository_executable"
     ? requiredStringList(evalPack.input_refs, `${prefix}.eval_pack.input_refs`)
     : [];
@@ -71,6 +74,7 @@ function normalizeRoute(route, index) {
     incumbentModel: requiredString(seed.incumbent_model, `${prefix}.seed.incumbent_model`),
     evalArchetype: optionalString(metadata.eval_archetype),
     evalMode,
+    apiFamily,
     scorerPath: requiredString(evalPack.scorer, `${prefix}.eval_pack.scorer`),
     casesPath: caseRefs[0],
     caseRefs,
@@ -85,6 +89,13 @@ function normalizeRoute(route, index) {
         ]))
       : []
   };
+}
+
+function requiredExecutableApiFamily(value, label) {
+  if (value !== "openai_chat_completions" && value !== "anthropic_messages" && value !== "openai_responses") {
+    throw new Error(`${label} must be openai_chat_completions, anthropic_messages, or openai_responses.`);
+  }
+  return value;
 }
 
 function requiredStringList(value, label) {

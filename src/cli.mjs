@@ -42,6 +42,7 @@ const DOCTOR_UPLOAD_HELPER_SNIPPETS = [
 ];
 const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "mode",
+  "api_family",
   "id",
   "config_path",
   "workflow",
@@ -62,6 +63,11 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "max_cost_per_call_usd",
   "timeout_minutes",
   "secret_env"
+]);
+const EXECUTABLE_API_FAMILIES = new Set([
+  "openai_chat_completions",
+  "anthropic_messages",
+  "openai_responses"
 ]);
 
 if (isControlPlaneCommand(command, args._)) {
@@ -1530,6 +1536,9 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   }
   if (pack.mode !== "repository_executable") {
     fail(`${at}.mode must be repository_executable.`);
+  }
+  if (!EXECUTABLE_API_FAMILIES.has(pack.api_family)) {
+    fail(`${at}.api_family must be openai_chat_completions, anthropic_messages, or openai_responses.`);
   }
   for (const field of ["id", "config_path", "workflow", "command", "scorer", "result_path", "primary_metric"]) {
     requireNonEmptyString(pack[field], `${at}.${field}`);

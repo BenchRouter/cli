@@ -674,6 +674,7 @@ test("init maps validated repository-executable eval packs to matching routes", 
     await writeFile(path.join(root, "eval", file), file.endsWith(".mjs") ? "// executable eval\n" : "{}\n");
   }
   const firstPack = repositoryExecutableEvalPack({
+    api_family: "anthropic_messages",
     id: "route_a_retrieval_v1",
     command: "node eval/route-a.mjs",
     scorer: ".benchrouter/scorer.route-a.js",
@@ -684,6 +685,7 @@ test("init maps validated repository-executable eval packs to matching routes", 
     primary_metric: "recall_at_5"
   });
   const secondPack = repositoryExecutableEvalPack({
+    api_family: "openai_responses",
     id: "route_b_retrieval_v1",
     command: "node eval/route-b.mjs",
     scorer: ".benchrouter/scorer.route-b.js",
@@ -721,6 +723,8 @@ test("init maps validated repository-executable eval packs to matching routes", 
   assert.equal(setupServer.requests.length, 1);
   assert.deepEqual(setupServer.requests[0].body.route.eval_pack, firstPack);
   assert.deepEqual(setupServer.requests[0].body.routes[0].eval_pack, secondPack);
+  assert.equal(setupServer.requests[0].body.route.eval_pack.api_family, "anthropic_messages");
+  assert.equal(setupServer.requests[0].body.routes[0].eval_pack.api_family, "openai_responses");
 });
 
 test("init rejects an unsafe or mutable executable eval pack before HTTP", async (t) => {
@@ -748,6 +752,18 @@ test("init rejects an unsafe or mutable executable eval pack before HTTP", async
   assert.equal(mutableRuntime.status, 1);
   assert.match(mutableRuntime.stderr, /runtime_version must be an exact version/);
   assert.doesNotMatch(mutableRuntime.stderr, /fetch failed/);
+
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ api_family: undefined }))}\n`);
+  const missingApiFamily = await runCli(command, root);
+  assert.equal(missingApiFamily.status, 1);
+  assert.match(missingApiFamily.stderr, /api_family must be openai_chat_completions, anthropic_messages, or openai_responses/);
+  assert.doesNotMatch(missingApiFamily.stderr, /fetch failed/);
+
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ api_family: "responses" }))}\n`);
+  const legacyApiFamily = await runCli(command, root);
+  assert.equal(legacyApiFamily.status, 1);
+  assert.match(legacyApiFamily.stderr, /api_family must be openai_chat_completions, anthropic_messages, or openai_responses/);
+  assert.doesNotMatch(legacyApiFamily.stderr, /fetch failed/);
 
   await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ acceptance_refs: ["../qrels.json"] }))}\n`);
   const traversal = await runCli(command, root);
@@ -1408,6 +1424,7 @@ routes:
       incumbent_model: anthropic/claude-haiku-4.5
     eval_pack:
       mode: repository_executable
+      api_family: anthropic_messages
       id: chat_repository_v1
       config_path: .benchrouter/benchrouter.yml
       workflow: .github/workflows/benchrouter-evals.yml
@@ -1440,6 +1457,7 @@ routes:
 function repositoryExecutableEvalPack(overrides = {}) {
   return {
     mode: "repository_executable",
+    api_family: "openai_chat_completions",
     id: "app_chat_repository_v1",
     config_path: ".benchrouter/benchrouter.yml",
     workflow: ".github/workflows/benchrouter-evals.yml",
