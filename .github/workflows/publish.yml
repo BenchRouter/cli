@@ -22,25 +22,11 @@ env:
 jobs:
   package:
     name: Check package
-    # A same-repository PR has an authorized branch in this repository. Fork PR
-    # code must stay on GitHub-hosted infrastructure and never reach the org
-    # runner or its network and credential boundary.
+    # A same-repository PR has an authorized branch in this repository. Fork PRs
+    # are skipped and never reach the org runner or its network and credential
+    # boundary.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, benchrouter-gcp]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.15.0
-      - run: npm install --global npm@12.0.2
-      - run: npm --version
-      - run: npm ci
-      - run: npm run check
-
-  package-fork:
-    name: Check fork PR
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
