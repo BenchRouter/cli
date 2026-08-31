@@ -11,8 +11,10 @@ import {
 import { ApiError } from "./http.mjs";
 import * as render from "./render.mjs";
 import { resolveControlUsageName } from "./usage-text.mjs";
+import { runLogin } from "./login.mjs";
 
 export const CUSTOMER_ROOT_COMMANDS = new Set([
+  "login",
   "account",
   "billing",
   "keys",
@@ -56,6 +58,7 @@ export async function runControlCommand(ctx) {
     if (usageName) return ctx.usage(0, usageName);
   }
   try {
+    if (command === "login") return await runLogin(ctx);
     if (command === "account") return await runAccount(ctx);
     if (command === "billing") return await runBilling(ctx);
     if (command === "keys") return await runKeys(ctx);

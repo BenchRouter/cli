@@ -119,6 +119,7 @@ benchrouter status [--json]
 benchrouter frontier <route-key> [--json]
 benchrouter failures <route-key> [model] [--json]
 benchrouter explain <model> [--route <route-key>] [--json]
+benchrouter login [--name text] [--expires-in-days 90]
 benchrouter account show [--json]
 benchrouter account token save --account-token br_ctrl_...
 benchrouter billing show [--json]
@@ -139,6 +140,12 @@ benchrouter admin catalog show|activity|model-maps|refresh-report|drain-outbox|r
 benchrouter admin catalog observations [add]|mappings [list|resolve|ignore]
 benchrouter admin keys list|revoke [--admin-token bradm_...]
 ```
+
+Run `benchrouter login` to authorize the CLI in your signed-in browser. The CLI
+keeps the verifier locally, waits for approval, receives the new `br_ctrl_`
+token directly, saves it in private local config, and proves the selected
+account. The browser URL contains only an opaque transaction ID. The raw token
+never appears in the URL, browser storage, terminal output, or logs.
 
 Account commands authenticate with a `br_ctrl_` account token
 (`--account-token`, then `BENCHROUTER_ACCOUNT_TOKEN`, then private local
@@ -193,7 +200,8 @@ through `--payload-json`, which must parse to a JSON object.
 print non-secret metadata only. Minting an admin key requires a browser GitHub
 admin session, so the CLI has no mint command. Use `admin token save` /
 `account token save` for already-minted tokens. Save commands never print the
-secret.
+secret. Use `account token save` only as a recovery path. Use `benchrouter
+login` for normal account authorization.
 
 All read commands accept `--json` for scripts and agents.
 
