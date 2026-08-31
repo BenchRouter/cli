@@ -1,4 +1,15 @@
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +42,7 @@ export async function saveRepoToken(repoFullName, token) {
   const normalizedRepo = normalizeRepoFullName(repoFullName);
   const target = repoTokenPath(normalizedRepo);
   await mkdir(path.dirname(target), { recursive: true, mode: OWNER_DIR_MODE });
+  chmodSync(path.dirname(target), OWNER_DIR_MODE);
   writeOwnerJson(target, {
     repo_full_name: normalizedRepo,
     token,
@@ -64,6 +76,7 @@ export async function saveAccountToken(token, meta = {}) {
   assertAccountToken(token);
   const target = accountTokenPath();
   await mkdir(path.dirname(target), { recursive: true, mode: OWNER_DIR_MODE });
+  chmodSync(path.dirname(target), OWNER_DIR_MODE);
   writeOwnerJson(target, {
     token,
     saved_at: new Date().toISOString(),
@@ -105,6 +118,7 @@ export async function saveAdminToken(token) {
   assertAdminToken(token);
   const target = adminTokenPath();
   await mkdir(path.dirname(target), { recursive: true, mode: OWNER_DIR_MODE });
+  chmodSync(path.dirname(target), OWNER_DIR_MODE);
   writeOwnerJson(target, {
     token,
     saved_at: new Date().toISOString()
@@ -175,12 +189,26 @@ export function assertAdminToken(token) {
   }
 }
 
-/** Write JSON and force mode 0600 even when overwriting a permissive file. */
+/** Atomically replace JSON through a mode-0600 sibling file. */
 export function writeOwnerJson(target, payload) {
-  writeFileSync(target, `${JSON.stringify(payload, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: OWNER_FILE_MODE
-  });
+  const temporary = `${target}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  let descriptor;
+  try {
+    descriptor = openSync(temporary, "wx", OWNER_FILE_MODE);
+    writeFileSync(descriptor, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    renameSync(temporary, target);
+  } catch (error) {
+    if (descriptor !== undefined) closeSync(descriptor);
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The temporary file can be absent when open or rename failed.
+    }
+    throw error;
+  }
   chmodSync(target, OWNER_FILE_MODE);
   assertOwnerFileMode(target);
 }

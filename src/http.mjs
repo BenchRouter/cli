@@ -51,12 +51,13 @@ export async function apiRequest({
   path,
   body,
   label,
-  timeoutMs = 30000
+  timeoutMs = 30000,
+  signal
 }) {
   const headers = {
-    accept: "application/json",
-    authorization: `Bearer ${token}`
+    accept: "application/json"
   };
+  if (token) headers.authorization = `Bearer ${token}`;
   let payload;
   if (body !== undefined) {
     headers["content-type"] = "application/json";
@@ -70,7 +71,9 @@ export async function apiRequest({
       method,
       headers,
       body: payload,
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs)
     });
     text = await response.text();
   } catch (error) {

@@ -6,11 +6,12 @@ built, or proof that still needs the service worktree.
 
 ## Browser-only by server design
 
-- **Account control-token mint, list, and revoke:** `POST|GET /v1/dashboard/control-tokens`
+- **Account control-token list and revoke:** `GET /v1/dashboard/control-tokens`
   and `POST /v1/dashboard/control-tokens/:tokenId/revoke` authenticate a GitHub
-  identity session only. The CLI provides `account token save` for an
-  already-minted `br_ctrl_` token; it never mints one and never prints a secret.
-  A leaked `br_ctrl_` token must be revoked in the dashboard.
+  identity session only. `benchrouter login` creates a browser-assisted
+  authorization transaction, but the signed-in browser still selects the
+  account and approves access. The raw token is delivered only to the waiting
+  CLI. A leaked `br_ctrl_` token must be revoked in the dashboard.
 - **Admin key mint:** `POST /v1/admin/keys` rejects an admin-key bearer with
   `admin_session_required`; only a GitHub-session admin may mint. `admin keys
   list` and `admin keys revoke` accept a `bradm_` bearer and are wired.
@@ -33,10 +34,10 @@ built, or proof that still needs the service worktree.
   fixtures in `test/fixtures/repo-read/` were captured before that enrichment, so
   they exercise the parse and render path but not the enriched fields. Re-record
   them from the `repo-read` / `service-integration` worktree to close this.
-- **Live smoke:** no command has been run against production with a real
-  `br_ctrl_` or `bradm_` token. Request construction and every rendered field are
-  verified against the service route table, shared DTOs, and handlers; the round
-  trip is not.
+- **Admin live smoke:** no admin command has been run against production with a
+  real `bradm_` token. Account login has its own release smoke and must prove the
+  browser approval, single exchange, saved owner-only config, and account self
+  request before publication.
 
 ## Notes
 

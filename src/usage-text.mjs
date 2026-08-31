@@ -9,7 +9,23 @@ const ADMIN_FLAGS = `  --admin-token bradm_...      Defaults to BENCHROUTER_ADMI
 `;
 
 const CONTROL_USAGE = {
+  login: `Usage:
+  benchrouter login [--name text] [--expires-in-days 90]
+
+Creates a short-lived authorization request, opens BenchRouter in your browser,
+and waits for you to approve one account. The browser never receives the token.
+The CLI saves the token atomically in private local config and proves the account.
+
+Options:
+  --name <text>                Token name shown in the browser. Defaults to CLI login.
+  --expires-in-days <1..365>  Token lifetime. Defaults to 90.
+  --timeout-seconds <1..600>  Browser approval wait. Defaults to 600.
+  --no-open                    Print the authorization URL without opening a browser.
+  --api-url <url>              Defaults to https://api.benchrouter.com.
+  --json                       Print the final non-secret result as JSON.
+`,
   account: `Usage:
+  benchrouter login
   benchrouter account show
   benchrouter account token save --account-token br_ctrl_...
 
@@ -26,7 +42,7 @@ ${ACCOUNT_FLAGS}`,
   benchrouter account token save --account-token br_ctrl_...
 
 Saves an already-minted account token. Never prints the secret.
-Minting still requires a browser session (POST /v1/dashboard/control-tokens).
+This is a recovery path. Use \`benchrouter login\` for normal browser-assisted sign-in.
 
 Options:
 ${ACCOUNT_FLAGS}`,
@@ -421,7 +437,8 @@ export function resolveControlUsageName(positional) {
 }
 
 export function topLevelControlUsageLines() {
-  return `  benchrouter account show|token save [--json]
+  return `  benchrouter login [--name text] [--expires-in-days 90]
+  benchrouter account show|token save [--json]
   benchrouter billing show [--json]
   benchrouter billing top-up --amount <usd> [--yes]
   benchrouter keys list|create|revoke [--json]
