@@ -699,7 +699,9 @@ async function doctor() {
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
   const repoFullName = stringArg("repo") ?? detectGitHubRepo();
   const failures = [];
-  const checks = [];
+  const passed = [];
+  const skipped = [];
+  const notes = [];
   const requiredFiles = [
     ".benchrouter/benchrouter.yml",
     ".benchrouter/.kit-state.json",
@@ -805,8 +807,14 @@ async function doctor() {
     if (envKeys.includes("BENCHROUTER_EVAL_API_KEY")) {
       failures.push(`${envTemplate.relativePath} must not include BENCHROUTER_EVAL_API_KEY; GitHub Actions authenticates with OIDC`);
     }
+    const allowedBenchRouterRuntimeKeys = new Set(["BENCHROUTER_API_KEY"]);
+    if (expectedRuntimeKeys.has("BENCHROUTER_DISPATCH_API_URL")) {
+      allowedBenchRouterRuntimeKeys.add("BENCHROUTER_DISPATCH_API_URL");
+    }
     const ciOnlyBenchRouterKeys = envKeys.filter(
-      (key) => key.startsWith("BENCHROUTER_") && key !== "BENCHROUTER_API_KEY" && key !== "BENCHROUTER_EVAL_API_KEY"
+      (key) => key.startsWith("BENCHROUTER_")
+        && !allowedBenchRouterRuntimeKeys.has(key)
+        && key !== "BENCHROUTER_EVAL_API_KEY"
     );
     if (ciOnlyBenchRouterKeys.length > 0) {
       failures.push(`${envTemplate.relativePath} includes CI-only BenchRouter env vars: ${ciOnlyBenchRouterKeys.join(", ")}`);
@@ -817,12 +825,12 @@ async function doctor() {
   }
 
   for (const checklistItem of runtimeHostChecklist({ root, routes: manifestRoutes, apiUrl })) {
-    checks.push(checklistItem);
+    notes.push(checklistItem);
   }
 
   const wiringResult = validateRuntimeWiringForDoctor(root, manifestRoutes, failures);
   if (wiringResult.ok) {
-    checks.push(`runtime wiring ✓ ${wiringResult.routesChecked} route${wiringResult.routesChecked === 1 ? "" : "s"} reference call_site.base_url_env from code_refs`);
+    passed.push(`runtime wiring: ${wiringResult.routesChecked} route${wiringResult.routesChecked === 1 ? "" : "s"} reference call_site.base_url_env from code_refs`);
   }
 
   const routeForProxyPing = manifestRoutes.find((route) => route.routeId)?.routeId;
@@ -833,45 +841,54 @@ async function doctor() {
     failures
   });
   if (proxyResult.ok) {
-    checks.push(`auth ✓ live proxy ping used runtime BENCHROUTER_API_KEY from env for ${proxyResult.routeId}`);
-    checks.push(`model resolution ✓ configured route model ${proxyResult.routeId} -> selected provider/canonical slug ${proxyResult.model} (usage present)`);
+    passed.push(`live proxy authentication: runtime BENCHROUTER_API_KEY from env worked for ${proxyResult.routeId}`);
+    passed.push(`live proxy model resolution: configured route ${proxyResult.routeId} selected ${proxyResult.model} and returned usage`);
   } else if (proxyResult.skipped) {
-    checks.push(`auth skipped: ${proxyResult.reason}`);
+    skipped.push(`live proxy authentication and route resolution: ${proxyResult.reason}`);
   }
 
   if (!args["skip-github-workflow"]) {
     if (!repoFullName) {
       failures.push("could not detect GitHub repo for workflow check; pass --repo owner/repo or --skip-github-workflow");
     } else {
-      verifyGitHubWorkflowState(repoFullName, failures, checks);
-      checks.push("GitHub Actions checklist: BenchRouter Evals uses keyless OIDC (id-token: write); no eval API key is stored in the repo");
+      verifyGitHubWorkflowState(repoFullName, failures, passed, skipped);
+      notes.push("GitHub Actions checklist: BenchRouter Evals uses keyless OIDC (id-token: write); no eval API key is stored in the repo");
     }
   } else {
-    checks.push("GitHub workflow check skipped");
+    skipped.push("GitHub workflow state: --skip-github-workflow was passed");
   }
 
   if (args["check-default-branch"]) {
     if (!repoFullName) {
       failures.push("could not detect GitHub repo for default-branch check; pass --repo owner/repo");
     } else {
-      verifyDefaultBranchConfig(repoFullName, failures);
+      verifyDefaultBranchConfig(repoFullName, failures, passed);
     }
+  } else {
+    skipped.push("default-branch config: pass --check-default-branch to verify the remote default branch");
   }
 
+  skipped.push(
+    `production readiness: run benchrouter setup status${repoFullName ? ` --repo ${repoFullName}` : " --repo owner/repo"} with an account token`
+  );
+  skipped.push("evaluation quality: local files, calibration, and wiring do not certify eval quality or a production result");
+
   if (failures.length > 0) {
-    for (const check of checks) {
-      process.stderr.write(`doctor check: ${check}\n`);
-    }
-    for (const failure of failures) {
-      process.stderr.write(`doctor failed: ${failure}\n`);
-    }
+    printDoctorReport(process.stderr, { passed, skipped, notes, failures });
+    process.stderr.write("BenchRouter doctor failed one or more checks.\n");
     process.exit(1);
   }
 
-  for (const check of checks) {
-    process.stdout.write(`${check}\n`);
-  }
-  process.stdout.write("BenchRouter doctor passed.\n");
+  printDoctorReport(process.stdout, { passed, skipped, notes, failures });
+  process.stdout.write("BenchRouter doctor passed all checks that ran. Skipped checks are listed above.\n");
+  process.stdout.write("This result does not certify evaluation quality or production readiness.\n");
+}
+
+function printDoctorReport(stream, { passed, skipped, notes, failures }) {
+  for (const item of passed) stream.write(`doctor passed: ${item}\n`);
+  for (const item of skipped) stream.write(`doctor skipped: ${item}\n`);
+  for (const item of notes) stream.write(`doctor note: ${item}\n`);
+  for (const item of failures) stream.write(`doctor failed: ${item}\n`);
 }
 
 async function fetchModelIds(apiUrl) {
@@ -1312,9 +1329,10 @@ function proxyNetworkMessage(error) {
   return "request failed";
 }
 
-function verifyGitHubWorkflowState(repoFullName, failures, checks) {
+function verifyGitHubWorkflowState(repoFullName, failures, passed, skipped) {
   const result = spawnSync("gh", ["api", `repos/${repoFullName}/actions/workflows`], { encoding: "utf8" });
   if (result.error && result.error.code === "ENOENT") {
+    skipped.push("GitHub workflow state: gh is unavailable");
     return;
   }
   if (result.status !== 0) {
@@ -1333,7 +1351,7 @@ function verifyGitHubWorkflowState(repoFullName, failures, checks) {
     ? workflows.find((entry) => entry && entry.path === ".github/workflows/benchrouter-evals.yml")
     : null;
   if (!workflow) {
-    checks.push("GitHub workflow not registered yet; this is expected before the generated workflow is pushed");
+    skipped.push("GitHub workflow state: workflow is not registered yet; this is expected before the generated workflow is pushed");
     return;
   }
   const state = typeof workflow.state === "string" ? workflow.state : "unknown";
@@ -1341,10 +1359,10 @@ function verifyGitHubWorkflowState(repoFullName, failures, checks) {
     failures.push(`BenchRouter Evals workflow is ${state}; re-enable it with: gh workflow enable benchrouter-evals.yml --repo ${repoFullName}`);
     return;
   }
-  checks.push("GitHub workflow ✓ BenchRouter Evals is active");
+  passed.push("GitHub workflow state: BenchRouter Evals is active");
 }
 
-function verifyDefaultBranchConfig(repoFullName, failures) {
+function verifyDefaultBranchConfig(repoFullName, failures, passed) {
   const repoResult = spawnSync("gh", ["repo", "view", repoFullName, "--json", "defaultBranchRef"], { encoding: "utf8" });
   if (repoResult.status !== 0) {
     failures.push(`could not look up GitHub default branch with gh: ${(repoResult.stderr || repoResult.stdout || "gh failed").trim()}`);
@@ -1368,7 +1386,9 @@ function verifyDefaultBranchConfig(repoFullName, failures) {
   ], { encoding: "utf8" });
   if (configResult.status !== 0) {
     failures.push(`.benchrouter/benchrouter.yml is not readable on default branch ${defaultBranch}: ${(configResult.stderr || configResult.stdout || "gh failed").trim()}`);
+    return;
   }
+  passed.push(`default-branch config: .benchrouter/benchrouter.yml is readable on ${defaultBranch}`);
 }
 
 function updatePackageJson(packageJsonPath, packageJsonInstructions) {

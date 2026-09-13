@@ -45,10 +45,14 @@ test("doctor passes with wired code_refs and a proxy fixture replay", async (t) 
   assert.match(result.stdout, /GitHub Actions checklist: ensure BenchRouter Evals is enabled; CI authenticates with GitHub OIDC/);
   assert.match(result.stdout, /optional fallback provider key detected .* OPENAI_API_KEY/);
   assert.match(result.stdout, /runtime wiring/);
-  assert.match(result.stdout, /auth .*live proxy ping used runtime BENCHROUTER_API_KEY/);
-  assert.match(result.stdout, /model resolution .*configured route model app\/chat -> selected provider\/canonical slug minimax\/minimax-m2\.7.*usage present/);
-  assert.match(result.stdout, /GitHub workflow check skipped/);
-  assert.match(result.stdout, /BenchRouter doctor passed\./);
+  assert.match(result.stdout, /doctor passed: live proxy authentication: runtime BENCHROUTER_API_KEY/);
+  assert.match(result.stdout, /doctor passed: live proxy model resolution: configured route app\/chat selected minimax\/minimax-m2\.7 and returned usage/);
+  assert.match(result.stdout, /doctor skipped: GitHub workflow state: --skip-github-workflow was passed/);
+  assert.match(result.stdout, /doctor skipped: default-branch config/);
+  assert.match(result.stdout, /doctor skipped: production readiness: run benchrouter setup status/);
+  assert.match(result.stdout, /doctor skipped: evaluation quality: local files, calibration, and wiring do not certify/);
+  assert.match(result.stdout, /BenchRouter doctor passed all checks that ran/);
+  assert.match(result.stdout, /does not certify evaluation quality or production readiness/);
   assert.equal(proxy.requests.length, 1);
   assert.equal(proxy.requests[0].method, "POST");
   assert.equal(proxy.requests[0].url, "/v1/chat/completions");
@@ -68,7 +72,7 @@ test("doctor skips live proxy ping when the runtime key is absent", async (t) =>
   const result = await runDoctor(root, proxy.url, { BENCHROUTER_API_KEY: undefined });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /auth skipped: no BENCHROUTER_API_KEY in environment; live proxy ping not run/);
+  assert.match(result.stdout, /doctor skipped: live proxy authentication and route resolution: no BENCHROUTER_API_KEY in environment; live proxy ping not run/);
   assert.equal(proxy.requests.length, 0);
 });
 
@@ -82,6 +86,51 @@ test("doctor accepts the repository env.template convention", async (t) => {
   assert.match(result.stdout, /BenchRouter doctor passed/);
 });
 
+test("doctor accepts a declared BENCHROUTER runtime base URL from the current generated kit", async (t) => {
+  const root = await createTargetRepo(t, {
+    codeRefText: "const baseURL = process.env.BENCHROUTER_DISPATCH_API_URL;"
+  });
+  const manifest = (await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"))
+    .replaceAll("OPENAI_BASE_URL", "BENCHROUTER_DISPATCH_API_URL");
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifest);
+  await writeFile(
+    path.join(root, ".env.example"),
+    "BENCHROUTER_API_KEY=\nBENCHROUTER_DISPATCH_API_URL=https://api.benchrouter.com/v1\nOPENAI_API_KEY=\n"
+  );
+
+  const result = await runDoctor(root, "https://api.benchrouter.com", {
+    BENCHROUTER_API_KEY: undefined
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /runtime wiring: 1 route reference call_site\.base_url_env from code_refs/);
+  assert.match(result.stdout, /set BENCHROUTER_DISPATCH_API_URL to https:\/\/api\.benchrouter\.com\/v1/);
+  assert.doesNotMatch(result.stderr, /CI-only BenchRouter env vars/);
+});
+
+test("doctor rejects a declared reserved secret key as a runtime base URL", async (t) => {
+  const root = await createTargetRepo(t, {
+    codeRefText: "const baseURL = process.env.BENCHROUTER_ACCOUNT_TOKEN;"
+  });
+  const manifest = (await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"))
+    .replaceAll("OPENAI_BASE_URL", "BENCHROUTER_ACCOUNT_TOKEN");
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifest);
+  await writeFile(
+    path.join(root, ".env.example"),
+    "BENCHROUTER_API_KEY=\nBENCHROUTER_ACCOUNT_TOKEN=\nOPENAI_API_KEY=\n"
+  );
+
+  const result = await runDoctor(root, "https://api.benchrouter.com", {
+    BENCHROUTER_API_KEY: undefined
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /\.env\.example includes CI-only BenchRouter env vars: BENCHROUTER_ACCOUNT_TOKEN/
+  );
+});
+
 test("doctor reads distinct multi-route refs only from canonical YAML", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), multiRouteManifestYaml());
@@ -93,7 +142,7 @@ test("doctor reads distinct multi-route refs only from canonical YAML", async (t
   const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /runtime wiring .* 2 routes reference call_site\.base_url_env from code_refs/);
+  assert.match(result.stdout, /doctor passed: runtime wiring: 2 routes reference call_site\.base_url_env from code_refs/);
   assert.match(result.stdout, /OPENAI_BASE_URL to .*\/v1; set SUMMARIZE_BASE_URL to .*\/v1/);
 });
 
@@ -192,7 +241,7 @@ test("doctor accepts a local workflow before GitHub registers the first push", a
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /GitHub workflow not registered yet; this is expected before the generated workflow is pushed/);
+  assert.match(result.stdout, /doctor skipped: GitHub workflow state: workflow is not registered yet; this is expected before the generated workflow is pushed/);
   assert.match(result.stdout, /BenchRouter doctor passed/);
 });
 

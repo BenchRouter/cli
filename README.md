@@ -235,6 +235,15 @@ The runtime checklist uses the route's `call_site.base_url_env`. It prints
 adds its own `/v1/messages` path.
 
 `doctor` can also make one real proxy call when `BENCHROUTER_API_KEY` is present.
+It labels each external check as passed, failed, or skipped. A doctor pass only
+means that every check that ran passed. It does not certify evaluation quality
+or production readiness. Local calibration does not provide that certificate.
+
+Use `benchrouter setup status --repo owner/repo` with an account token to read
+the server's separate route-registration, evaluation, production-eligibility,
+and observed-serving facts. Evaluation completion is not a production
+eligibility gate. Observed serving is historical delivery evidence, not a
+current health check.
 
 ```bash
 benchrouter doctor --repo owner/repo --skip-github-workflow
