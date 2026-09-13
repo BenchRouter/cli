@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "diagnostic": {
+    "route_id": "exampleapp/chat",
+    "status": "imported",
+    "packet_created_at": "2026-09-13T12:00:00.000Z",
+    "imported_at": "2026-09-13T12:05:00.000Z",
+    "last_plan_error": null,
+    "last_plan_attempt_at": "2026-09-13T12:06:00.000Z",
+    "last_plan_status": 202,
+    "readiness": {
+      "registered": true,
+      "evaluation_status": "queued",
+      "production_eligible": true,
+      "observed_serving": false
+    },
+    "pr_open_no_report": null
+  }
+}

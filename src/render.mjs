@@ -144,12 +144,14 @@ export function renderReposList(body) {
 }
 
 /**
- * GET /v1/setup/diagnostic returns { ok, diagnostic: setup_sessions row }.
- * Selected columns: route_id, status, packet_created_at, imported_at,
- * last_plan_error, last_plan_attempt_at, last_plan_status, plus pr_open_no_report.
+ * GET /v1/setup/diagnostic returns the latest setup session and four separate
+ * readiness facts. Do not collapse these facts into one "ready" result:
+ * evaluation completion is not a production-eligibility gate, and observed
+ * serving is historical evidence rather than a current health check.
  */
 export function renderSetupStatus(body) {
   const diagnostic = body.diagnostic ?? body;
+  const readiness = diagnostic.readiness;
   printLines([
     `Status: ${diagnostic.status ?? "unknown"}`,
     ...(diagnostic.route_id ? [`Route: ${diagnostic.route_id}`] : []),
@@ -158,8 +160,25 @@ export function renderSetupStatus(body) {
     ...(diagnostic.last_plan_status != null ? [`Last plan status: ${diagnostic.last_plan_status}`] : []),
     ...(diagnostic.last_plan_attempt_at ? [`Last plan attempt: ${diagnostic.last_plan_attempt_at}`] : []),
     ...(diagnostic.last_plan_error ? [`Last plan error: ${diagnostic.last_plan_error}`] : []),
-    ...(diagnostic.pr_open_no_report ? ["Open PR has not reported eval results yet."] : [])
+    ...(diagnostic.pr_open_no_report ? ["Open PR has not reported eval results yet."] : []),
+    "Readiness:",
+    ...(readiness && typeof readiness === "object"
+      ? [
+          `- Registered: ${formatReportedBoolean(readiness.registered)}`,
+          `- Evaluation: ${readiness.evaluation_status ?? "none recorded"}`,
+          `- Production eligible: ${formatReportedBoolean(readiness.production_eligible)}`,
+          `- Observed serving: ${formatReportedBoolean(readiness.observed_serving)}`
+        ]
+      : ["- Not reported by the server."]),
+    "Evaluation completion is not required for production eligibility.",
+    "Observed serving is historical evidence of a successful runtime delivery, not a current health check."
   ]);
+}
+
+function formatReportedBoolean(value) {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  return "unknown";
 }
 
 /**
