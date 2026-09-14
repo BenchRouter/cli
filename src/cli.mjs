@@ -216,6 +216,9 @@ async function init() {
     await mkdir(path.dirname(targetPath), { recursive: true });
     await writeFile(targetPath, file.content);
     process.stdout.write(`${previous === null ? "created" : "updated"} ${file.path}\n`);
+    if (refreshWorkflow && previous !== null) {
+      process.stdout.write("Regenerated the BenchRouter-managed workflow for all routes. Review its diff before committing any custom workflow changes.\n");
+    }
     writtenPaths.push(file.path);
   }
 
