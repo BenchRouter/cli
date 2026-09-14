@@ -583,7 +583,7 @@ test("init sends expired add-route setup scope back to the add-route flow", asyn
   assert.equal(setupServer.requests.length, 1);
 });
 
-test("init stops for bound user approval and preserves the exact observed incumbent", async (t) => {
+test("init prints the recorded browser approval URL and preserves the exact observed incumbent", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-model-choice-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const setupServer = await startFixtureProxy(t, {
@@ -611,12 +611,15 @@ test("init stops for bound user approval and preserves the exact observed incumb
   assert.match(result.stderr, /Provider: xai/);
   assert.match(result.stderr, /Exact provider reference: grok-4-1-fast-reasoning-latest/);
   assert.match(result.stderr, /Canonical original: x-ai\/grok-4\.1-fast/);
-  assert.match(result.stderr, /x-ai\/grok-4\.3 \(provider_successor; input \$0\.2\/1M, output \$0\.5\/1M, 1x incumbent price\)/);
-  assert.match(result.stderr, /Approval context expires at: 2026-08-19T20:00:00\.000Z/);
+  assert.match(result.stderr, /x-ai\/grok-4\.3 \(provider_recommended_successor; input \$1\.25\/1M, output \$2\.5\/1M, 5\.3571x incumbent price\)/);
+  assert.match(result.stderr, /Approval context expires at: 2026-09-14T17:29:48\.651Z/);
+  assert.match(
+    result.stderr,
+    /https:\/\/benchrouter\.com\/setup\/authorize\?approval=incapproval_3a4ebf2c77524af8ac552d0b6bd5578b/
+  );
+  assert.match(result.stderr, /signed-in repository member must choose the replacement there/);
   assert.match(result.stderr, /Do not choose or substitute one yourself/);
-  assert.match(result.stderr, /Keep --incumbent-model, --provider-id, and --provider-ref unchanged/);
-  assert.match(result.stderr, /--approved-baseline-model <listed-canonical-id>/);
-  assert.match(result.stderr, /--incumbent-approval-context-id iac_fixture_grok_41_fast/);
+  assert.match(result.stderr, /rerun the exact same init command unchanged/);
   assert.equal(setupServer.requests.length, 1);
   assert.deepEqual(setupServer.requests[0].body.route, {
     route_id: routeId,
@@ -624,53 +627,6 @@ test("init stops for bound user approval and preserves the exact observed incumb
     incumbent_model: "grok-4-1-fast-reasoning-latest",
     provider_id: "xai",
     provider_ref: "grok-4-1-fast-reasoning-latest"
-  });
-});
-
-test("init sends replacement approval only with its server-bound context", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-bound-model-choice-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const setupServer = await startFixtureProxy(t, {
-    status: 409,
-    body: replacementConfirmationFixture
-  });
-  const baseArgs = [
-    "init",
-    "--setup-key", "br_setup_model_choice_fixture",
-    "--route-id", routeId,
-    "--name", "Chat",
-    "--incumbent-model", "grok-4-1-fast-reasoning-latest",
-    "--provider-id", "xai",
-    "--provider-ref", "grok-4-1-fast-reasoning-latest",
-    "--api-url", setupServer.url,
-    "--output-dir", root
-  ];
-
-  const missingContext = await runCli([
-    ...baseArgs,
-    "--approved-baseline-model", "x-ai/grok-4.3"
-  ], root);
-
-  assert.equal(missingContext.status, 1);
-  assert.match(missingContext.stderr, /Pass --approved-baseline-model and --incumbent-approval-context-id together/);
-  assert.equal(setupServer.requests.length, 0);
-
-  const approved = await runCli([
-    ...baseArgs,
-    "--approved-baseline-model", "x-ai/grok-4.3",
-    "--incumbent-approval-context-id", "iac_fixture_grok_41_fast"
-  ], root);
-
-  assert.equal(approved.status, 1);
-  assert.equal(setupServer.requests.length, 1);
-  assert.deepEqual(setupServer.requests[0].body.route, {
-    route_id: routeId,
-    name: "Chat",
-    incumbent_model: "grok-4-1-fast-reasoning-latest",
-    provider_id: "xai",
-    provider_ref: "grok-4-1-fast-reasoning-latest",
-    approved_baseline_model: "x-ai/grok-4.3",
-    incumbent_approval_context_id: "iac_fixture_grok_41_fast"
   });
 });
 
@@ -700,7 +656,6 @@ test("init sends an unknown provider identity to review without offering substit
   assert.match(result.stderr, /Provider: anthropic/);
   assert.match(result.stderr, /Exact provider reference: claude-haiku-4-5-20991231/);
   assert.match(result.stderr, /Do not substitute a model or remove provider metadata/);
-  assert.doesNotMatch(result.stderr, /--approved-baseline-model/);
   assert.equal(setupServer.requests.length, 1);
   assert.deepEqual(setupServer.requests[0].body.route, {
     route_id: routeId,
