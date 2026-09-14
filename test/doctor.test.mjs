@@ -681,6 +681,55 @@ test("init maps recorded browser approval to the matching additional route", asy
   }]);
 });
 
+test("init preserves a route-bound browser URL when routes share one observed tuple", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-shared-model-choice-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const setupServer = await startFixtureProxy(t, {
+    status: 409,
+    body: replacementConfirmationFixture
+  });
+
+  const result = await runCli([
+    "init",
+    "--setup-key", "br_setup_shared_model_choice_fixture",
+    "--route-id", "app/reasoning-primary",
+    "--name", "Primary reasoning",
+    "--incumbent-model", "grok-4-1-fast-reasoning-latest",
+    "--provider-id", "xai",
+    "--provider-ref", "grok-4-1-fast-reasoning-latest",
+    "--route-id", "app/reasoning-secondary",
+    "--name", "Secondary reasoning",
+    "--incumbent-model", "grok-4-1-fast-reasoning-latest",
+    "--provider-id", "xai",
+    "--provider-ref", "grok-4-1-fast-reasoning-latest",
+    "--api-url", setupServer.url,
+    "--output-dir", root
+  ], root);
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /https:\/\/benchrouter\.com\/setup\/authorize\?approval=incapproval_3a4ebf2c77524af8ac552d0b6bd5578b/
+  );
+  assert.match(result.stderr, /rerun the exact same init command unchanged/);
+  assert.doesNotMatch(result.stderr, /Start a new setup session/);
+  assert.equal(setupServer.requests.length, 1);
+  assert.deepEqual(setupServer.requests[0].body.route, {
+    route_id: "app/reasoning-primary",
+    name: "Primary reasoning",
+    incumbent_model: "grok-4-1-fast-reasoning-latest",
+    provider_id: "xai",
+    provider_ref: "grok-4-1-fast-reasoning-latest"
+  });
+  assert.deepEqual(setupServer.requests[0].body.routes, [{
+    route_id: "app/reasoning-secondary",
+    name: "Secondary reasoning",
+    incumbent_model: "grok-4-1-fast-reasoning-latest",
+    provider_id: "xai",
+    provider_ref: "grok-4-1-fast-reasoning-latest"
+  }]);
+});
+
 test("init sends an unknown provider identity to review without offering substitution", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-provider-review-"));
   t.after(() => rm(root, { recursive: true, force: true }));

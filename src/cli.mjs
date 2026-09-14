@@ -1008,8 +1008,7 @@ After browser approval, rerun the exact same init command unchanged.`;
 }
 
 function matchingReplacementRouteSpec(error, routeSpecs) {
-  const matches = routeSpecs.filter((routeSpec) => matchesObservedIncumbent(error.observed_incumbent, routeSpec));
-  return matches.length === 1 ? matches[0] : null;
+  return routeSpecs.find((routeSpec) => matchesObservedIncumbent(error.observed_incumbent, routeSpec)) ?? null;
 }
 
 function matchesObservedIncumbent(observed, routeSpec) {
