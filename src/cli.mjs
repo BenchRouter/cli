@@ -575,7 +575,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
       fail(unsupportedIncumbentMessage(primary.incumbent_model));
     }
     if (errorCode === "model_replacement_confirmation_required") {
-      fail(modelReplacementMessage(error, primary));
+      fail(modelReplacementMessage(error, matchingReplacementRouteSpec(error, routeSpecs)));
     }
     if (errorCode === "provider_identity_review_required") {
       fail(providerIdentityReviewMessage(error, primary));
@@ -988,7 +988,7 @@ function modelReplacementMessage(error, routeSpec) {
   const alternatives = Array.isArray(error.alternatives)
     ? error.alternatives.filter(isReplacementAlternative)
     : [];
-  if (!approvalUrl || !canonicalOriginal || alternatives.length === 0 || !matchesObservedIncumbent(error.observed_incumbent, routeSpec)) {
+  if (!routeSpec || !approvalUrl || !canonicalOriginal || alternatives.length === 0) {
     return `BenchRouter requires a replacement for the observed incumbent, but it did not return complete matching approval evidence.
 Do not choose or substitute a model. Start a new setup session and run the same init command again.`;
   }
@@ -1005,6 +1005,11 @@ Open this browser approval page:
   ${approvalUrl}
 A signed-in GitHub user with repository write access must choose the replacement there. Do not choose or substitute one yourself.
 After browser approval, rerun the exact same init command unchanged.`;
+}
+
+function matchingReplacementRouteSpec(error, routeSpecs) {
+  const matches = routeSpecs.filter((routeSpec) => matchesObservedIncumbent(error.observed_incumbent, routeSpec));
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function matchesObservedIncumbent(observed, routeSpec) {

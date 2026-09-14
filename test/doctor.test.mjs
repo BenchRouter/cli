@@ -630,6 +630,57 @@ test("init prints the recorded browser approval URL and preserves the exact obse
   });
 });
 
+test("init maps recorded browser approval to the matching additional route", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-additional-model-choice-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const setupServer = await startFixtureProxy(t, {
+    status: 409,
+    body: replacementConfirmationFixture
+  });
+
+  const result = await runCli([
+    "init",
+    "--setup-key", "br_setup_additional_model_choice_fixture",
+    "--route-id", routeId,
+    "--name", "Chat",
+    "--incumbent-model", "openai/gpt-4o-mini",
+    "--provider-id", "openai",
+    "--provider-ref", "gpt-4o-mini-2024-07-18",
+    "--route-id", "app/reasoning",
+    "--name", "Reasoning",
+    "--incumbent-model", "grok-4-1-fast-reasoning-latest",
+    "--provider-id", "xai",
+    "--provider-ref", "grok-4-1-fast-reasoning-latest",
+    "--api-url", setupServer.url,
+    "--output-dir", root
+  ], root);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Observed model: grok-4-1-fast-reasoning-latest/);
+  assert.match(result.stderr, /Provider: xai/);
+  assert.match(
+    result.stderr,
+    /https:\/\/benchrouter\.com\/setup\/authorize\?approval=incapproval_3a4ebf2c77524af8ac552d0b6bd5578b/
+  );
+  assert.match(result.stderr, /rerun the exact same init command unchanged/);
+  assert.doesNotMatch(result.stderr, /Start a new setup session/);
+  assert.equal(setupServer.requests.length, 1);
+  assert.deepEqual(setupServer.requests[0].body.route, {
+    route_id: routeId,
+    name: "Chat",
+    incumbent_model: "openai/gpt-4o-mini",
+    provider_id: "openai",
+    provider_ref: "gpt-4o-mini-2024-07-18"
+  });
+  assert.deepEqual(setupServer.requests[0].body.routes, [{
+    route_id: "app/reasoning",
+    name: "Reasoning",
+    incumbent_model: "grok-4-1-fast-reasoning-latest",
+    provider_id: "xai",
+    provider_ref: "grok-4-1-fast-reasoning-latest"
+  }]);
+});
+
 test("init sends an unknown provider identity to review without offering substitution", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-provider-review-"));
   t.after(() => rm(root, { recursive: true, force: true }));
