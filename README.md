@@ -26,12 +26,12 @@ For a direct-provider incumbent, also pass `--provider-id <id>` and
 
 BenchRouter preserves that exact observed tuple during setup. If the canonical
 incumbent cannot serve, `init` stops and lists only replacements backed by
-catalog evidence. The CLI prints the browser approval page. A signed-in
-repository member selects the replacement there. Then rerun the exact same
-`init` command unchanged. The server binds the browser approval to the setup
-session, route, exact observed model, provider, provider reference, and offered
-options. An unknown identity stops for catalog review. It does not become a
-free-form model selection.
+catalog evidence. The CLI prints the browser approval page. A signed-in GitHub
+user with repository write access selects the replacement there. Then rerun the
+exact same `init` command unchanged. The server binds the browser approval to
+the setup session, route, exact observed model, provider, provider reference,
+and offered options. An unknown identity stops for catalog review. It does not
+become a free-form model selection.
 
 ### Repository-executable evals
 

@@ -617,7 +617,7 @@ test("init prints the recorded browser approval URL and preserves the exact obse
     result.stderr,
     /https:\/\/benchrouter\.com\/setup\/authorize\?approval=incapproval_3a4ebf2c77524af8ac552d0b6bd5578b/
   );
-  assert.match(result.stderr, /signed-in repository member must choose the replacement there/);
+  assert.match(result.stderr, /signed-in GitHub user with repository write access must choose the replacement there/);
   assert.match(result.stderr, /Do not choose or substitute one yourself/);
   assert.match(result.stderr, /rerun the exact same init command unchanged/);
   assert.equal(setupServer.requests.length, 1);

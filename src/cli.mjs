@@ -1003,7 +1003,7 @@ Exact provider reference: ${routeSpec.provider_ref ?? "not supplied"}
 Canonical original: ${canonicalOriginal}${choices}${expires}
 Open this browser approval page:
   ${approvalUrl}
-A signed-in repository member must choose the replacement there. Do not choose or substitute one yourself.
+A signed-in GitHub user with repository write access must choose the replacement there. Do not choose or substitute one yourself.
 After browser approval, rerun the exact same init command unchanged.`;
 }
 
