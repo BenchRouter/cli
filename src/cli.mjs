@@ -178,16 +178,17 @@ async function init() {
   if (dryRun) {
     process.stdout.write(`Dry run for ${targetRepo}\n`);
     for (const file of previewPacket.files) {
-      process.stdout.write(`would write ${file.path}\n`);
+      if (file.path !== ".env.example") process.stdout.write(`would write ${file.path}\n`);
     }
     process.stdout.write("would update package.json scripts/devDependencies when package.json exists\n");
-    process.stdout.write("would update or create .env.example\n");
+    process.stdout.write("runtime env configuration is deferred until activation\n");
     process.stdout.write("would request Runtime/host BENCHROUTER_API_KEY during a real init\n");
     return;
   }
 
   const writtenPaths = [];
   for (const file of previewPacket.files) {
+    if (file.path === ".env.example") continue;
     const targetPath = safeTargetPath(outputDir, file.path);
     const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
     if (file.path === ".benchrouter/benchrouter.yml" && previous !== null) {
@@ -206,7 +207,9 @@ async function init() {
       writtenPaths.push(file.path);
       continue;
     }
-    if (previous !== null && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
+    // The generated workflow must include every route's executable paths and secrets.
+    const refreshWorkflow = file.path === ".github/workflows/benchrouter-evals.yml";
+    if (previous !== null && !refreshWorkflow && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
       process.stdout.write(`skip-existing ${file.path}\n`);
       continue;
     }
@@ -229,11 +232,7 @@ async function init() {
     process.stdout.write("skipped package.json update; no package.json found\n");
   }
 
-  const envUpdated = await updateEnvExample(outputDir, previewPacket.runtime_env);
-  process.stdout.write(`${envUpdated ? "updated" : "unchanged"} .env.example\n`);
-  if (envUpdated) {
-    writtenPaths.push(".env.example");
-  }
+  process.stdout.write("Runtime env configuration is deferred until activation. Existing env examples are unchanged.\n");
 
   const commitResponse = await fetchSetupPacket({
     apiUrl,
@@ -1415,57 +1414,6 @@ function isBenchRouterKitFile(relativePath) {
     ".benchrouter/upload-results.mjs",
     ".github/workflows/benchrouter-evals.yml"
   ].includes(relativePath);
-}
-
-async function updateEnvExample(root, runtimeEnv) {
-  const envPath = path.join(root, ".env.example");
-  const previous = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-  const lines = previous.length > 0 ? previous.replace(/\n?$/, "\n").split("\n").filter((line) => line.length > 0) : [];
-  let changed = false;
-  const runtimeEntries = Object.entries(runtimeEnv ?? {}).filter(([key]) => isUserRuntimeEnvKey(key));
-
-  if (runtimeEntries.length === 0 && previous.length === 0) {
-    return false;
-  }
-
-  for (const [key, value] of runtimeEntries) {
-    if (lines.some((line) => line.startsWith(`${key}=`))) {
-      continue;
-    }
-    lines.push(formatEnvExampleLine(key, value));
-    changed = true;
-  }
-
-  if (!changed && previous.length > 0) {
-    return false;
-  }
-
-  await writeFile(envPath, `${lines.join("\n")}\n`);
-  return true;
-}
-
-function isUserRuntimeEnvKey(key) {
-  if (key === "BENCHROUTER_API_KEY") {
-    return true;
-  }
-  if (key.startsWith("BENCHROUTER_")) {
-    return false;
-  }
-  return /^[A-Z_][A-Z0-9_]*$/.test(key);
-}
-
-function formatEnvExampleLine(key, value) {
-  if (key === "BENCHROUTER_API_KEY") {
-    return "BENCHROUTER_API_KEY= # runtime key - set in your runtime host; printed once by setup";
-  }
-  const renderedValue = typeof value === "string" && !value.startsWith("<") ? value : "";
-  if (key.endsWith("_BASE_URL") || key.endsWith("_BASE_URL_ENV") || key.includes("BASE_URL")) {
-    return `${key}=${renderedValue} # point this call site's LLM base URL at BenchRouter`;
-  }
-  if (key.endsWith("_API_KEY")) {
-    return `${key}= # optional direct-provider fallback key`;
-  }
-  return `${key}=${renderedValue}`;
 }
 
 function prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }) {

@@ -293,3 +293,5 @@ resolve the incumbent identity, stop for catalog review. Do not substitute a
 model or remove the observed provider metadata. If a resolved incumbent cannot
 serve, open the server-provided browser approval page. Then rerun the exact same
 `init` command unchanged.
+
+`init` prepares evaluation files and refreshes the generated BenchRouter workflow so added routes receive their declared triggers and executable secret mappings. It preserves production call sites and existing env examples. Add the runtime key and endpoint configuration in the later activation patch.

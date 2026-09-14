@@ -268,7 +268,7 @@ test("doctor accepts a local workflow before GitHub registers the first push", a
   assert.match(result.stdout, /BenchRouter doctor passed/);
 });
 
-test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only env example", async (t) => {
+test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env examples unchanged", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-init-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, ".benchrouter"), { recursive: true });
@@ -354,19 +354,8 @@ test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only e
   assert.match(result.stdout, /npx --yes --package @benchrouter\/cli benchrouter doctor/);
   assert.equal(await readFile(path.join(root, ".benchrouter/sidecar.mjs"), "utf8"), "// current generated sidecar\n");
 
-  const envExample = await readFile(path.join(root, ".env.example"), "utf8");
-  assert.match(envExample, /^BENCHROUTER_API_KEY= # runtime key/m);
-  assert.match(envExample, /^OPENAI_BASE_URL=https:\/\/api\.benchrouter\.com\/v1 # point this call site's LLM base URL at BenchRouter/m);
-  assert.doesNotMatch(envExample, /BENCHROUTER_EVAL_API_KEY/);
-  assert.doesNotMatch(envExample, /BENCHROUTER_EVAL_RUN_ID/);
-  assert.equal(setupServer.requests.length, 2);
-  assert.equal(setupServer.requests[0].authorization, "Bearer br_setup_fixture");
-  assert.equal(setupServer.requests[0].body.dry_run, true);
-  assert.equal(Object.hasOwn(setupServer.requests[1].body, "dry_run"), false);
-  assert.equal(setupServer.requests[1].body.route.provider_id, "openai");
-  assert.equal(setupServer.requests[1].body.route.provider_ref, "gpt-4o-mini-2024-07-18");
-  assert.equal(setupServer.requests[1].body.route.base_url_env, "OPENAI_BASE_URL");
-  assert.deepEqual(setupServer.requests[1].body.route.code_refs, ["src/llm.js"]);
+  assert.equal(existsSync(path.join(root, ".env.example")), false);
+  assert.match(result.stdout, /Runtime env configuration is deferred until activation/);
 });
 
 test("add-route init merges only requested preview routes and preserves local manifest config", async (t) => {
