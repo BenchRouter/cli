@@ -216,8 +216,8 @@ the user approves the write.
 
 ## Doctor
 
-`doctor` checks the generated files, package-script wiring, runtime call-site
-wiring, and the GitHub OIDC workflow. For isolated replay, it also checks
+`doctor` checks the generated files, package-script wiring, and the GitHub OIDC
+workflow. Activation mode also checks the selected runtime call site. For isolated replay, it also checks
 runnable case arrays and scorer syntax. For `repository_executable`, it checks
 that the declared lockfile, case, input, and acceptance refs exist. It does not
 apply isolated-replay JSON shapes or scorer execution to repository files.
@@ -227,7 +227,9 @@ The runtime checklist uses the route's `call_site.base_url_env`. It prints
 `https://api.benchrouter.com` for `ANTHROPIC_BASE_URL`, because the Anthropic SDK
 adds its own `/v1/messages` path.
 
-`doctor` can also make one real proxy call when `BENCHROUTER_API_KEY` is present.
+`doctor` defaults to evaluation checks. It does not require production wiring or a runtime key and never implicitly makes a provider call. Use `--phase activation --route-id product/route` to check one selected call site.
+
+Add `--live-chat-completions` only to opt into a billable synthetic Chat Completions diagnostic. An inherited `BENCHROUTER_API_KEY` alone does not opt in. This diagnostic does not verify the application request contract; use an authorized application smoke for that. Native Anthropic and Responses calls need their own application smoke.
 It labels each external check as passed, failed, or skipped. A doctor pass only
 means that every check that ran passed. It does not certify evaluation quality
 or production readiness. Local calibration does not provide that certificate.
@@ -240,7 +242,7 @@ current health check.
 
 ```bash
 benchrouter doctor --repo owner/repo --skip-github-workflow
-BENCHROUTER_API_KEY=br_live_... benchrouter doctor --repo owner/repo
+benchrouter doctor --phase activation --route-id product/route --repo owner/repo --check-default-branch
 ```
 
 Use `--skip-github-workflow` when `gh` is unavailable or the workflow does not
@@ -291,3 +293,5 @@ resolve the incumbent identity, stop for catalog review. Do not substitute a
 model or remove the observed provider metadata. If a resolved incumbent cannot
 serve, open the server-provided browser approval page. Then rerun the exact same
 `init` command unchanged.
+
+`init` prepares evaluation files and refreshes the generated BenchRouter workflow so added routes receive their declared triggers and executable secret mappings. It preserves production call sites and existing env examples. Add the runtime key and endpoint configuration in the later activation patch.

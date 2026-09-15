@@ -173,26 +173,22 @@ async function init() {
   const previewPacket = previewResponse.setup_packet;
   const targetRepo = repoFullName ?? previewResponse.repo_full_name;
 
-  if (previewPacket.keys_already_provisioned) {
-    const rotateUrl = typeof previewPacket.rotate_url === "string" && previewPacket.rotate_url.length > 0
-      ? previewPacket.rotate_url
-      : "https://benchrouter.com/account";
-    fail(`This setup session already provisioned its one-time runtime key. Create a replacement key at ${rotateUrl}, then start a new setup session and run init again.`);
-  }
+
 
   if (dryRun) {
     process.stdout.write(`Dry run for ${targetRepo}\n`);
     for (const file of previewPacket.files) {
-      process.stdout.write(`would write ${file.path}\n`);
+      if (file.path !== ".env.example") process.stdout.write(`would write ${file.path}\n`);
     }
     process.stdout.write("would update package.json scripts/devDependencies when package.json exists\n");
-    process.stdout.write("would update or create .env.example\n");
+    process.stdout.write("runtime env configuration is deferred until activation\n");
     process.stdout.write("would request Runtime/host BENCHROUTER_API_KEY during a real init\n");
     return;
   }
 
   const writtenPaths = [];
   for (const file of previewPacket.files) {
+    if (file.path === ".env.example") continue;
     const targetPath = safeTargetPath(outputDir, file.path);
     const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
     if (file.path === ".benchrouter/benchrouter.yml" && previous !== null) {
@@ -211,13 +207,18 @@ async function init() {
       writtenPaths.push(file.path);
       continue;
     }
-    if (previous !== null && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
+    // The generated workflow must include every route's executable paths and secrets.
+    const refreshWorkflow = file.path === ".github/workflows/benchrouter-evals.yml";
+    if (previous !== null && !refreshWorkflow && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
       process.stdout.write(`skip-existing ${file.path}\n`);
       continue;
     }
     await mkdir(path.dirname(targetPath), { recursive: true });
     await writeFile(targetPath, file.content);
     process.stdout.write(`${previous === null ? "created" : "updated"} ${file.path}\n`);
+    if (refreshWorkflow && previous !== null) {
+      process.stdout.write("Regenerated the BenchRouter-managed workflow for all routes. Review its diff before committing any custom workflow changes.\n");
+    }
     writtenPaths.push(file.path);
   }
 
@@ -234,11 +235,7 @@ async function init() {
     process.stdout.write("skipped package.json update; no package.json found\n");
   }
 
-  const envUpdated = await updateEnvExample(outputDir, previewPacket.runtime_env);
-  process.stdout.write(`${envUpdated ? "updated" : "unchanged"} .env.example\n`);
-  if (envUpdated) {
-    writtenPaths.push(".env.example");
-  }
+  process.stdout.write("Runtime env configuration is deferred until activation. Existing env examples are unchanged.\n");
 
   const commitResponse = await fetchSetupPacket({
     apiUrl,
@@ -253,7 +250,7 @@ async function init() {
     const rotateUrl = typeof committedPacket.rotate_url === "string" && committedPacket.rotate_url.length > 0
       ? committedPacket.rotate_url
       : "https://benchrouter.com/account";
-    fail(`This setup session already provisioned its one-time runtime key. Create a replacement key at ${rotateUrl}, then start a new setup session and run init again.`);
+    process.stdout.write(`Runtime key already issued. Reuse the stored product key at activation. If it is lost, create a replacement at ${rotateUrl} or use benchrouter login followed by benchrouter keys create --product-id <product-id>. Do not restart setup to recover a key.\n`);
   }
   printSetupApiKeys(committedPacket.setup_api_keys);
   await maybeSaveRepoReadToken(setupCode, targetRepo);
@@ -517,10 +514,10 @@ function printSetupApiKeys(setupApiKeys) {
 
 function printInitNextSteps() {
   process.stdout.write("\nNext steps:\n");
-  process.stdout.write("- Tell your coding agent: read .benchrouter/SETUP_README.md before editing. It explains the call-site patch, eval evidence, scorer, calibration, and env-var install.\n");
-  process.stdout.write("- Ask the user once before installing runtime BENCHROUTER_API_KEY in the app host.\n");
+  process.stdout.write("- Tell your coding agent: read .benchrouter/SETUP_README.md before editing. It explains the evaluation PR, eval evidence, scorer, calibration, and later activation.\n");
+  process.stdout.write("- Keep production code and host configuration unchanged in the evaluation PR. Store the runtime key for later activation; it does not expire with the setup code.\n");
   process.stdout.write("- BenchRouter Evals uses GitHub OIDC. Do not add an eval API key to GitHub Actions.\n");
-  process.stdout.write("- Run relevant product tests/build and `npx --yes --package @benchrouter/cli benchrouter doctor` before opening the PR.\n");
+  process.stdout.write("- Run relevant product tests/build and `npx --yes --package @benchrouter/cli benchrouter doctor --phase evaluation` before opening the PR.\n");
 }
 
 async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, dryRun, recoveryUrl }) {
@@ -681,6 +678,11 @@ async function doctor() {
   const root = path.resolve(stringArg("output-dir", process.cwd()));
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
   const repoFullName = stringArg("repo") ?? detectGitHubRepo();
+  const phase = stringArg("phase", "evaluation");
+  const selectedRouteId = stringArg("route-id");
+  if (phase !== "evaluation" && phase !== "activation") fail("--phase must be evaluation or activation.");
+  if (phase === "activation" && !selectedRouteId) fail("Activation checks require --route-id product/route.");
+  if (args["live-chat-completions"] && phase !== "activation") fail("--live-chat-completions requires --phase activation and --route-id. It makes a billable diagnostic request.");
   const failures = [];
   const passed = [];
   const skipped = [];
@@ -709,9 +711,13 @@ async function doctor() {
   } catch (error) {
     failures.push(error instanceof Error ? error.message : "could not read .benchrouter/benchrouter.yml");
   }
+  const selectedRoutes = selectedRouteId
+    ? manifestRoutes.filter((route) => route.routeId === selectedRouteId)
+    : manifestRoutes;
+  if (selectedRouteId && selectedRoutes.length !== 1) fail(`Expected one declared route matching ${selectedRouteId}.`);
   const kitStatePath = path.join(root, ".benchrouter/.kit-state.json");
   inspectKitStateForDoctor(kitStatePath, failures);
-  const routeFiles = discoverRouteFilesFromManifest(manifestRoutes, root);
+  const routeFiles = discoverRouteFilesFromManifest(selectedRoutes, root);
   if (routeFiles.length === 0) {
     failures.push("could not discover route scorer/cases files from .benchrouter/benchrouter.yml");
   }
@@ -773,16 +779,16 @@ async function doctor() {
   }
 
   const envTemplate = resolveRuntimeEnvTemplate(root);
-  if (!envTemplate) {
+  if (!envTemplate && phase === "activation") {
     failures.push("missing .env.example or env.template");
-  } else {
+  } else if (envTemplate) {
     const envExample = readFileSync(envTemplate.path, "utf8");
     const envKeys = parseEnvExampleKeys(envExample);
     const expectedRuntimeKeys = new Set([
       "BENCHROUTER_API_KEY",
       ...manifestRoutes.map((route) => route.callSiteBaseUrlEnv).filter(Boolean)
     ]);
-    for (const key of expectedRuntimeKeys) {
+    for (const key of phase === "activation" ? new Set(["BENCHROUTER_API_KEY", ...selectedRoutes.map((route) => route.callSiteBaseUrlEnv)]) : []) {
       if (!envKeys.includes(key)) {
         failures.push(`${envTemplate.relativePath} missing ${key}`);
       }
@@ -807,27 +813,31 @@ async function doctor() {
     }
   }
 
-  for (const checklistItem of runtimeHostChecklist({ root, routes: manifestRoutes, apiUrl })) {
-    notes.push(checklistItem);
+  if (phase === "activation") {
+    notes.push(...runtimeHostChecklist({ root, routes: selectedRoutes, apiUrl }));
+    const wiringResult = validateRuntimeWiringForDoctor(root, selectedRoutes, failures);
+    if (wiringResult.ok) {
+      passed.push(`runtime wiring: ${wiringResult.routesChecked} route${wiringResult.routesChecked === 1 ? "" : "s"} reference call_site.base_url_env from code_refs`);
+    }
+  } else {
+    skipped.push("runtime wiring: evaluation preparation does not require a production call-site change or runtime credentials");
   }
 
-  const wiringResult = validateRuntimeWiringForDoctor(root, manifestRoutes, failures);
-  if (wiringResult.ok) {
-    passed.push(`runtime wiring: ${wiringResult.routesChecked} route${wiringResult.routesChecked === 1 ? "" : "s"} reference call_site.base_url_env from code_refs`);
-  }
-
-  const routeForProxyPing = manifestRoutes.find((route) => route.routeId)?.routeId;
-  const proxyResult = await verifyProxyPingForDoctor({
-    apiUrl,
-    apiKey: process.env.BENCHROUTER_API_KEY,
-    routeId: routeForProxyPing,
-    failures
-  });
-  if (proxyResult.ok) {
-    passed.push(`live proxy authentication: runtime BENCHROUTER_API_KEY from env worked for ${proxyResult.routeId}`);
-    passed.push(`live proxy model resolution: configured route ${proxyResult.routeId} selected ${proxyResult.model} and returned usage`);
-  } else if (proxyResult.skipped) {
-    skipped.push(`live proxy authentication and route resolution: ${proxyResult.reason}`);
+  if (args["live-chat-completions"] && failures.length === 0) {
+    const route = selectedRoutes[0];
+    if (process.env.BENCHROUTER_API_KEY && route.apiFamily && route.apiFamily !== "openai_chat_completions") {
+      fail("This route declares a different protocol. Verify it with an authorized application request instead of the Chat Completions diagnostic.");
+    }
+    const proxyResult = await verifyProxyPingForDoctor({ apiUrl, apiKey: process.env.BENCHROUTER_API_KEY, routeId: selectedRouteId, failures });
+    if (proxyResult.ok) {
+      passed.push(`live proxy authentication: runtime BENCHROUTER_API_KEY from env worked for ${proxyResult.routeId}`);
+      passed.push(`live proxy model resolution: configured route ${proxyResult.routeId} selected ${proxyResult.model} and returned usage`);
+      notes.push("The synthetic Chat Completions diagnostic does not verify the application's request contract or behavior.");
+    } else if (proxyResult.skipped) {
+      skipped.push(`live proxy authentication and route resolution: ${proxyResult.reason}`);
+    }
+  } else {
+    skipped.push("live proxy authentication and route resolution: no request made; --phase activation --route-id product/route --live-chat-completions opts into a billable Chat Completions diagnostic");
   }
 
   if (!args["skip-github-workflow"]) {
@@ -1409,57 +1419,6 @@ function isBenchRouterKitFile(relativePath) {
   ].includes(relativePath);
 }
 
-async function updateEnvExample(root, runtimeEnv) {
-  const envPath = path.join(root, ".env.example");
-  const previous = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-  const lines = previous.length > 0 ? previous.replace(/\n?$/, "\n").split("\n").filter((line) => line.length > 0) : [];
-  let changed = false;
-  const runtimeEntries = Object.entries(runtimeEnv ?? {}).filter(([key]) => isUserRuntimeEnvKey(key));
-
-  if (runtimeEntries.length === 0 && previous.length === 0) {
-    return false;
-  }
-
-  for (const [key, value] of runtimeEntries) {
-    if (lines.some((line) => line.startsWith(`${key}=`))) {
-      continue;
-    }
-    lines.push(formatEnvExampleLine(key, value));
-    changed = true;
-  }
-
-  if (!changed && previous.length > 0) {
-    return false;
-  }
-
-  await writeFile(envPath, `${lines.join("\n")}\n`);
-  return true;
-}
-
-function isUserRuntimeEnvKey(key) {
-  if (key === "BENCHROUTER_API_KEY") {
-    return true;
-  }
-  if (key.startsWith("BENCHROUTER_")) {
-    return false;
-  }
-  return /^[A-Z_][A-Z0-9_]*$/.test(key);
-}
-
-function formatEnvExampleLine(key, value) {
-  if (key === "BENCHROUTER_API_KEY") {
-    return "BENCHROUTER_API_KEY= # runtime key - set in your runtime host; printed once by setup";
-  }
-  const renderedValue = typeof value === "string" && !value.startsWith("<") ? value : "";
-  if (key.endsWith("_BASE_URL") || key.endsWith("_BASE_URL_ENV") || key.includes("BASE_URL")) {
-    return `${key}=${renderedValue} # point this call site's LLM base URL at BenchRouter`;
-  }
-  if (key.endsWith("_API_KEY")) {
-    return `${key}= # optional direct-provider fallback key`;
-  }
-  return `${key}=${renderedValue}`;
-}
-
 function prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }) {
   return `## BenchRouter setup
 
@@ -1467,10 +1426,10 @@ Repo: ${targetRepo}
 Route: ${routeName} (${routeId})
 Incumbent model: ${incumbentModel}
 
-### Call site changed + route ID
+### Evaluation route
 - Route ID: ${routeId}
-- TODO: summarize the one runtime call site changed.
-- TODO: record call_site.base_url_env and the code_refs files that prove it.
+- TODO: identify the existing call site evaluated. Keep its production model, provider, key, and URL unchanged.
+- TODO: record code_refs and the intended activation base URL env. Production wiring is a later patch.
 
 ### Eval case source + coverage matrix
 - Branch: TODO test-derived / captured / authored.
@@ -1489,9 +1448,7 @@ Incumbent model: ${incumbentModel}
 - TODO: confirm BenchRouter Evals is enabled and has reported after the kit lands.
 
 ### Rollback
-1. Set the selected call site's base URL back to the previous provider.
-2. Set the model back to ${incumbentModel}.
-3. Keep or remove BenchRouter eval files depending on whether offline evaluation should continue.
+The evaluation PR does not change production routing. After results and default-branch import, prepare a separate activation patch for this route with its original provider, model (${incumbentModel}), and credential configuration recorded for rollback.
 `;
 }
 
@@ -1808,6 +1765,9 @@ Options:
   --repo owner/repo          Defaults to the current git remote.
   --api-url <url>            Defaults to https://api.benchrouter.com.
   --output-dir <path>        Defaults to current directory.
+  --phase evaluation|activation  Defaults to evaluation; activation checks production wiring.
+  --route-id product/route   Select one declared route. Required for activation.
+  --live-chat-completions    Opt into a billable diagnostic for the selected activation route.
   --skip-github-workflow     Skip the GitHub workflow-state check.
   --check-default-branch     Verify the config is present on the default branch.
 `);

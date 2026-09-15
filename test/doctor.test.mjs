@@ -29,6 +29,28 @@ const providerIdentityReviewFixture = JSON.parse(
     "utf8"
   )
 );
+test("evaluation doctor needs no production wiring and never uses an inherited runtime key", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  await rm(path.join(root, ".env.example"));
+  const result = await runCli(["doctor", "--output-dir", root, "--api-url", "http://127.0.0.1:9", "--skip-github-workflow"], root, {
+    BENCHROUTER_API_KEY: "br_test_inherited"
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /evaluation preparation does not require a production call-site change/);
+  assert.match(result.stdout, /no request made/);
+  assert.doesNotMatch(result.stdout, /doctor passed: live proxy|runtime host checklist/);
+});
+
+test("activation rejects absent or unknown route before making a request", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  for (const extra of [[], ["--route-id", "app/missing"]]) {
+    const result = await runCli(["doctor", "--phase", "activation", "--live-chat-completions", "--output-dir", root, "--api-url", "http://127.0.0.1:9", ...extra], root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /require --route-id|Expected one declared route/);
+    assert.doesNotMatch(result.stderr, /fetch failed/);
+  }
+});
+
 test("doctor passes with wired code_refs and a proxy fixture replay", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   const proxy = await startFixtureProxy(t, {
@@ -131,7 +153,7 @@ test("doctor rejects a declared reserved secret key as a runtime base URL", asyn
   );
 });
 
-test("doctor reads distinct multi-route refs only from canonical YAML", async (t) => {
+test("doctor activation selects one route from canonical multi-route YAML", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), multiRouteManifestYaml());
   await writeFile(path.join(root, "src/summarize.js"), "const baseURL = process.env.SUMMARIZE_BASE_URL;\n");
@@ -142,8 +164,9 @@ test("doctor reads distinct multi-route refs only from canonical YAML", async (t
   const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /doctor passed: runtime wiring: 2 routes reference call_site\.base_url_env from code_refs/);
-  assert.match(result.stdout, /OPENAI_BASE_URL to .*\/v1; set SUMMARIZE_BASE_URL to .*\/v1/);
+  assert.match(result.stdout, /doctor passed: runtime wiring: 1 route reference call_site\.base_url_env from code_refs/);
+  assert.match(result.stdout, /OPENAI_BASE_URL to .*\/v1/);
+  assert.doesNotMatch(result.stdout, /set SUMMARIZE_BASE_URL/);
 });
 
 test("doctor uses the Anthropic API root and validates repository-executable refs without replay shapes", async (t) => {
@@ -245,7 +268,7 @@ test("doctor accepts a local workflow before GitHub registers the first push", a
   assert.match(result.stdout, /BenchRouter doctor passed/);
 });
 
-test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only env example", async (t) => {
+test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env examples unchanged", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-init-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, ".benchrouter"), { recursive: true });
@@ -325,25 +348,14 @@ test("init prints the runtime key, keeps OIDC keyless, and writes runtime-only e
   assert.doesNotMatch(result.stdout, /BENCHROUTER_EVAL_API_KEY/);
   assert.match(result.stdout, /Store it now/);
   assert.match(result.stdout, /Tell your coding agent: read \.benchrouter\/SETUP_README\.md/);
-  assert.match(result.stdout, /call-site patch, eval evidence, scorer, calibration, and env-var install/);
-  assert.match(result.stdout, /installing runtime BENCHROUTER_API_KEY in the app host/);
+  assert.match(result.stdout, /evaluation PR, eval evidence, scorer, calibration, and later activation/);
+  assert.match(result.stdout, /Keep production code and host configuration unchanged in the evaluation PR/);
   assert.match(result.stdout, /BenchRouter Evals uses GitHub OIDC/);
   assert.match(result.stdout, /npx --yes --package @benchrouter\/cli benchrouter doctor/);
   assert.equal(await readFile(path.join(root, ".benchrouter/sidecar.mjs"), "utf8"), "// current generated sidecar\n");
 
-  const envExample = await readFile(path.join(root, ".env.example"), "utf8");
-  assert.match(envExample, /^BENCHROUTER_API_KEY= # runtime key/m);
-  assert.match(envExample, /^OPENAI_BASE_URL=https:\/\/api\.benchrouter\.com\/v1 # point this call site's LLM base URL at BenchRouter/m);
-  assert.doesNotMatch(envExample, /BENCHROUTER_EVAL_API_KEY/);
-  assert.doesNotMatch(envExample, /BENCHROUTER_EVAL_RUN_ID/);
-  assert.equal(setupServer.requests.length, 2);
-  assert.equal(setupServer.requests[0].authorization, "Bearer br_setup_fixture");
-  assert.equal(setupServer.requests[0].body.dry_run, true);
-  assert.equal(Object.hasOwn(setupServer.requests[1].body, "dry_run"), false);
-  assert.equal(setupServer.requests[1].body.route.provider_id, "openai");
-  assert.equal(setupServer.requests[1].body.route.provider_ref, "gpt-4o-mini-2024-07-18");
-  assert.equal(setupServer.requests[1].body.route.base_url_env, "OPENAI_BASE_URL");
-  assert.deepEqual(setupServer.requests[1].body.route.code_refs, ["src/llm.js"]);
+  assert.equal(existsSync(path.join(root, ".env.example")), false);
+  assert.match(result.stdout, /Runtime env configuration is deferred until activation/);
 });
 
 test("add-route init merges only requested preview routes and preserves local manifest config", async (t) => {
@@ -882,7 +894,7 @@ test("init rejects an unsafe or mutable executable eval pack before HTTP", async
   assert.doesNotMatch(excessiveTimeout.stderr, /fetch failed/);
 });
 
-test("init stops before local writes when preview reports the one-time runtime key was already provisioned", async (t) => {
+test("init completes evaluation files when its runtime key was already provisioned", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-provisioned-key-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const setupServer = await startFixtureProxy(t, {
@@ -892,7 +904,7 @@ test("init stops before local writes when preview reports the one-time runtime k
       setup_packet: {
         keys_already_provisioned: true,
         rotate_url: "https://benchrouter.com/account",
-        files: [{ path: ".benchrouter/README.md", content: "# must not be written\n" }],
+        files: [{ path: ".benchrouter/README.md", content: "# recovered evaluation setup\n" }],
         package_json: { scripts: {}, dev_dependencies: [] },
         runtime_env: {}
       }
@@ -918,13 +930,11 @@ test("init stops before local writes when preview reports the one-time runtime k
     root
   );
 
-  assert.equal(result.status, 1);
-  assert.equal(
-    result.stderr,
-    "This setup session already provisioned its one-time runtime key. Create a replacement key at https://benchrouter.com/account, then start a new setup session and run init again.\n"
-  );
-  assert.equal(existsSync(path.join(root, ".benchrouter/README.md")), false);
-  assert.equal(setupServer.requests.length, 1);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Runtime key already issued.*Reuse the stored product key/);
+  assert.match(result.stdout, /Do not restart setup to recover a key/);
+  assert.equal(existsSync(path.join(root, ".benchrouter/README.md")), true);
+  assert.equal(setupServer.requests.length, 2);
   assert.equal(setupServer.requests[0].body.dry_run, true);
 });
 
@@ -1629,7 +1639,7 @@ async function startFixtureProxy(t, responseFixture) {
 }
 
 function runDoctor(root, apiUrl, envOverrides = {}) {
-  return runCli(["doctor", "--output-dir", root, "--api-url", apiUrl, "--skip-github-workflow"], root, {
+  return runCli(["doctor", "--phase", "activation", "--route-id", routeId, "--live-chat-completions", "--output-dir", root, "--api-url", apiUrl, "--skip-github-workflow"], root, {
     BENCHROUTER_API_KEY: "br_test_fixture",
     ...envOverrides
   });
