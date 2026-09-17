@@ -123,8 +123,12 @@ benchrouter setup status [--repo owner/repo]
 benchrouter setup create --repository-id <id> --installation-id <id> [--intent initial|new_route]
 benchrouter setup session show <session-id>
 benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
-benchrouter routes list|show|catalog|archive|unarchive
-benchrouter evals list|run|failures
+benchrouter routes list|show|inspect|catalog|archive|unarchive
+benchrouter routes partition plan <route-key> [--by method|label|case] [--out plan.json]
+benchrouter routes partition apply --plan plan.json --setup-key br_setup_... [--dry-run]
+benchrouter evals list|cases|run|failures
+benchrouter stress <route-key> --model <id>|--models frontier|--live [--trials 20] [--json]
+benchrouter skills list|show|install|update
 benchrouter evals refresh-preview <route-key> <result-set-id> [--model <id>]
 benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
 benchrouter proposals list|approve|reject [--admin-token bradm_...]
@@ -166,6 +170,34 @@ select the latest run for that model.
 `explain` calls the server model-explanation endpoint and states whether a model
 is the incumbent, best pick, an eligible alternative, or outside the eligible
 frontier. Pass `--route` when a repository has more than one route.
+
+`skills` installs Agent Skills from this package into `.cursor/skills`,
+`.claude/skills`, and `.agents/skills`. They teach a coding agent BenchRouter
+workflows (partition a fat route, add a route, author an eval, read a frontier,
+fix doctor). `init` and `upgrade` install the same pack. Skills never register
+routes or edit `benchrouter.yml`.
+
+`routes inspect` and `evals cases` read the local kit. They need no account
+token. Use them before deciding whether one route should become several.
+
+`routes partition plan` groups a route's declared cases (by `request.method`,
+by `scorer_metadata.partition` label, or one route per case) and writes a JSON
+plan: children, case ids, scorer, incumbent choice, and cases that stay with the
+parent. Edit and approve the plan, then `routes partition apply` validates it,
+registers the undeclared children through the same setup path as `init` with
+the parent's exact incumbent tuple, and writes each child's cases and scorer.
+Re-running apply with the same plan is a no-op. It never archives the parent,
+closes a PR, or copies parent evidence onto children (ROUTE-007).
+
+`stress` replays a route's cases through the repository's generated eval runner
+N times per case (default 20) and reports per-case pass rate with a Wilson 95%
+interval, a `stable_pass` / `flaky` / `stable_fail` class, latency, and cost.
+`--model` pins one exact model (repeatable), `--models frontier` stresses the
+route's current best, alternatives, and incumbent, and `--live` measures the
+route as served and reports the served-model histogram. With two or more models
+each case is labeled `ceiling`, `floor`, or `discriminating`. Stress writes
+nothing to BenchRouter; calls are paid runtime calls on `BENCHROUTER_API_KEY`.
+`--model` needs a generated runner from kit 0.0.11 or later (`benchrouter upgrade`).
 
 `keys revoke <key-id>` calls `POST /v1/dashboard/api-keys/:keyId/revoke` and
 prints non-secret key metadata. Revocation is immediate: any application still

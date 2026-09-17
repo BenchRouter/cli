@@ -39,6 +39,27 @@ built, or proof that still needs the service worktree.
   browser approval, single exchange, saved owner-only config, and account self
   request before publication.
 
+## Local agent helpers
+
+- **Skills and local inspect:** `skills`, `routes inspect`, and `evals cases`
+  are local. They do not call the control plane. The skill pack lives in this
+  package and is copied into agent skill directories. Route registration still
+  goes through `init` / `/cli/new`.
+- **Partition and stress:** `routes partition plan|apply` and `stress` are
+  local too. `partition apply` is the one that reaches the control plane, and
+  only through the `init` setup-packet path. `stress --model` depends on the
+  generated runner honoring `BENCHROUTER_STRESS_MODEL` (service kit 0.0.11);
+  the CLI refuses older runners and points at `benchrouter upgrade`.
+  `stress --live` works with any runner.
+- **Dogfood before publishing:** run `routes partition plan --by case` against
+  the Elo-ladder repo that was split by hand on 2026-09-16 and confirm apply
+  reproduces the twelve child routes; run `stress --models frontier` on one of
+  them and compare with the hand-run ladder stress. Use the local package, not
+  npm, until that pass lands.
+- **Server follow-ups the CLI is waiting on:** a `stress` traffic mode so stress
+  calls stop counting as live usage, and trials as eval evidence
+  (`docs/plan-eval-stress-trials.md` phases 2-3 in the service repo).
+
 ## Notes
 
 - Repo-read commands keep using `br_setup_` / `BENCHROUTER_TOKEN`.
