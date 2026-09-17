@@ -187,15 +187,64 @@ ${ACCOUNT_FLAGS}`,
   benchrouter routes list
   benchrouter routes show <route-key>
   benchrouter routes inspect [route-key]
+  benchrouter routes partition plan <route-key> [--by method|label|case] [--out plan.json]
+  benchrouter routes partition apply --plan plan.json --setup-key br_setup_... [--dry-run]
   benchrouter routes catalog <route-key>
   benchrouter routes archive <route-key>
   benchrouter routes unarchive <route-id>
 
-inspect reads the local .benchrouter/benchrouter.yml and case files. It does
-not use an account token.
+inspect and partition plan read the local .benchrouter/benchrouter.yml and case
+files. They do not use an account token.
 
 Options:
 ${ACCOUNT_FLAGS}  --yes, -y
+`,
+  "routes partition": `Usage:
+  benchrouter routes partition plan <route-key> [--by method|label|case] [--out plan.json]
+  benchrouter routes partition apply --plan plan.json --setup-key br_setup_... [--dry-run]
+
+Splits one isolated-replay route into children, one per consume contract
+(ROUTE-007). plan is read-only and writes the approval artifact; apply
+validates that file, registers new children through the same setup path as
+init with the parent's exact incumbent tuple, then writes each child's cases
+(route field rewritten, otherwise unchanged) and scorer. Nothing is copied from
+the parent's PPF; apply never archives the parent or closes a PR.
+`,
+  "routes partition plan": `Usage:
+  benchrouter routes partition plan <route-key> [--by method|label|case] [--out plan.json]
+
+Groups the parent's declared cases and drafts child routes. Edit the JSON plan
+before apply: rename children, move case ids, set "scorer" to a path instead
+of "inherit", set "incumbent" to parent_original (default), parent_best, or an
+exact model id, and set "unassigned" for cases that stay with the parent.
+
+Options:
+  --by method|label|case     method uses request.method or scorer_metadata.method (default);
+                             label uses scorer_metadata.partition; case makes one route per case (max 16).
+  --min-cases <n>            Warn below this many cases per child. Default 3.
+  --out <file>               Write the plan JSON here.
+  --output-dir <path>        Repository root. Defaults to current directory.
+  --json                     Print machine-readable JSON.
+`,
+  "routes partition apply": `Usage:
+  benchrouter routes partition apply --plan plan.json --setup-key br_setup_... [--dry-run]
+
+Validates the plan against the local kit (every parent case in exactly one
+child or unassigned; child ids unused and prefixed by the parent's product;
+scorer paths present), then registers undeclared children through init and
+writes their case files and scorers. Re-running with the same plan is a no-op.
+
+Options:
+  --plan <file>              Plan JSON from partition plan. Required.
+  --setup-key br_setup_...   Setup key with new_route intent (benchrouter setup create --intent new_route).
+                             Defaults to BENCHROUTER_SETUP_KEY. Not needed for --dry-run or a no-op re-apply.
+  --dry-run                  Validate and print the init specs and file changes without network or writes.
+  --min-cases <n>            Reject children below this many cases unless "allow_small": true. Default 3.
+  --repo owner/repo          Defaults to the git remote. Needed for incumbent parent_best.
+  --token br_setup_...       Repo read token for incumbent parent_best. Defaults to BENCHROUTER_TOKEN.
+  --api-url <url>            Defaults to https://api.benchrouter.com.
+  --output-dir <path>        Repository root. Defaults to current directory.
+  --json                     Print machine-readable JSON.
 `,
   "routes inspect": `Usage:
   benchrouter routes inspect [route-key]
@@ -494,6 +543,41 @@ Options:
   --output-dir <path>
   --yes, -y
   --json
+`,
+  stress: `Usage:
+  benchrouter stress <route-key> --model <canonical> [--model ...] [options]
+  benchrouter stress <route-key> --models frontier [options]
+  benchrouter stress <route-key> --live [options]
+
+Replays the route's declared cases through the repository's generated eval
+runner N times per case and reports per-case pass rate with a Wilson 95%
+interval, a stable_pass / flaky / stable_fail class, latency, and cost. With two
+or more models it labels each case ceiling / floor / discriminating.
+
+--model forces one exact catalog model (route-bound override; cross-model
+fallback disabled). --models frontier stresses the route's current best,
+alternatives, and incumbent (needs a repo read token). --live measures the route
+as customers see it, including the fallback stack, and reports the served-model
+histogram. Exactly one of the three is required.
+
+Stress is a local diagnostic: it writes nothing to BenchRouter and never uploads
+cases, scorer source, or outputs. Model calls are paid runtime calls on the key
+in BENCHROUTER_API_KEY and count as live usage. Isolated-replay routes only.
+
+Options:
+  --trials <n>              Trials per case. Default 20.
+  --case <id>               Restrict to one case id. Repeatable.
+  --concurrency <n>         Cases in flight per trial. Default 5.
+  --max-cost-usd <usd>      Hard stop on measured spend. Required above 200 planned calls.
+  --early-stop              Stop a case after each block of 5 trials once its interval is
+                            decisive against --threshold.
+  --threshold <p>           Comparison pass rate in (0, 1]. Default 1 (any failure decides).
+  --api-key-env <NAME>      Env var holding the runtime key. Default BENCHROUTER_API_KEY.
+  --repo owner/repo         For --models frontier. Defaults to the git remote.
+  --token br_setup_...      Repo read token for --models frontier. Defaults to BENCHROUTER_TOKEN.
+  --api-url <url>           Defaults to https://api.benchrouter.com.
+  --output-dir <path>       Repository root. Defaults to current directory.
+  --json                    Print machine-readable JSON.
 `
 };
 
@@ -523,10 +607,11 @@ export function topLevelControlUsageLines() {
   benchrouter keys list|create|revoke [--json]
   benchrouter repos list [--json]
   benchrouter setup status|create|session show|upgrade-token [--json]
-  benchrouter routes list|show|inspect|catalog|archive|unarchive [--json]
+  benchrouter routes list|show|inspect|partition|catalog|archive|unarchive [--json]
   benchrouter models show <route-key> <model-id> [--json]
   benchrouter evals list|cases|run|failures|refresh-preview [--json]
   benchrouter skills list|show|install|update [--json]
+  benchrouter stress <route-key> --model <id>|--models frontier|--live [--trials n] [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
   benchrouter proposals list|approve|reject [--json]
   benchrouter admin providers|catalog|keys|token [--json]`;

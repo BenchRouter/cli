@@ -8,9 +8,20 @@ import { isMap, isSeq, parseDocument } from "yaml";
 import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config.mjs";
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
-import { CliUsageError, runRepoRead } from "./repo-read.mjs";
+import { CliUsageError, fetchFrontierStack, runRepoRead } from "./repo-read.mjs";
 import { inspectCases, inspectRoutes } from "./inspect.mjs";
 import { readRouteManifest } from "./route-manifest.mjs";
+import { DEFAULT_TRIALS, renderStressReport, runStress } from "./stress.mjs";
+import {
+  applyPartitionFiles,
+  buildPartitionPlan,
+  DEFAULT_MIN_CHILD_CASES,
+  PARTITION_GROUPS,
+  partitionRouteSpecs,
+  renderPartitionApplySummary,
+  renderPartitionPlan,
+  validatePartitionPlan
+} from "./partition.mjs";
 import {
   applySkillInstall,
   listSkills,
@@ -82,8 +93,12 @@ if (command === "skills") {
   await runSkills();
 } else if (command === "routes" && args._[1] === "inspect") {
   await runRoutesInspect();
+} else if (command === "routes" && args._[1] === "partition") {
+  await runRoutesPartition();
 } else if (command === "evals" && args._[1] === "cases") {
   await runEvalsCases();
+} else if (command === "stress") {
+  await runStressCommand();
 } else if (isControlPlaneCommand(command, args._)) {
   await runControlCommand({
     args,
@@ -169,6 +184,16 @@ async function init() {
     code_refs: codeRefs,
     base_url_env: baseUrlEnvs[index] ?? baseUrlEnvs[0] ?? ""
   }));
+  await runInit({ apiUrl, setupCode, repoFullName, routeSpecs, outputDir, dryRun, overwriteUserEdits, forceKitFiles });
+}
+
+/**
+ * The init body, callable in-process. `routes partition apply` reuses it so a
+ * split registers children through the same setup contract, incumbent binding,
+ * and approval stops as a hand-written init.
+ */
+async function runInit({ apiUrl, setupCode, repoFullName, routeSpecs, outputDir, dryRun, overwriteUserEdits, forceKitFiles, printPrBody = true }) {
+  const routeIds = routeSpecs.map((spec) => spec.route_id);
   const routeId = routeSpecs[0].route_id;
   const routeName = routeSpecs[0].name;
   const incumbentModel = routeSpecs[0].incumbent_model;
@@ -198,7 +223,7 @@ async function init() {
     process.stdout.write("runtime env configuration is deferred until activation\n");
     writeDefaultSkills(outputDir, { dryRun: true });
     process.stdout.write("would request Runtime/host BENCHROUTER_API_KEY during a real init\n");
-    return;
+    return { targetRepo, committed: false };
   }
 
   const writtenPaths = [];
@@ -272,8 +297,11 @@ async function init() {
   await maybeSaveRepoReadToken(setupCode, targetRepo);
   printInitNextSteps();
 
-  process.stdout.write("\nSuggested PR body:\n");
-  process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }));
+  if (printPrBody) {
+    process.stdout.write("\nSuggested PR body:\n");
+    process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }));
+  }
+  return { targetRepo, committed: true };
 }
 
 function mergeRequestedRoutesIntoManifest(existingSource, previewSource, requestedRouteIds) {
@@ -762,6 +790,268 @@ async function runSkills() {
   } catch (error) {
     fail(error instanceof Error ? error.message : "BenchRouter skills command failed.");
   }
+}
+
+async function runStressCommand() {
+  if (args.help) {
+    usage(0, "stress");
+  }
+  const routeKey = args._[1];
+  if (!routeKey) {
+    usage(1, "stress", "Missing route key.");
+  }
+  const root = path.resolve(stringArg("output-dir", process.cwd()));
+  const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
+  const live = Boolean(args.live);
+  const explicitModels = arrayArg("model");
+  const modelsMode = stringArg("models");
+  const selectedModes = [live, explicitModels.length > 0, Boolean(modelsMode)].filter(Boolean).length;
+  if (selectedModes !== 1) {
+    usage(1, "stress", "Pass exactly one of --model <canonical> (repeatable), --models frontier, or --live.");
+  }
+  if (modelsMode && modelsMode !== "frontier") {
+    usage(1, "stress", "--models accepts only `frontier`.");
+  }
+  const trials = integerArg("trials", DEFAULT_TRIALS, "stress");
+  const concurrency = integerArg("concurrency", 5, "stress");
+  const maxCostUsd = args["max-cost-usd"] === undefined ? null : Number(stringArg("max-cost-usd"));
+  if (maxCostUsd !== null && !(Number.isFinite(maxCostUsd) && maxCostUsd > 0)) {
+    usage(1, "stress", "--max-cost-usd must be a positive number.");
+  }
+  const threshold = args.threshold === undefined ? 1 : Number(stringArg("threshold"));
+  if (!(Number.isFinite(threshold) && threshold > 0 && threshold <= 1)) {
+    usage(1, "stress", "--threshold must be a fraction in (0, 1].");
+  }
+  const apiKeyEnv = stringArg("api-key-env", "BENCHROUTER_API_KEY");
+  const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) {
+    fail(`Missing runtime key: set ${apiKeyEnv} (or pass --api-key-env). Stress calls are paid runtime calls on this key.`);
+  }
+
+  let models = explicitModels;
+  if (modelsMode === "frontier") {
+    const repoCandidate = stringArg("repo") ?? detectGitHubRepo();
+    if (!repoCandidate) {
+      usage(1, "stress", "--models frontier needs --repo or a detectable git remote.");
+    }
+    let credential;
+    try {
+      credential = resolveRepoToken(normalizeRepoFullName(repoCandidate), stringArg("token"));
+    } catch (error) {
+      fail(error instanceof Error ? error.message : "Could not read BenchRouter credentials.");
+    }
+    if (!credential) {
+      fail("Missing repo read token for --models frontier. Set BENCHROUTER_TOKEN, pass --token, or approve --save-token during init.");
+    }
+    try {
+      const frontier = await fetchFrontierStack(apiUrl, credential.token, routeKey);
+      models = frontier.stack;
+    } catch (error) {
+      fail(error instanceof Error ? error.message : "Could not read the route frontier.");
+    }
+    if (models.length === 0) {
+      fail(`Route ${routeKey} has no frontier models yet; pass --model or --live.`);
+    }
+  }
+
+  if (!args.json) {
+    process.stderr.write("Stress calls are billed as runtime usage on this key and count as live traffic until the service tags stress calls.\n");
+  }
+  let report;
+  try {
+    report = await runStress({
+      root,
+      routeKey,
+      models,
+      live,
+      trials,
+      caseIds: arrayArg("case"),
+      concurrency,
+      maxCostUsd,
+      earlyStop: Boolean(args["early-stop"]),
+      threshold,
+      apiUrl,
+      apiKey,
+      log: args.json ? () => {} : (line) => process.stderr.write(`${line}\n`)
+    });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Stress run failed.");
+  }
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(renderStressReport(report));
+}
+
+async function runRoutesPartition() {
+  const action = args._[2];
+  if (args.help || !action) {
+    usage(args.help ? 0 : 1, "routes partition", args.help ? undefined : "Missing plan or apply.");
+  }
+  if (action === "plan") {
+    await runRoutesPartitionPlan();
+    return;
+  }
+  if (action === "apply") {
+    await runRoutesPartitionApply();
+    return;
+  }
+  usage(1, "routes partition", `Unknown partition action: ${action}`);
+}
+
+async function runRoutesPartitionPlan() {
+  const routeKey = args._[3];
+  if (!routeKey) {
+    usage(1, "routes partition plan", "Missing parent route key.");
+  }
+  const root = path.resolve(stringArg("output-dir", process.cwd()));
+  const by = stringArg("by", "method");
+  if (!PARTITION_GROUPS.includes(by)) {
+    usage(1, "routes partition plan", `--by must be one of ${PARTITION_GROUPS.join(", ")}.`);
+  }
+  const minCases = integerArg("min-cases", DEFAULT_MIN_CHILD_CASES, "routes partition plan");
+  let draft;
+  try {
+    draft = buildPartitionPlan(root, routeKey, { by, minCases });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not build a partition plan.");
+  }
+  const outPath = stringArg("out");
+  if (outPath) {
+    const target = path.resolve(root, outPath);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, `${JSON.stringify(draft.plan, null, 2)}\n`);
+  }
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify({ ok: true, ...draft, out: outPath ?? null }, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(renderPartitionPlan(draft));
+  if (outPath) {
+    process.stdout.write(`Wrote plan to ${outPath}\n`);
+  } else {
+    process.stdout.write("Pass --out <file> to save this plan as JSON for apply.\n");
+  }
+}
+
+async function runRoutesPartitionApply() {
+  const root = path.resolve(stringArg("output-dir", process.cwd()));
+  const planPath = stringArg("plan");
+  if (!planPath) {
+    usage(1, "routes partition apply", "Missing --plan <file>.");
+  }
+  const dryRun = Boolean(args["dry-run"]);
+  const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
+  const minCases = integerArg("min-cases", DEFAULT_MIN_CHILD_CASES, "routes partition apply");
+  let plan;
+  try {
+    plan = JSON.parse(readFileSync(path.resolve(root, planPath), "utf8"));
+  } catch (error) {
+    fail(`Could not read plan ${planPath}: ${error instanceof Error ? error.message : "read failed"}`);
+  }
+  const validated = validatePartitionPlan(root, plan, { minCases });
+  if (validated.errors.length > 0) {
+    if (args.json) {
+      fail(validated.errors.join(" "), "invalid_partition_plan");
+    }
+    process.stderr.write("Partition plan is not valid:\n");
+    for (const error of validated.errors) process.stderr.write(`- ${error}\n`);
+    process.exit(1);
+  }
+
+  const incumbentModel = await resolvePartitionIncumbent(validated, apiUrl);
+  const pending = validated.children.filter((child) => !child.declared);
+  const routeSpecs = partitionRouteSpecs(validated, incumbentModel);
+
+  if (dryRun) {
+    const changes = pending.length === 0 ? await applyPartitionFiles(root, validated, { dryRun: true }) : [];
+    if (args.json) {
+      process.stdout.write(`${JSON.stringify({ ok: true, dry_run: true, incumbent_model: incumbentModel, route_specs: routeSpecs, changes }, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(renderPartitionApplySummary({ validated, changes, initRan: false, dryRun: true, incumbentModel }));
+    return;
+  }
+
+  let initRan = false;
+  if (pending.length > 0) {
+    const setupCode = stringArg("setup-key", process.env.BENCHROUTER_SETUP_KEY);
+    if (!setupCode) {
+      fail("Missing setup key. Pass --setup-key or set BENCHROUTER_SETUP_KEY (benchrouter setup create --intent new_route).");
+    }
+    const repoFullName = stringArg("repo") ?? detectGitHubRepo();
+    await runInit({
+      apiUrl,
+      setupCode,
+      repoFullName,
+      routeSpecs,
+      outputDir: root,
+      dryRun: false,
+      overwriteUserEdits: false,
+      forceKitFiles: false,
+      printPrBody: false
+    });
+    initRan = true;
+  }
+  let changes;
+  try {
+    changes = await applyPartitionFiles(root, validated, { dryRun: false });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Partition apply failed while writing child files.");
+  }
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      parent: validated.parent.routeId,
+      incumbent_model: incumbentModel,
+      registered: pending.map((child) => child.route_id),
+      changes
+    }, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(renderPartitionApplySummary({ validated, changes, initRan, dryRun: false, incumbentModel }));
+}
+
+async function resolvePartitionIncumbent(validated, apiUrl) {
+  if (validated.incumbent === "parent_original") {
+    return validated.parent.incumbentModel;
+  }
+  if (validated.incumbent !== "parent_best") {
+    return validated.incumbent;
+  }
+  const repoCandidate = stringArg("repo") ?? detectGitHubRepo();
+  if (!repoCandidate) {
+    fail("plan.incumbent parent_best needs --repo or a detectable git remote to read the parent frontier.");
+  }
+  let credential;
+  try {
+    credential = resolveRepoToken(normalizeRepoFullName(repoCandidate), stringArg("token"));
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not read BenchRouter credentials.");
+  }
+  if (!credential) {
+    fail("plan.incumbent parent_best needs a repo read token. Set BENCHROUTER_TOKEN or pass --token, or use parent_original.");
+  }
+  let frontier;
+  try {
+    frontier = await fetchFrontierStack(apiUrl, credential.token, validated.parent.routeId);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not read the parent frontier.");
+  }
+  if (!frontier.best) {
+    fail(`Parent ${validated.parent.routeId} has no best model yet; use parent_original or an explicit model.`);
+  }
+  return frontier.best;
+}
+
+function integerArg(name, fallback, commandName) {
+  if (args[name] === undefined) return fallback;
+  const value = Number(stringArg(name));
+  if (!Number.isInteger(value) || value <= 0) {
+    usage(1, commandName, `--${name} must be a positive integer.`);
+  }
+  return value;
 }
 
 async function runRoutesInspect() {

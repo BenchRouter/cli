@@ -52,6 +52,22 @@ export async function runRepoRead(options) {
   printFailures(body, json);
 }
 
+/**
+ * The route's current PPF stack as canonical model ids: best, then ranked
+ * alternatives, then the incumbent/baseline. Used by `stress --models frontier`
+ * and `routes partition` (`parent_best`). Deduplicated, order preserved.
+ */
+export async function fetchFrontierStack(apiUrl, token, routeKey) {
+  const body = await fetchRepoJson(apiUrl, repoReadPath("frontier", { routeKey }), token, "frontier");
+  const best = typeof body.best_pick === "string" ? body.best_pick : typeof body.best_model === "string" ? body.best_model : null;
+  const alternatives = Array.isArray(body.ranked_alternatives)
+    ? body.ranked_alternatives.map((entry) => entry?.model).filter((value) => typeof value === "string")
+    : [];
+  const incumbent = typeof body.incumbent?.model === "string" ? body.incumbent.model : null;
+  const stack = [...new Set([best, ...alternatives, incumbent].filter(Boolean))];
+  return { best, alternatives, incumbent, stack };
+}
+
 async function onlyRoute(apiUrl, token) {
   const status = await fetchRepoJson(apiUrl, "/v1/repo/status", token, "status");
   const routes = Array.isArray(status.routes) ? status.routes : [];

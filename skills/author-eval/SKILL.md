@@ -45,3 +45,17 @@ writing a blended scorer.
 npm run benchrouter:calibrate
 npx --yes --package @benchrouter/cli benchrouter doctor
 ```
+
+## When a model passes the eval but fails in use
+
+A single trial at temperature 0 can pass a case the model only passes sometimes.
+Measure it before changing the case:
+
+```sh
+npx --yes --package @benchrouter/cli benchrouter stress <route-key> --models frontier --trials 20
+npx --yes --package @benchrouter/cli benchrouter stress <route-key> --live --trials 20
+```
+
+Flaky critical cases are the signal. Cases that are `ceiling` for every model
+cannot rank models; tighten them or add harder ones. Stress calls are paid
+runtime calls and write nothing to BenchRouter.

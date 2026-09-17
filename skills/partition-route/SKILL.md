@@ -9,8 +9,9 @@ A route is one consume contract, not one HTTP client (`ROUTE-007`). The PPF is
 route-specific (`CORE-001`). A blended eval across unequal tasks can false-include
 a model that fails the hard subset, or overpay for the easy subset.
 
-Do not write a partition engine. Inspect, propose, stop. Apply only after explicit
-approval, through existing `init` / `/cli/new`.
+Do not write a partition engine. Inspect, draft a plan, stop. Apply only after
+explicit approval, through `routes partition apply`, which registers children via
+the existing `init` path.
 
 ## Phase 1 — read only
 
@@ -52,26 +53,41 @@ npx --yes --package @benchrouter/cli benchrouter failures <route-key> --json
 
 ## Proposal (then stop)
 
-Report, then wait:
+Draft the plan file, then wait:
 
-- keep / partition / unsure
-- each child: route id, name, methods and case ids, consume contract, eval
-  archetype, which sender gets the new route id, incumbent (parent best or original)
-- parent: keep as default, or archive after children have production evidence
+```sh
+npx --yes --package @benchrouter/cli benchrouter routes partition plan <route-key> --by method --out .benchrouter/partition.json
+```
 
-Do not invent filler cases. Do not hand-edit `.benchrouter/benchrouter.yml`.
-Do not transfer the parent PPF onto children.
+`--by label` groups by `scorer_metadata.partition` when methods do not map to
+contracts; `--by case` makes one route per case (max 16) for a labeled ladder.
+Edit the JSON: rename children, move case ids, set `unassigned` for cases that
+stay with the parent, set `scorer` to a path instead of `inherit`, and pick
+`incumbent` (`parent_original` default, `parent_best`, or an exact model).
+
+Report keep / partition / unsure, the plan table, which sender gets each new
+route id, and the parent disposition. Do not invent filler cases. Do not
+hand-edit `.benchrouter/benchrouter.yml`. Do not transfer the parent PPF onto
+children.
 
 ## Phase 2 — after explicit approval
 
-1. Start `/cli/new` (or one setup session) and run `init` with every new
-   `--route-id` in one command. Same incumbent/provider tuple unless the user
-   picks a replacement BenchRouter already offered.
-2. Split cases and scorers by the approved clusters.
-3. Patch senders so each task sends its own route id. Do not change a shared
+1. Get a setup key with `new_route` intent (`benchrouter setup create --intent new_route`
+   or `/cli/new`), then:
+
+```sh
+npx --yes --package @benchrouter/cli benchrouter routes partition apply --plan .benchrouter/partition.json --dry-run
+npx --yes --package @benchrouter/cli benchrouter routes partition apply --plan .benchrouter/partition.json --setup-key br_setup_...
+```
+
+   apply validates the plan, registers undeclared children through `init` with
+   the parent's exact incumbent tuple, writes each child's cases (route field
+   rewritten, otherwise unchanged) and scorer, and is a no-op when re-run.
+2. Patch senders so each task sends its own route id. Do not change a shared
    default model globally if other callers still need the parent.
-4. `npm run benchrouter:calibrate` and
-   `npx --yes --package @benchrouter/cli benchrouter doctor`.
-5. Open a PR. Archive the fat parent only after the children serve.
+3. `npm run benchrouter:calibrate` and
+   `npx --yes --package @benchrouter/cli benchrouter doctor --phase evaluation`.
+4. Open a PR. apply never archives the parent or closes a PR; archive the fat
+   parent only after the children have production evidence.
 
 See [examples.md](examples.md) for the astroturfed split.
