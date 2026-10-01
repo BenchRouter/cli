@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +16,20 @@ const kit = new Map(await Promise.all([
   [WORKFLOW_PATH, "workflow.yml"]
 ].map(async ([name, file]) => [name, await readFile(new URL(file, fixtureRoot), "utf8")])));
 const cli = new URL("../bin/benchrouter.mjs", import.meta.url);
+
+// A real concurrent writer scheduled between awaited filesystem operations.
+// Polling avoids depending on platform watcher quotas shared with other agents.
+function observeWrite(target, expected, action) {
+  let active = true;
+  const poll = () => {
+    if (!active) return;
+    if (readFileSync(target, "utf8") === expected) { active = false; action(); }
+    else setImmediate(poll);
+  };
+  setImmediate(poll);
+  return { close() { active = false; } };
+}
+
 
 async function targetRepo(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "br-cli-kit-"));
@@ -121,7 +135,7 @@ test("RUN-001 read-only trust fails preflight without changing an earlier kit fi
   for (const [name, content] of before) assert.equal(await readFile(path.join(root, name), "utf8"), content);
 });
 
-test("RUN-001 caught rename failure restores kit and package bytes and removes new files", async (t) => {
+test("RUN-001 stale destination preflight preserves kit and package bytes without writing", async (t) => {
   const root = await targetRepo(t);
   const readme = ".benchrouter/README.md";
   await writeFile(path.join(root, readme), "Customer README before upgrade\n");
@@ -134,8 +148,7 @@ test("RUN-001 caught rename failure restores kit and package bytes and removes n
     { path: ".benchrouter/new-file.txt", content: "New generated file\n" },
     { path: ".benchrouter/trust.json", content: kit.get(".benchrouter/trust.json") + "\n" }
   ] });
-  // Real I/O race after staging: another process replaces the final destination
-  // with a directory. The preceding writes must be restored when rename fails.
+  // A real destination change after staging refuses the entire stale transaction.
   const trust = path.join(root, ".benchrouter/trust.json");
   await rename(trust, trust + ".customer-save");
   await mkdir(trust);
@@ -146,6 +159,120 @@ test("RUN-001 caught rename failure restores kit and package bytes and removes n
   assert.equal(existsSync(path.join(root, ".benchrouter/new-file.txt")), false);
   await rm(trust, { recursive: true });
   await rename(trust + ".customer-save", trust);
+});
+
+test("RUN-001 staging refuses package edits made after planning or before commit", async (t) => {
+  const root = await targetRepo(t);
+  const target = path.join(root, "package.json");
+  const original = '{"scripts":{"test":"node --test"}}';
+  const customerEdit = '{"scripts":{"test":"node --test","lint":"eslint ."},"dependencies":{"customer-tool":"1.0.0"}}';
+  await writeFile(target, original);
+  const planned = preparePackageJson(root, { scripts: { "benchrouter:capture": "node .benchrouter/bootstrap.mjs capture" } });
+  await writeFile(target, customerEdit);
+  await assert.rejects(stageFileApplication({ outputDir: root, files: planned }), /changed since planning/);
+  assert.equal(await readFile(target, "utf8"), customerEdit);
+  await writeFile(target, original);
+  const application = await stageFileApplication({ outputDir: root, files: preparePackageJson(root, { scripts: { capture: "customer command" } }) });
+  await writeFile(target, customerEdit);
+  await assert.rejects(application.commit(), /changed since staging/);
+  assert.equal(await readFile(target, "utf8"), customerEdit);
+});
+
+test("RUN-001 a newly created destination or an edited unchanged file refuses the whole commit", async (t) => {
+  const root = await targetRepo(t);
+  const unchanged = ".benchrouter/trust.json";
+  const before = await readFile(path.join(root, unchanged), "utf8");
+  for (const change of ["create", "edit unchanged"]) {
+    await rm(path.join(root, "package.json"), { force: true });
+    await writeFile(path.join(root, unchanged), before);
+    const application = await stageFileApplication({ outputDir: root, files: [
+      { path: unchanged, content: before }, { path: "package.json", content: "{}\n" }
+    ] });
+    if (change === "create") await writeFile(path.join(root, "package.json"), "Customer-created file\n");
+    else await writeFile(path.join(root, unchanged), "Customer edit\n");
+    await assert.rejects(application.commit(), /changed since staging/);
+    if (change === "create") assert.equal(await readFile(path.join(root, "package.json"), "utf8"), "Customer-created file\n");
+    else {
+      assert.equal(await readFile(path.join(root, unchanged), "utf8"), "Customer edit\n");
+      assert.equal(existsSync(path.join(root, "package.json")), false);
+    }
+  }
+});
+
+test("RUN-001 a symlinked ancestor is refused before staging and again before commit or cleanup", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "br-cli-boundary-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const root = path.join(parent, "repo");
+  const outside = path.join(parent, "other-repo");
+  await mkdir(root); await mkdir(outside);
+  const target = path.join(outside, "README.md");
+  await writeFile(target, "Unrelated customer file\n");
+  await symlink(outside, path.join(root, ".benchrouter"), "dir");
+  await assert.rejects(stageFileApplication({ outputDir: root, files: [{ path: ".benchrouter/README.md", content: "Generated content\n" }] }), /symlink ancestor/);
+  await rm(path.join(root, ".benchrouter"));
+  await mkdir(path.join(root, ".benchrouter"));
+  await writeFile(path.join(root, ".benchrouter/README.md"), "Old kit\n");
+  const application = await stageFileApplication({ outputDir: root, files: [{ path: ".benchrouter/README.md", content: "Generated content\n" }] });
+  await rename(path.join(root, ".benchrouter"), path.join(root, ".customer-saved-kit"));
+  await symlink(outside, path.join(root, ".benchrouter"), "dir");
+  await assert.rejects(application.commit(), (error) => error instanceof AggregateError && error.errors.some((cause) => cause.message.includes("symlink ancestor")));
+  assert.equal(await readFile(target, "utf8"), "Unrelated customer file\n");
+  assert.equal(await readFile(path.join(root, ".customer-saved-kit/README.md"), "utf8"), "Old kit\n");
+});
+
+test("RUN-001 caught commit failure restores untouched writes and preserves later customer edits", async (t) => {
+  const root = await targetRepo(t);
+  const readme = path.join(root, ".benchrouter/README.md");
+  const last = path.join(root, ".benchrouter/last-file.txt");
+  const packagePath = path.join(root, "package.json");
+  await writeFile(readme, "Old README\n");
+  await writeFile(packagePath, '{"scripts":{"test":"node --test"}}\n');
+  await writeFile(last, "Old final file\n");
+  const originalPackage = await readFile(packagePath, "utf8");
+  const application = await stageFileApplication({ outputDir: root, files: [
+    { path: ".benchrouter/README.md", content: "Generated README\n" },
+    ...preparePackageJson(root, { scripts: { capture: "customer command" } }),
+    { path: ".benchrouter/created.txt", content: "New file\n" },
+    { path: ".benchrouter/last-file.txt", content: "Final generated file\n" }
+  ] });
+  let customerWrote = false;
+  const observer = observeWrite(readme, "Generated README\n", () => {
+    customerWrote = true;
+    writeFileSync(readme, "Concurrent customer README\n");
+    unlinkSync(last); mkdirSync(last);
+  });
+  try {
+    await assert.rejects(application.commit(), (error) => error instanceof AggregateError && error.errors.some((cause) => cause.message.includes("changed since staging")));
+  } finally { observer.close(); }
+  assert.equal(customerWrote, true, "the real filesystem observer must exercise the concurrent edit");
+  assert.equal(await readFile(readme, "utf8"), "Concurrent customer README\n");
+  assert.equal(await readFile(packagePath, "utf8"), originalPackage);
+  assert.equal(existsSync(path.join(root, ".benchrouter/created.txt")), false);
+});
+
+test("RUN-001 rollback refuses an ancestor replacement and leaves its referent unchanged", async (t) => {
+  const root = await targetRepo(t);
+  const outside = await mkdtemp(path.join(os.tmpdir(), "br-cli-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(path.join(outside, "README.md"), "Unrelated customer README\n");
+  const readme = path.join(root, ".benchrouter/README.md");
+  await writeFile(readme, "Old README\n");
+  const application = await stageFileApplication({ outputDir: root, files: [
+    { path: ".benchrouter/README.md", content: "Generated README\n" },
+    { path: ".benchrouter/trust.json", content: kit.get(".benchrouter/trust.json") + "\n" }
+  ] });
+  let moved = false;
+  const observer = observeWrite(readme, "Generated README\n", () => {
+    moved = true;
+    renameSync(path.join(root, ".benchrouter"), path.join(root, ".customer-saved-kit"));
+    // Creating the symlink synchronously keeps the observed boundary change
+    // complete before the application performs its next awaited filesystem read.
+    symlinkSync(outside, path.join(root, ".benchrouter"), "dir");
+  });
+  try { await assert.rejects(application.commit(), AggregateError); }
+  finally { observer.close(); }
+  assert.equal(moved, true);
+  assert.equal(await readFile(path.join(outside, "README.md"), "utf8"), "Unrelated customer README\n");
 });
 
 test("RUN-001 staged package merge keeps customer commands and dependencies", async (t) => {

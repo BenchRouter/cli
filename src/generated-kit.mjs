@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { constants } from "node:fs";
-import { access, chmod, lstat, mkdir, open, rename, rm, rmdir } from "node:fs/promises";
+import { access, lstat, mkdir, open, realpath, rename, rm, rmdir } from "node:fs/promises";
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import path from "node:path";
 import { parseDocument } from "yaml";
@@ -81,14 +81,17 @@ export function prepareUpgradeFiles(outputDir, files) {
   return validateUpgradeFiles(files).map((file) => {
     if (file.path !== WORKFLOW_PATH) return file;
     const target = path.join(outputDir, WORKFLOW_PATH);
-    return existsSync(target) ? { ...file, content: preserveCustomerSetup(readFileSync(target, "utf8"), file.content) } : file;
+    if (!existsSync(target)) return file;
+    const previousContent = readFileSync(target, "utf8");
+    return { ...file, previousContent, content: preserveCustomerSetup(previousContent, file.content) };
   });
 }
 
 export function preparePackageJson(outputDir, instructions) {
   const target = path.join(outputDir, "package.json");
   if (!existsSync(target)) return [];
-  const parsed = JSON.parse(readFileSync(target, "utf8"));
+  const previousContent = readFileSync(target, "utf8");
+  const parsed = JSON.parse(previousContent);
   const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   if (!object(parsed)) throw new Error("package.json must contain an object.");
   for (const name of ["scripts", "dependencies", "devDependencies"]) {
@@ -99,82 +102,194 @@ export function preparePackageJson(outputDir, instructions) {
   for (const dependency of instructions.dev_dependencies ?? []) {
     if (!parsed.dependencies?.[dependency] && !parsed.devDependencies[dependency]) parsed.devDependencies[dependency] = "latest";
   }
-  return [{ path: "package.json", content: `${JSON.stringify(parsed, null, 2)}\n` }];
+  return [{ path: "package.json", previousContent, content: `${JSON.stringify(parsed, null, 2)}\n` }];
 }
 
-// Preflight is read-only and runs before consuming setup or upgrade credentials.
-export async function preflightFileApplication(outputDir, files) {
-  for (const file of files) {
-    const target = path.resolve(outputDir, file.path);
-    if (!target.startsWith(path.resolve(outputDir) + path.sep)) throw new Error(`Unsafe generated path ${file.path}.`);
-    let parent = path.dirname(target);
-    while (!existsSync(parent)) parent = path.dirname(parent);
-    await access(parent, constants.W_OK | constants.X_OK);
-    if (existsSync(target)) {
-      if (!(await lstat(target)).isFile()) throw new Error(`${file.path} must be a regular file.`);
-      await access(target, constants.R_OK | constants.W_OK);
+// Resolve the selected repository once. System aliases such as /tmp are allowed
+// here; every ancestor below the selected real root must be a real directory.
+async function applicationRoot(outputDir) {
+  const selected = path.resolve(outputDir);
+  let existing = selected;
+  while (true) {
+    try { await lstat(existing); break; }
+    catch (error) { if (error.code !== "ENOENT") throw error; existing = path.dirname(existing); }
+  }
+  const anchor = await realpath(existing);
+  const stat = await lstat(anchor);
+  if (!stat.isDirectory()) throw new Error("The selected repository root must be a directory.");
+  return { root: path.resolve(anchor, path.relative(existing, selected)), anchor, directories: new Map([[anchor, stat]]) };
+}
+
+function sameIdentity(left, right) { return left.dev === right.dev && left.ino === right.ino; }
+function boundaryError(message) { return Object.assign(new Error(message), { code: "ESTALE" }); }
+
+async function destination(context, filePath, allowMissingParents = false) {
+  const target = path.resolve(context.root, filePath);
+  const relative = path.relative(context.root, target);
+  if (!relative || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) throw new Error(`Unsafe generated path ${filePath}.`);
+  const parent = path.dirname(target);
+  const paths = [context.anchor];
+  for (const part of path.relative(context.anchor, parent).split(path.sep).filter(Boolean)) paths.push(path.join(paths.at(-1), part));
+  let nearest = context.anchor;
+  for (const directory of paths) {
+    let stat;
+    try { stat = await lstat(directory); }
+    catch (error) {
+      if (allowMissingParents && error.code === "ENOENT") break;
+      throw error;
     }
+    if (stat.isSymbolicLink()) throw boundaryError(`Refusing symlink ancestor ${directory}.`);
+    if (!stat.isDirectory()) throw new Error(`Destination ancestor ${directory} must be a directory.`);
+    const previous = context.directories.get(directory);
+    if (previous && !sameIdentity(previous, stat)) throw boundaryError(`Destination ancestor changed: ${directory}.`);
+    context.directories.set(directory, stat);
+    nearest = directory;
+  }
+  return { target, nearest };
+}
+
+async function preimage(context, filePath, allowMissingParents = false) {
+  const { target } = await destination(context, filePath, allowMissingParents);
+  let stat;
+  try { stat = await lstat(target); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  if (!stat.isFile()) throw Object.assign(new Error(`${filePath} must be a regular file.`), { code: stat.isDirectory() ? "EISDIR" : "ESTALE" });
+  const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat();
+    if (!sameIdentity(stat, before)) throw boundaryError(`Destination changed while reading ${filePath}.`);
+    const content = await handle.readFile();
+    const after = await handle.stat();
+    await destination(context, filePath, allowMissingParents);
+    const current = await lstat(target);
+    if (!sameMetadata(before, after) || !sameMetadata(after, current)) throw boundaryError(`Destination changed while reading ${filePath}.`);
+    return { stat: current, content };
+  } finally { await handle.close(); }
+}
+
+function sameMetadata(left, right) {
+  return sameIdentity(left, right) && left.mode === right.mode && left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+function samePreimage(left, right) {
+  return left === null || right === null ? left === right : sameMetadata(left.stat, right.stat) && left.content.equals(right.content);
+}
+async function requirePreimage(context, filePath, expected) {
+  if (!samePreimage(await preimage(context, filePath), expected)) throw boundaryError(`Destination changed since staging: ${filePath}. Customer edits were preserved.`);
+}
+
+// Read-only preflight runs before consuming setup or upgrade credentials.
+export async function preflightFileApplication(outputDir, files) {
+  const context = await applicationRoot(outputDir);
+  await preflight(context, files);
+}
+async function preflight(context, files) {
+  const unique = new Set();
+  for (const file of files) {
+    if (unique.has(file.path)) throw new Error(`Duplicate generated path ${file.path}.`);
+    unique.add(file.path);
+    const { target, nearest } = await destination(context, file.path, true);
+    await access(nearest, constants.W_OK | constants.X_OK);
+    if (await preimage(context, file.path, true)) await access(target, constants.R_OK | constants.W_OK);
   }
 }
 
-// Each rename is atomic. Caught failures restore previous bytes; a process crash
-// between renames is not a cross-file transaction.
+// Each rename is atomic. Rechecks protect observed customer edits and path
+// boundaries; they are not a filesystem lock or a cross-file crash transaction.
 export async function stageFileApplication({ outputDir, files, onFile }) {
-  await preflightFileApplication(outputDir, files);
+  const context = await applicationRoot(outputDir);
+  await preflight(context, files);
   const staged = [];
   const createdDirectories = [];
   const changes = [];
   const removeStaging = async () => {
     for (const file of staged) {
-      await rm(file.next, { force: true });
-      if (file.backup) await rm(file.backup, { force: true });
+      for (const [name, expected] of [[file.next, file.nextPreimage], [file.backup, file.backupPreimage]]) {
+        if (!name) continue;
+        const current = await preimage(context, name);
+        if (!current) continue;
+        // A partially staged file is owned only if its open-created inode matches.
+        if (!expected || !sameIdentity(current.stat, expected.stat)) throw boundaryError(`Staging file changed: ${name}.`);
+        if (expected.content && !samePreimage(current, expected)) throw boundaryError(`Staging file changed: ${name}.`);
+        await destination(context, name);
+        await rm(path.join(context.root, name));
+      }
     }
-    for (const directory of createdDirectories.reverse()) {
+    for (const directory of [...createdDirectories].reverse()) {
+      const filePath = path.relative(context.root, path.join(directory, ".boundary-check"));
+      await destination(context, filePath);
       try { await rmdir(directory); } catch (error) {
         if (!["ENOTEMPTY", "EEXIST", "ENOENT"].includes(error.code)) throw error;
       }
     }
   };
-  const stage = async (target, content, mode) => {
+  const stage = async (entry, name, content, mode) => {
+    const { target } = await destination(context, entry[name]);
     const handle = await open(target, "wx", mode ?? 0o666);
-    try { await handle.writeFile(content); if (mode !== undefined) await chmod(target, mode); }
+    entry[name + "Preimage"] = { stat: await handle.stat() };
+    try { await handle.writeFile(content); if (mode !== undefined) await handle.chmod(mode); }
     finally { await handle.close(); }
+    entry[name + "Preimage"] = await preimage(context, entry[name]);
   };
   try {
     for (const file of files) {
-      const target = path.join(outputDir, file.path);
-      const previous = existsSync(target) ? readFileSync(target) : null;
-      const action = previous === null ? "created" : previous.equals(Buffer.from(file.content)) ? "unchanged" : "updated";
+      let { target, nearest } = await destination(context, file.path, true);
+      const previous = await preimage(context, file.path, true);
+      if (Object.hasOwn(file, "previousContent") && (previous?.content.toString("utf8") ?? null) !== file.previousContent) throw boundaryError(`Destination changed since planning: ${file.path}. Customer edits were preserved.`);
+      const action = previous === null ? "created" : previous.content.equals(Buffer.from(file.content)) ? "unchanged" : "updated";
       changes.push({ action, path: file.path });
-      if (action === "unchanged") continue;
-      const missing = [];
-      let parent = path.dirname(target);
-      while (!existsSync(parent)) { missing.unshift(parent); parent = path.dirname(parent); }
-      for (const directory of missing) { await mkdir(directory); createdDirectories.push(directory); }
-      const mode = previous === null ? undefined : (await lstat(target)).mode & 0o777;
-      const suffix = `.benchrouter-${randomUUID()}`;
-      const entry = { target, next: target + suffix + ".next", backup: previous === null ? null : target + suffix + ".previous" };
+      const entry = { path: file.path, previous, next: null, backup: null };
       staged.push(entry);
-      await stage(entry.next, file.content, mode);
-      if (entry.backup) await stage(entry.backup, previous, mode);
+      if (action === "unchanged") continue;
+      while (nearest !== path.dirname(target)) {
+        const part = path.relative(nearest, path.dirname(target)).split(path.sep)[0];
+        const directory = path.join(nearest, part);
+        await destination(context, file.path, true);
+        await mkdir(directory);
+        createdDirectories.push(directory);
+        ({ nearest } = await destination(context, file.path, true));
+      }
+      const mode = previous === null ? undefined : previous.stat.mode & 0o777;
+      const suffix = `.benchrouter-${randomUUID()}`;
+      entry.next = file.path + suffix + ".next";
+      entry.backup = previous === null ? null : file.path + suffix + ".previous";
+      await stage(entry, "next", file.content, mode);
+      if (entry.backup) await stage(entry, "backup", previous.content, mode);
     }
-  } catch (error) { await removeStaging(); throw error; }
+  } catch (error) {
+    try { await removeStaging(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Kit staging failed; remaining staged files were preserved."); }
+    throw error;
+  }
   return {
     discard: removeStaging,
     async commit() {
       const applied = [];
       try {
-        for (const file of staged) { await rename(file.next, file.target); applied.push(file); }
+        // Check the whole transaction first, including unchanged destinations.
+        for (const file of staged) await requirePreimage(context, file.path, file.previous);
+        for (const file of staged) {
+          if (!file.next) continue;
+          await requirePreimage(context, file.path, file.previous);
+          await requirePreimage(context, file.next, file.nextPreimage);
+          const { target } = await destination(context, file.path);
+          await rename(path.join(context.root, file.next), target);
+          applied.push(file);
+          // The installed inode and bytes are those we staged, never a later
+          // customer write read back after rename.
+          file.installed = file.nextPreimage;
+        }
       } catch (error) {
         const rollbackErrors = [];
         for (const file of applied.reverse()) {
           try {
-            if (file.backup) await rename(file.backup, file.target);
-            else await rm(file.target);
+            await requirePreimage(context, file.path, file.installed);
+            if (file.backup) await requirePreimage(context, file.backup, file.backupPreimage);
+            const { target } = await destination(context, file.path);
+            if (file.backup) await rename(path.join(context.root, file.backup), target);
+            else await rm(target);
           } catch (rollbackError) { rollbackErrors.push(rollbackError); }
         }
-        if (rollbackErrors.length > 0) throw new AggregateError([error, ...rollbackErrors], "Kit application failed and rollback could not restore every file.");
-        await removeStaging();
+        if (rollbackErrors.length > 0) throw new AggregateError([error, ...rollbackErrors], "Kit application failed; rollback preserved changed destinations and remaining backups.");
+        try { await removeStaging(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Kit application failed; remaining staged files were preserved."); }
         throw error;
       }
       await removeStaging();

@@ -193,7 +193,7 @@ async function init() {
       process.stdout.write(`skip-existing ${file.path}\n`);
       continue;
     }
-    plannedFiles.push({ path: file.path, content });
+    plannedFiles.push({ path: file.path, content, previousContent: previous });
   }
   try {
     plannedFiles.push(...preparePackageJson(outputDir, previewPacket.package_json));
