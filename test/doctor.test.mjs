@@ -47,6 +47,62 @@ test("evaluation doctor needs no production wiring and never uses an inherited r
   assert.doesNotMatch(result.stdout, /doctor passed: live proxy|runtime host checklist/);
 });
 
+test("RUN-001 doctor rejects every trust shape that the canonical bootstrap refuses locally", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  const original = JSON.parse(signedKitFixture.get(".benchrouter/trust.json"));
+  const invalid = [
+    (trust) => { trust.pins = ["not-a-sha256-digest"]; },
+    (trust) => { trust.pins = ["sha256:" + "A".repeat(64)]; },
+    (trust) => { trust.pins = ["sha256:" + "a".repeat(63)]; },
+    (trust) => { trust.pins = [123]; },
+    (trust) => { trust.unrecognized = true; },
+    (trust) => { trust.keys.unrecognized = trust.keys.current; },
+    (trust) => { trust.keys.current.unrecognized = true; },
+    (trust) => { delete trust.keys.next; }
+  ];
+  for (const change of invalid) {
+    const trust = structuredClone(original);
+    change(trust);
+    await writeFile(path.join(root, ".benchrouter/trust.json"), JSON.stringify(trust));
+    const bootstrap = await runCli(["calibrate"], root);
+    assert.equal(bootstrap.status, 1);
+    assert.match(bootstrap.stderr, /trust.json/);
+    assert.doesNotMatch(bootstrap.stderr, /fetch failed/);
+    const doctor = await runCli(["doctor", "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
+    assert.equal(doctor.status, 1, doctor.stdout);
+    assert.match(doctor.stderr, /trust.json/);
+  }
+  original.pins = ["sha256:" + "a".repeat(64)];
+  await writeFile(path.join(root, ".benchrouter/trust.json"), JSON.stringify(original));
+  const doctor = await runCli(["doctor", "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
+  assert.equal(doctor.status, 0, doctor.stderr);
+});
+
+test("RUN-001 init and upgrade reject invalid packages or unwritable destinations before HTTP", async (t) => {
+  for (const command of ["init", "upgrade"]) {
+    for (const problem of ["invalid JSON", "invalid scripts", "read-only package", "read-only trust"]) {
+      const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+      const packagePath = path.join(root, "package.json");
+      const trustPath = path.join(root, ".benchrouter/trust.json");
+      if (problem === "invalid JSON") await writeFile(packagePath, "{broken");
+      if (problem === "invalid scripts") await writeFile(packagePath, '{"scripts":"not-an-object"}');
+      if (problem === "read-only package") await chmod(packagePath, 0o400);
+      if (problem === "read-only trust") await chmod(trustPath, 0o400);
+      const before = await readFile(path.join(root, ".benchrouter/README.md"), "utf8");
+      const extra = command === "init"
+        ? ["--setup-key", "br_setup_fixture", "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini"]
+        : ["--upgrade-token", "br_upgrade_fixture", "--yes"];
+      const result = await runCli([command, "--repo", "example/app", "--route-id", routeId, "--output-dir", root, "--api-url", "http://127.0.0.1:9", ...extra], root);
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, /JSON|package.json scripts|EACCES/);
+      assert.doesNotMatch(result.stderr, /fetch failed/);
+      assert.equal(await readFile(path.join(root, ".benchrouter/README.md"), "utf8"), before);
+      await chmod(packagePath, 0o600);
+      await chmod(trustPath, 0o600);
+    }
+  }
+});
+
 test("activation rejects absent or unknown route before making a request", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
   for (const extra of [[], ["--route-id", "app/missing"]]) {
@@ -481,8 +537,7 @@ test("init does not commit the server packet before local file application succe
   ], root);
 
   assert.equal(result.status, 1);
-  assert.equal(setupServer.requests.length, 1);
-  assert.equal(setupServer.requests[0].body.dry_run, true);
+  assert.equal(setupServer.requests.length, 0);
 });
 
 test("init requires direct-provider identity flags together", async (t) => {

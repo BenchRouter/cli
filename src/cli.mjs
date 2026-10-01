@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
@@ -10,7 +9,7 @@ import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 import { readRouteManifest } from "./route-manifest.mjs";
-import { applyUpgradePacket, prepareUpgradeFiles, preserveCustomerSetup, inspectSignedKit, BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS } from "./generated-kit.mjs";
+import { applyUpgradePacket, prepareUpgradeFiles, preserveCustomerSetup, inspectSignedKit, preparePackageJson, preflightFileApplication, stageFileApplication, UPGRADE_GENERATED_PATHS, BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS } from "./generated-kit.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "help";
@@ -150,6 +149,12 @@ async function init() {
   const recoveryUrl = existsSync(path.join(outputDir, ".benchrouter/benchrouter.yml"))
     ? "https://benchrouter.com/cli/new"
     : "https://benchrouter.com/cli";
+  try {
+    const packageFiles = preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS });
+    await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...packageFiles]);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not validate the setup destination.");
+  }
   const previewResponse = await fetchSetupPacket({
     apiUrl,
     setupCode,
@@ -174,57 +179,32 @@ async function init() {
     return;
   }
 
-  const writtenPaths = [];
+  const plannedFiles = [];
   for (const file of previewPacket.files) {
     if (file.path === ".env.example") continue;
     const targetPath = safeTargetPath(outputDir, file.path);
     const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
+    let content = file.content;
     if (file.path === ".benchrouter/benchrouter.yml" && previous !== null) {
-      const merged = mergeRequestedRoutesIntoManifest(previous, file.content, routeIds);
-      if (merged === previous) {
-        process.stdout.write(`unchanged ${file.path}\n`);
-      } else {
-        await writeFile(targetPath, merged);
-        process.stdout.write(`updated ${file.path}\n`);
-      }
-      writtenPaths.push(file.path);
-      continue;
-    }
-    if (file.path === WORKFLOW_PATH && previous !== null) {
-      file.content = preserveCustomerSetup(previous, file.content);
-    }
-    if (previous === file.content) {
-      process.stdout.write(`unchanged ${file.path}\n`);
-      writtenPaths.push(file.path);
-      continue;
-    }
-    // The generated workflow must include every route's executable paths and secrets.
-    const refreshWorkflow = file.path === ".github/workflows/benchrouter-evals.yml";
-    if (previous !== null && !refreshWorkflow && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
+      content = mergeRequestedRoutesIntoManifest(previous, content, routeIds);
+    } else if (file.path === WORKFLOW_PATH && previous !== null) {
+      content = preserveCustomerSetup(previous, content);
+    } else if (previous !== null && previous !== content && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
       process.stdout.write(`skip-existing ${file.path}\n`);
       continue;
     }
-    await mkdir(path.dirname(targetPath), { recursive: true });
-    await writeFile(targetPath, file.content);
-    process.stdout.write(`${previous === null ? "created" : "updated"} ${file.path}\n`);
-    if (refreshWorkflow && previous !== null) {
-      process.stdout.write("Regenerated the BenchRouter-managed workflow for all routes. Review its diff before committing any custom workflow changes.\n");
-    }
-    writtenPaths.push(file.path);
+    plannedFiles.push({ path: file.path, content });
   }
-
-  const packageJsonPath = path.join(outputDir, "package.json");
-  if (existsSync(packageJsonPath)) {
-    const updated = updatePackageJson(packageJsonPath, previewPacket.package_json);
-    if (updated) {
-      writtenPaths.push("package.json");
-      process.stdout.write("updated package.json\n");
-    } else {
-      process.stdout.write("unchanged package.json\n");
-    }
-  } else {
-    process.stdout.write("skipped package.json update; no package.json found\n");
+  try {
+    plannedFiles.push(...preparePackageJson(outputDir, previewPacket.package_json));
+    await (await stageFileApplication({
+      outputDir, files: plannedFiles,
+      onFile(action, filePath) { process.stdout.write(`${action} ${filePath}\n`); }
+    })).commit();
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not apply the BenchRouter setup packet.");
   }
+  if (!existsSync(path.join(outputDir, "package.json"))) process.stdout.write("skipped package.json update; no package.json found\n");
 
   process.stdout.write("Runtime env configuration is deferred until activation. Existing env examples are unchanged.\n");
 
@@ -327,6 +307,8 @@ async function upgrade() {
   // Validate canonical route truth before consuming a single-use token.
   try {
     readRouteManifest(outputDir);
+    const packageFiles = preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS });
+    await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...packageFiles]);
   } catch (error) {
     fail(error instanceof Error ? error.message : "Could not validate the existing BenchRouter kit.");
   }
@@ -343,7 +325,8 @@ async function upgrade() {
       mode: "preview"
     });
     try {
-      prepareUpgradeFiles(outputDir, preview.files);
+      const planned = [...prepareUpgradeFiles(outputDir, preview.files), ...preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS })];
+      await preflightFileApplication(outputDir, planned);
     } catch (error) {
       fail(error instanceof Error ? error.message : "BenchRouter returned an invalid kit upgrade preview.");
     }
@@ -379,6 +362,8 @@ async function upgrade() {
   //    preview response as if it were authoritative.
   try {
     readRouteManifest(outputDir);
+    const packageFiles = preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS });
+    await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...packageFiles]);
   } catch (error) {
     fail(error instanceof Error ? error.message : "Could not validate the existing BenchRouter kit.");
   }
@@ -402,9 +387,6 @@ async function upgrade() {
   } catch (error) {
     fail(error instanceof Error ? error.message : "Could not apply the BenchRouter kit upgrade.");
   }
-
-  const packageJsonPath = path.join(outputDir, "package.json");
-  if (existsSync(packageJsonPath)) updatePackageJson(packageJsonPath, { scripts: LOCAL_SCRIPTS, devDependencies: {} });
 
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Review the diff. benchrouter.yml and route-owned cases, scorers, calibration fixtures, and app files must be unchanged.\n");
@@ -1298,24 +1280,6 @@ function verifyDefaultBranchConfig(repoFullName, failures, passed) {
     return;
   }
   passed.push(`default-branch config: .benchrouter/benchrouter.yml is readable on ${defaultBranch}`);
-}
-
-function updatePackageJson(packageJsonPath, packageJsonInstructions) {
-  const previous = readFileSync(packageJsonPath, "utf8");
-  const parsed = JSON.parse(previous);
-  parsed.scripts = { ...(parsed.scripts ?? {}), ...packageJsonInstructions.scripts };
-  parsed.devDependencies = parsed.devDependencies ?? {};
-  for (const dependency of packageJsonInstructions.dev_dependencies ?? []) {
-    if (!parsed.dependencies?.[dependency] && !parsed.devDependencies[dependency]) {
-      parsed.devDependencies[dependency] = "latest";
-    }
-  }
-  const next = `${JSON.stringify(parsed, null, 2)}\n`;
-  if (next === previous) {
-    return false;
-  }
-  writeFileSync(packageJsonPath, next);
-  return true;
 }
 
 function isBenchRouterKitFile(relativePath) {

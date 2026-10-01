@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { access, chmod, lstat, mkdir, open, rename, rm, rmdir } from "node:fs/promises";
+import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import path from "node:path";
 import { parseDocument } from "yaml";
 import { readRouteManifest } from "./route-manifest.mjs";
@@ -84,34 +85,136 @@ export function prepareUpgradeFiles(outputDir, files) {
   });
 }
 
-export async function applyUpgradePacket({ outputDir, files, onFile }) {
-  const packetFiles = prepareUpgradeFiles(outputDir, files);
-  for (const file of packetFiles) {
-    const target = path.join(outputDir, file.path);
-    const previous = existsSync(target) ? readFileSync(target, "utf8") : null;
-    if (previous === file.content) {
-      onFile?.("unchanged", file.path);
-      continue;
-    }
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, file.content);
-    onFile?.(previous === null ? "created" : "updated", file.path);
+export function preparePackageJson(outputDir, instructions) {
+  const target = path.join(outputDir, "package.json");
+  if (!existsSync(target)) return [];
+  const parsed = JSON.parse(readFileSync(target, "utf8"));
+  const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!object(parsed)) throw new Error("package.json must contain an object.");
+  for (const name of ["scripts", "dependencies", "devDependencies"]) {
+    if (parsed[name] !== undefined && !object(parsed[name])) throw new Error(`package.json ${name} must contain an object.`);
   }
+  parsed.scripts = { ...(parsed.scripts ?? {}), ...instructions.scripts };
+  parsed.devDependencies = parsed.devDependencies ?? {};
+  for (const dependency of instructions.dev_dependencies ?? []) {
+    if (!parsed.dependencies?.[dependency] && !parsed.devDependencies[dependency]) parsed.devDependencies[dependency] = "latest";
+  }
+  return [{ path: "package.json", content: `${JSON.stringify(parsed, null, 2)}\n` }];
+}
+
+// Preflight is read-only and runs before consuming setup or upgrade credentials.
+export async function preflightFileApplication(outputDir, files) {
+  for (const file of files) {
+    const target = path.resolve(outputDir, file.path);
+    if (!target.startsWith(path.resolve(outputDir) + path.sep)) throw new Error(`Unsafe generated path ${file.path}.`);
+    let parent = path.dirname(target);
+    while (!existsSync(parent)) parent = path.dirname(parent);
+    await access(parent, constants.W_OK | constants.X_OK);
+    if (existsSync(target)) {
+      if (!(await lstat(target)).isFile()) throw new Error(`${file.path} must be a regular file.`);
+      await access(target, constants.R_OK | constants.W_OK);
+    }
+  }
+}
+
+// Each rename is atomic. Caught failures restore previous bytes; a process crash
+// between renames is not a cross-file transaction.
+export async function stageFileApplication({ outputDir, files, onFile }) {
+  await preflightFileApplication(outputDir, files);
+  const staged = [];
+  const createdDirectories = [];
+  const changes = [];
+  const removeStaging = async () => {
+    for (const file of staged) {
+      await rm(file.next, { force: true });
+      if (file.backup) await rm(file.backup, { force: true });
+    }
+    for (const directory of createdDirectories.reverse()) {
+      try { await rmdir(directory); } catch (error) {
+        if (!["ENOTEMPTY", "EEXIST", "ENOENT"].includes(error.code)) throw error;
+      }
+    }
+  };
+  const stage = async (target, content, mode) => {
+    const handle = await open(target, "wx", mode ?? 0o666);
+    try { await handle.writeFile(content); if (mode !== undefined) await chmod(target, mode); }
+    finally { await handle.close(); }
+  };
+  try {
+    for (const file of files) {
+      const target = path.join(outputDir, file.path);
+      const previous = existsSync(target) ? readFileSync(target) : null;
+      const action = previous === null ? "created" : previous.equals(Buffer.from(file.content)) ? "unchanged" : "updated";
+      changes.push({ action, path: file.path });
+      if (action === "unchanged") continue;
+      const missing = [];
+      let parent = path.dirname(target);
+      while (!existsSync(parent)) { missing.unshift(parent); parent = path.dirname(parent); }
+      for (const directory of missing) { await mkdir(directory); createdDirectories.push(directory); }
+      const mode = previous === null ? undefined : (await lstat(target)).mode & 0o777;
+      const suffix = `.benchrouter-${randomUUID()}`;
+      const entry = { target, next: target + suffix + ".next", backup: previous === null ? null : target + suffix + ".previous" };
+      staged.push(entry);
+      await stage(entry.next, file.content, mode);
+      if (entry.backup) await stage(entry.backup, previous, mode);
+    }
+  } catch (error) { await removeStaging(); throw error; }
+  return {
+    discard: removeStaging,
+    async commit() {
+      const applied = [];
+      try {
+        for (const file of staged) { await rename(file.next, file.target); applied.push(file); }
+      } catch (error) {
+        const rollbackErrors = [];
+        for (const file of applied.reverse()) {
+          try {
+            if (file.backup) await rename(file.backup, file.target);
+            else await rm(file.target);
+          } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+        }
+        if (rollbackErrors.length > 0) throw new AggregateError([error, ...rollbackErrors], "Kit application failed and rollback could not restore every file.");
+        await removeStaging();
+        throw error;
+      }
+      await removeStaging();
+      for (const change of changes) onFile?.(change.action, change.path);
+    }
+  };
+}
+
+export async function applyUpgradePacket({ outputDir, files, onFile }) {
+  const packetFiles = [...prepareUpgradeFiles(outputDir, files), ...preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS })];
+  await (await stageFileApplication({ outputDir, files: packetFiles, onFile })).commit();
+}
+
+function trustObject(value, keys, what) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${what} is not an object`);
+  if (Object.keys(value).sort().join(",") !== [...keys].sort().join(",")) throw new Error(`${what} has unknown or missing fields`);
+  return value;
+}
+
+function parseTrust(source) {
+  const trust = trustObject(JSON.parse(source), ["schema", "protocol_major", "keys", "pins"], "trust.json");
+  if (trust.schema !== "benchrouter.trust.v1" || trust.protocol_major !== 1) throw new Error("trust.json schema or protocol major is not supported");
+  const keys = trustObject(trust.keys, ["current", "next"], "trust.json keys");
+  for (const key of [keys.current, keys.next]) {
+    trustObject(key, ["key_id", "alg", "public_key"], "trust.json key");
+    const bytes = Buffer.from(String(key.public_key), "base64");
+    if (typeof key.public_key !== "string" || bytes.toString("base64") !== key.public_key) throw new Error("trust.json public_key is not canonical base64");
+    if (key.alg !== "ed25519" || bytes.length !== 32) throw new Error("trust.json key is not a raw Ed25519 key");
+    if (key.key_id !== "ed25519:" + createHash("sha256").update(bytes).digest("hex").slice(0, 16)) throw new Error("trust.json key_id does not match its public key");
+    createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: bytes.toString("base64url") }, format: "jwk" });
+  }
+  const isDigest = (value) => typeof value === "string" && value.length === 71 && value.startsWith("sha256:") && [...value.slice(7)].every((char) => "0123456789abcdef".includes(char));
+  if (!Array.isArray(trust.pins) || !trust.pins.every(isDigest)) throw new Error("trust.json pins must be sha256 digests");
 }
 
 export function inspectSignedKit(root, failures) {
   const trustPath = path.join(root, TRUST_PATH);
   if (existsSync(trustPath)) {
     try {
-      const trust = JSON.parse(readFileSync(trustPath, "utf8"));
-      if (trust.schema !== "benchrouter.trust.v1" || trust.protocol_major !== 1 || !Array.isArray(trust.pins)) throw new Error("expected the runner protocol v1 trust contract");
-      for (const name of ["current", "next"]) {
-        const key = trust.keys?.[name];
-        if (key?.alg !== "ed25519" || typeof key.public_key !== "string") throw new Error(`missing ${name} signing key`);
-        const bytes = Buffer.from(key.public_key, "base64");
-        const keyId = "ed25519:" + createHash("sha256").update(bytes).digest("hex").slice(0, 16);
-        if (bytes.length !== 32 || bytes.toString("base64") !== key.public_key || key.key_id !== keyId) throw new Error(`invalid ${name} signing key`);
-      }
+      parseTrust(readFileSync(trustPath, "utf8"));
     } catch (error) { failures.push(`${TRUST_PATH}: ${error.message}`); }
   }
   const workflowPath = path.join(root, WORKFLOW_PATH);
