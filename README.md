@@ -21,6 +21,10 @@ npx @benchrouter/cli init \
   --incumbent-model provider/model
 ```
 
+Pass `--eval-command "pnpm run test:customer"` only when an existing customer
+test command is used for local capture. Without it, setup emits no
+`capture_command`. The signed CI runtime command is separate.
+
 For a direct-provider incumbent, also pass `--provider-id <id>` and
 `--provider-ref <exact-ref>`. Pass both or neither.
 
@@ -77,7 +81,7 @@ protocol.
 
 The CLI rejects mutable runtime versions, unsafe paths, missing referenced
 files, invalid or reserved secret names, fractional count and timeout limits,
-timeouts above 350 minutes, and invalid cost budgets before it sends the setup
+timeouts above 90 minutes, and invalid cost budgets before it sends the setup
 request. The generated workflow runs `argv` without a shell. It receives only
 the declared customer secrets and the scoped BenchRouter eval contract.
 
@@ -99,6 +103,26 @@ npx @benchrouter/cli init ... --save-token
 
 The generated files include `.benchrouter/SETUP_README.md`. Read that file
 before changing the call site, eval cases, or scorer.
+
+## Signed runtime commands
+
+Run these commands from the repository with the generated kit:
+
+```bash
+benchrouter capture
+benchrouter calibrate
+```
+
+Both commands execute `.benchrouter/bootstrap.mjs`. The bootstrap verifies the
+signed release before it starts. Capture starts a local proxy. Run the existing
+application test command separately against that proxy. Calibrate checks local
+evidence. Neither command proves production readiness.
+
+The generated GitHub Action uses `bootstrap.mjs run`. The `benchrouter run`
+entrypoint forwards to the same bootstrap and requires GitHub Actions OIDC.
+The workflow uses one Node 24 job with a 120-minute ceiling. It grants evaluator
+secrets and customer setup only to server-dispatched work. The trust file carries
+current and next signing keys, with digest pins empty by default.
 
 ## Commands
 
@@ -267,13 +291,14 @@ have one positionally matching file.
 
 ## Upgrade
 
-`upgrade` previews a server-generated update for generic kit engines, asks for
-confirmation, then applies it. It preserves `.benchrouter/benchrouter.yml`
-byte-for-byte. That YAML is the single route declaration. Upgrade removes
-obsolete route declarations from `.benchrouter/.kit-state.json`, then updates
-its kit version and generated-file hashes. It never replaces cases, scorers,
-calibration fixtures, setup guides, or app files. Missing or invalid state
-requires re-onboarding.
+`upgrade` previews the bootstrap, trust file, workflow, and README, asks for
+confirmation, then applies them. It preserves `.benchrouter/benchrouter.yml`
+byte-for-byte. That YAML is the single route declaration. Upgrade validates
+each file hash before it writes any file. It preserves customer setup steps
+between Setup Node.js and Run BenchRouter. Each customer step must use
+`if: github.event_name == 'workflow_dispatch'`. It never replaces cases,
+scorers, calibration fixtures, setup guides, or app files. Old generated-engine
+installations must be removed and re-onboarded; they have no compatibility path.
 
 ```bash
 benchrouter upgrade \
