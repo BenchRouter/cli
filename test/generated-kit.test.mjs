@@ -144,8 +144,27 @@ test("RUN-001 refresh preserves customer Node22 and post-step AST without new se
   doc.setIn(["jobs", "eval", "steps", 6, "id"], "benchrouter_runtime");
   assert.throws(() => preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH)), /unique step IDs/);
   doc.setIn(["jobs", "eval", "steps", 6, "id"], "customer_metrics");
-  doc.setIn(["jobs", "eval", "steps", 6, "env", "ADDED_SECRET"], "${{ secrets.REPORT_SECRET }}");
+  for (const expression of [
+    "${{ secrets.REPORT_SECRET }}", "${{ secrets['REPORT_SECRET'] }}",
+    "${{ secrets [ 'REPORT_SECRET' ] }}", "${{ toJSON(secrets) }}",
+    "${{ SECRETS.REPORT_SECRET }}", "${{ format('}} {0}', secrets['REPORT_SECRET']) }}"
+  ]) {
+    doc.setIn(["jobs", "eval", "steps", 6, "env", "ADDED_SECRET"], expression);
+    const invalid = doc.toString();
+    assert.throws(() => preserveCustomerSetup(invalid, kit.get(WORKFLOW_PATH)), /must not add secret grants/);
+    await writeFile(path.join(root, WORKFLOW_PATH), invalid);
+    const failures = [];
+    inspectSignedKit(root, failures);
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], /must not add secret grants/);
+  }
+  doc.deleteIn(["jobs", "eval", "steps", 6, "env", "ADDED_SECRET"]);
+  doc.setIn(["jobs", "eval", "steps", 6, "if"], "always() && secrets['REPORT_SECRET'] != ''");
   assert.throws(() => preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH)), /must not add secret grants/);
+  doc.setIn(["jobs", "eval", "steps", 6, "if"], "always()");
+  doc.setIn(["jobs", "eval", "steps", 6, "name"], "Report secrets inventory");
+  doc.setIn(["jobs", "eval", "steps", 6, "run"], "node scripts/report-secrets-inventory.mjs");
+  assert.equal(parseDocument(preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH))).toJS().jobs.eval.steps.at(-1).name, "Report secrets inventory");
 });
 
 test("RUN-001 exact kit apply preserves customer files and checks every digest before writing", async (t) => {

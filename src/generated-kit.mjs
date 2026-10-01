@@ -72,13 +72,26 @@ function dispatchOnly(condition) {
   return text === DISPATCH_ONLY || text === "${{ " + DISPATCH_ONLY + " }}";
 }
 
+// RUN-001: the secrets context supports dot, indexed and whole-context expressions.
+// Inspect YAML values, not JSON spelling, so whitespace and case cannot hide a grant.
+function grantsPostStepSecrets(value, key = "") {
+  if (typeof value === "string") {
+    if (key === "if" && /\bsecrets\b/i.test(value)) return true;
+    // Conservatively scan the whole interpolated value: quoted closing braces
+    // are legal expression data and must not truncate the grant check.
+    return value.includes("${{") && /\bsecrets\b/i.test(value);
+  }
+  if (value && typeof value === "object") return Object.entries(value).some(([name, child]) => grantsPostStepSecrets(child, name));
+  return false;
+}
+
 function validateCustomerSteps(steps, { interpreter, run }) {
   for (const step of steps.items.slice(interpreter + 1, run)) {
     if (!dispatchOnly(step?.get?.("if"))) throw new Error("Every customer setup step must use if: " + DISPATCH_ONLY);
   }
   // Customer postprocessing is distinct from dispatch-only evaluator setup.
   for (const step of steps.items.slice(run + 1)) {
-    if (JSON.stringify(step.toJSON()).includes("secrets.")) throw new Error("Customer post steps must not add secret grants.");
+    if (grantsPostStepSecrets(step.toJSON())) throw new Error("Customer post steps must not add secret grants.");
   }
 }
 
