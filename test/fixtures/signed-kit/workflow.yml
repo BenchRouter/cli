@@ -1,0 +1,77 @@
+name: BenchRouter Evals
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('BenchRouter worker {0}', inputs.claim) || '' }}
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    branches:
+      - main
+    paths:
+      - .benchrouter/**
+      - .github/workflows/benchrouter-evals.yml
+      - src/**
+  push:
+    branches:
+      - main
+    paths:
+      - .benchrouter/**
+      - .github/workflows/benchrouter-evals.yml
+      - src/**
+  workflow_dispatch:
+    inputs:
+      claim:
+        description: BenchRouter startup claim
+        required: true
+        type: string
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  eval:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: .br-control
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: |-
+            .benchrouter/bootstrap.mjs
+            .benchrouter/trust.json
+            .github/workflows/benchrouter-evals.yml
+          sparse-checkout-cone-mode: false
+      - name: Setup Node.js
+        id: benchrouter_node24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Record BenchRouter Node interpreter
+        id: benchrouter_bootstrap_node
+        shell: bash
+        run: |
+          node --input-type=module <<'BENCHROUTER_NODE'
+          import { appendFileSync, realpathSync } from 'node:fs';
+          import { isAbsolute } from 'node:path';
+          const node = realpathSync(process.execPath);
+          if (process.versions.node.split('.')[0] !== '24' || !isAbsolute(node) || node.includes('\n') || node.includes('\r')) {
+            throw new Error('Expected an absolute Node 24 interpreter');
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `node=${node}\n`);
+          BENCHROUTER_NODE
+      # ---- customer-setup (customer-owned). Add tools needed by your evaluator. ----
+      # Every customer setup step must use: if: github.event_name == 'workflow_dispatch'
+      # Replay-only repos need no customer setup.
+      # ---- end customer-setup ----
+      - name: Run BenchRouter
+        id: benchrouter_runtime
+        shell: bash
+        run: '"$BENCHROUTER_BOOTSTRAP_NODE" .br-control/.benchrouter/bootstrap.mjs run'
+        env:
+          BENCHROUTER_BOOTSTRAP_NODE: ${{ steps.benchrouter_bootstrap_node.outputs.node }}
+          BENCHROUTER_JOB_CEILING_MIN: "120"
+          BENCHROUTER_FETCH_TOKEN: ${{ github.token }}

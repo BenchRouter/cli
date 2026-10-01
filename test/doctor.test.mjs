@@ -8,12 +8,18 @@ import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyUpgradePacket } from "../src/upgrade-state.mjs";
+import { applyUpgradePacket, LOCAL_SCRIPTS } from "../src/generated-kit.mjs";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, "..");
 const cliPath = path.join(repoRoot, "bin/benchrouter.mjs");
 const routeId = "app/chat";
+const signedKitFixture = new Map(await Promise.all([
+  [".benchrouter/bootstrap.mjs", "bootstrap.mjs.txt"],
+  [".benchrouter/trust.json", "trust.json"],
+  [".github/workflows/benchrouter-evals.yml", "workflow.yml"]
+].map(async ([filePath, fixtureName]) => [filePath, await readFile(path.join(testDir, "fixtures/signed-kit", fixtureName), "utf8")])));
+
 const fixture = JSON.parse(
   await readFile(path.join(testDir, "fixtures/benchrouter-proxy/chat-completion.json"), "utf8")
 );
@@ -39,6 +45,62 @@ test("evaluation doctor needs no production wiring and never uses an inherited r
   assert.match(result.stdout, /evaluation preparation does not require a production call-site change/);
   assert.match(result.stdout, /no request made/);
   assert.doesNotMatch(result.stdout, /doctor passed: live proxy|runtime host checklist/);
+});
+
+test("RUN-001 doctor rejects every trust shape that the canonical bootstrap refuses locally", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  const original = JSON.parse(signedKitFixture.get(".benchrouter/trust.json"));
+  const invalid = [
+    (trust) => { trust.pins = ["not-a-sha256-digest"]; },
+    (trust) => { trust.pins = ["sha256:" + "A".repeat(64)]; },
+    (trust) => { trust.pins = ["sha256:" + "a".repeat(63)]; },
+    (trust) => { trust.pins = [123]; },
+    (trust) => { trust.unrecognized = true; },
+    (trust) => { trust.keys.unrecognized = trust.keys.current; },
+    (trust) => { trust.keys.current.unrecognized = true; },
+    (trust) => { delete trust.keys.next; }
+  ];
+  for (const change of invalid) {
+    const trust = structuredClone(original);
+    change(trust);
+    await writeFile(path.join(root, ".benchrouter/trust.json"), JSON.stringify(trust));
+    const bootstrap = await runCli(["calibrate"], root);
+    assert.equal(bootstrap.status, 1);
+    assert.match(bootstrap.stderr, /trust.json/);
+    assert.doesNotMatch(bootstrap.stderr, /fetch failed/);
+    const doctor = await runCli(["doctor", "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
+    assert.equal(doctor.status, 1, doctor.stdout);
+    assert.match(doctor.stderr, /trust.json/);
+  }
+  original.pins = ["sha256:" + "a".repeat(64)];
+  await writeFile(path.join(root, ".benchrouter/trust.json"), JSON.stringify(original));
+  const doctor = await runCli(["doctor", "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
+  assert.equal(doctor.status, 0, doctor.stderr);
+});
+
+test("RUN-001 init and upgrade reject invalid packages or unwritable destinations before HTTP", async (t) => {
+  for (const command of ["init", "upgrade"]) {
+    for (const problem of ["invalid JSON", "invalid scripts", "read-only package", "read-only trust"]) {
+      const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+      const packagePath = path.join(root, "package.json");
+      const trustPath = path.join(root, ".benchrouter/trust.json");
+      if (problem === "invalid JSON") await writeFile(packagePath, "{broken");
+      if (problem === "invalid scripts") await writeFile(packagePath, '{"scripts":"not-an-object"}');
+      if (problem === "read-only package") await chmod(packagePath, 0o400);
+      if (problem === "read-only trust") await chmod(trustPath, 0o400);
+      const before = await readFile(path.join(root, ".benchrouter/README.md"), "utf8");
+      const extra = command === "init"
+        ? ["--setup-key", "br_setup_fixture", "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini"]
+        : ["--upgrade-token", "br_upgrade_fixture", "--yes"];
+      const result = await runCli([command, "--repo", "example/app", "--route-id", routeId, "--output-dir", root, "--api-url", "http://127.0.0.1:9", ...extra], root);
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, /JSON|package.json scripts|EACCES/);
+      assert.doesNotMatch(result.stderr, /fetch failed/);
+      assert.equal(await readFile(path.join(root, ".benchrouter/README.md"), "utf8"), before);
+      await chmod(packagePath, 0o600);
+      await chmod(trustPath, 0o600);
+    }
+  }
 });
 
 test("activation rejects absent or unknown route before making a request", async (t) => {
@@ -194,20 +256,6 @@ test("doctor uses the Anthropic API root and validates repository-executable ref
   assert.doesNotMatch(result.stderr, /must be a JSON array|no runnable cases|scorer/);
 });
 
-test("doctor reports state routes only as obsolete cleanup", async (t) => {
-  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
-  const statePath = path.join(root, ".benchrouter/.kit-state.json");
-  const state = JSON.parse(await readFile(statePath, "utf8"));
-  state.routes = [{ route_id: "wrong/stale", incumbent_model: "wrong/old" }];
-  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
-
-  const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
-
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /contains obsolete route declarations.*benchrouter\.yml is canonical.*run benchrouter upgrade/);
-  assert.doesNotMatch(result.stderr, /only in|drift|wrong\/stale/);
-});
-
 test("doctor reports disabled BenchRouter Evals workflow from gh", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   const ghBin = await createFixtureGh(t);
@@ -272,7 +320,7 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-init-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, ".benchrouter"), { recursive: true });
-  await writeFile(path.join(root, ".benchrouter/sidecar.mjs"), "// stale generated sidecar\n");
+  await writeFile(path.join(root, ".benchrouter/bootstrap.mjs"), "// stale bootstrap\n");
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ scripts: {} }, null, 2)}\n`);
 
   const setupServer = await startFixtureProxy(t, {
@@ -294,12 +342,12 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
             content: "version: 1\n"
           },
           {
-            path: ".benchrouter/sidecar.mjs",
-            content: "// current generated sidecar\n"
+            path: ".benchrouter/bootstrap.mjs",
+            content: signedKitFixture.get(".benchrouter/bootstrap.mjs")
           }
         ],
         package_json: {
-          scripts: { "benchrouter:eval": "node .benchrouter/benchrouter-eval.mjs" },
+          scripts: LOCAL_SCRIPTS,
           dev_dependencies: []
         },
         runtime_env: {
@@ -332,6 +380,8 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
       "gpt-4o-mini-2024-07-18",
       "--base-url-env",
       "OPENAI_BASE_URL",
+      "--eval-command",
+      "pnpm run test:customer",
       "--code-ref",
       "src/llm.js",
       "--force",
@@ -343,6 +393,8 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
     root
   );
 
+  assert.equal(setupServer.requests[0].body.route.eval_command, "pnpm run test:customer");
+  assert.equal(setupServer.requests[1].body.route.eval_command, "pnpm run test:customer");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Runtime\/host BENCHROUTER_API_KEY: br_live_runtime_fixture/);
   assert.doesNotMatch(result.stdout, /BENCHROUTER_EVAL_API_KEY/);
@@ -352,7 +404,7 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   assert.match(result.stdout, /Keep production code and host configuration unchanged in the evaluation PR/);
   assert.match(result.stdout, /BenchRouter Evals uses GitHub OIDC/);
   assert.match(result.stdout, /npx --yes --package @benchrouter\/cli benchrouter doctor/);
-  assert.equal(await readFile(path.join(root, ".benchrouter/sidecar.mjs"), "utf8"), "// current generated sidecar\n");
+  assert.equal(await readFile(path.join(root, ".benchrouter/bootstrap.mjs"), "utf8"), signedKitFixture.get(".benchrouter/bootstrap.mjs"));
 
   assert.equal(existsSync(path.join(root, ".env.example")), false);
   assert.match(result.stdout, /Runtime env configuration is deferred until activation/);
@@ -451,6 +503,7 @@ routes:
   assert.equal((merged.match(/route_id: app\/summarize/g) ?? []).length, 1);
   assert.equal((merged.match(/route_id: app\/classify/g) ?? []).length, 1);
   assert.equal(setupServer.requests.length, 2);
+  assert.equal(Object.hasOwn(setupServer.requests[0].body.route, "eval_command"), false);
   assert.equal(setupServer.requests[0].body.dry_run, true);
   assert.equal(Object.hasOwn(setupServer.requests[1].body, "dry_run"), false);
   assert.equal(setupServer.requests[1].body.routes.length, 1);
@@ -484,8 +537,7 @@ test("init does not commit the server packet before local file application succe
   ], root);
 
   assert.equal(result.status, 1);
-  assert.equal(setupServer.requests.length, 1);
-  assert.equal(setupServer.requests[0].body.dry_run, true);
+  assert.equal(setupServer.requests.length, 0);
 });
 
 test("init requires direct-provider identity flags together", async (t) => {
@@ -810,7 +862,7 @@ test("init maps validated repository-executable eval packs to matching routes", 
     input_refs: ["eval/route-b.mjs", "eval/corpus-b.json"],
     acceptance_refs: ["eval/queries-b.json", "eval/qrels-b.json"],
     primary_metric: "recall_at_10",
-    timeout_minutes: 350,
+    timeout_minutes: 90,
     secret_env: ["EMBEDDING_API_KEY"]
   });
   await writeFile(path.join(root, "route-a-pack.json"), `${JSON.stringify(firstPack, null, 2)}\n`);
@@ -887,10 +939,10 @@ test("init rejects an unsafe or mutable executable eval pack before HTTP", async
   assert.match(traversal.stderr, /acceptance_refs\[0\] must be a normalized repository-relative path/);
   assert.doesNotMatch(traversal.stderr, /fetch failed/);
 
-  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ timeout_minutes: 351 }))}\n`);
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ timeout_minutes: 91 }))}\n`);
   const excessiveTimeout = await runCli(command, root);
   assert.equal(excessiveTimeout.status, 1);
-  assert.match(excessiveTimeout.stderr, /timeout_minutes must be from 1 through 350/);
+  assert.match(excessiveTimeout.stderr, /timeout_minutes must be from 1 through 90/);
   assert.doesNotMatch(excessiveTimeout.stderr, /fetch failed/);
 });
 
@@ -938,178 +990,8 @@ test("init completes evaluation files when its runtime key was already provision
   assert.equal(setupServer.requests[0].body.dry_run, true);
 });
 
-test("upgrade removes obsolete state routes while preserving canonical multi-route semantics", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-upgrade-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
-  const oldUpload = "export const oldUpload = true;\n";
-  const oldEvalRunner = "const DEFAULT_MODEL = 'wrong/older-model';\n";
-  const canonicalYaml = `version: 1
-
-product:
-  slug: app
-  repo: example/app
-  default_branch: main
-
-routes:
-  - id: compose
-    route_id: app/compose
-    name: Compose
-    code_refs:
-      - src/compose.ts
-      - src/prompts/compose.ts
-    call_site:
-      base_url_env: COMPOSE_BASE_URL
-      provider_id: anthropic
-      provider_ref: claude-haiku-4-5
-    seed:
-      incumbent_model: anthropic/claude-haiku-4.5
-    eval_pack:
-      workflow: .github/workflows/benchrouter-evals.yml
-      scorer: .benchrouter/scorer.compose.js
-      result_schema: benchrouter.result.v1
-      case_refs:
-        - .benchrouter/cases.compose.json
-  - id: summarize
-    route_id: app/summarize
-    name: Summarize
-    code_refs:
-      - src/summarize.ts
-    call_site:
-      base_url_env: SUMMARIZE_BASE_URL
-      provider_id: openai
-      provider_ref: gpt-5.4-nano
-    seed:
-      incumbent_model: openai/gpt-5.4-nano
-    eval_pack:
-      workflow: .github/workflows/benchrouter-evals.yml
-      scorer: .benchrouter/scorer.summarize.js
-      result_schema: benchrouter.result.v1
-      case_refs:
-        - .benchrouter/cases.summarize.json
-`;
-  const existingState = {
-    version: "0.0.9",
-    generated_by: "benchrouter.setup_packet.v1",
-    product: {
-      slug: "app",
-      default_branch: "main",
-      repo_full_name: "example/app"
-    },
-    routes: [
-      {
-        route_id: "app/compose",
-        route_slug: "compose",
-        name: "Compose",
-        incumbent_model: "anthropic/claude-haiku-4.5",
-        original_model: "anthropic/claude-haiku-4.5",
-        best_model: "openai/gpt-5.6-luna",
-        code_refs: ["src/compose.ts", "src/prompts/compose.ts"]
-      },
-      {
-        route_id: "app/summarize",
-        route_slug: "summarize",
-        name: "Summarize",
-        incumbent_model: "openai/gpt-5.4-nano",
-        original_model: "openai/gpt-5.4-nano",
-        best_model: "google/gemini-3.5-flash-lite",
-        code_refs: ["src/summarize.ts"]
-      }
-    ],
-    files: [
-      { path: ".benchrouter/upload-results.mjs", sha256: sha256(oldUpload) },
-      { path: ".benchrouter/benchrouter-eval.mjs", sha256: sha256(oldEvalRunner) },
-      { path: ".benchrouter/scorer.compose.js", sha256: "a".repeat(64) }
-    ]
-  };
-  await writeFile(
-    path.join(root, ".benchrouter/.kit-state.json"),
-    `${JSON.stringify(existingState, null, 2)}\n`
-  );
-  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), canonicalYaml);
-  await writeFile(path.join(root, ".benchrouter/upload-results.mjs"), oldUpload);
-  await writeFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), oldEvalRunner);
-
-  const preservedFiles = new Map([
-    [".benchrouter/scorer.compose.js", "export const composeScorer = true;\n"],
-    [".benchrouter/scorer.summarize.js", "export const summarizeScorer = true;\n"],
-    [".benchrouter/cases.compose.json", '[{"id":"compose"}]\n'],
-    [".benchrouter/cases.summarize.json", '[{"id":"summarize"}]\n'],
-    [".benchrouter/calibration.compose.json", '{"fixtures":[]}\n'],
-    ["src/compose.ts", "export const compose = true;\n"],
-    ["src/prompts/compose.ts", "export const prompt = true;\n"],
-    ["src/summarize.ts", "export const summarize = true;\n"]
-  ]);
-  for (const [relativePath, contents] of preservedFiles) {
-    await mkdir(path.dirname(path.join(root, relativePath)), { recursive: true });
-    await writeFile(path.join(root, relativePath), contents);
-  }
-
-  const nextUpload = "export const upgradedUpload = true;\n";
-  const workflow = "name: BenchRouter Evals\n";
-  const nextEvalRunner = "// generic: reads .benchrouter/benchrouter.yml\n";
-  const nextCalibrateRunner = "// generic: reads .benchrouter/benchrouter.yml\n";
-  const nextSidecar = "// generic capture: reads .benchrouter/benchrouter.yml\n";
-  const readme = "# BenchRouter\nCanonical routes: .benchrouter/benchrouter.yml\n";
-  const events = [];
-  const upgradeFiles = [
-    { path: ".benchrouter/upload-results.mjs", content: nextUpload, sha256: sha256(nextUpload) },
-    { path: ".benchrouter/benchrouter-eval.mjs", content: nextEvalRunner, sha256: sha256(nextEvalRunner) },
-    { path: ".benchrouter/benchrouter-calibrate.mjs", content: nextCalibrateRunner, sha256: sha256(nextCalibrateRunner) },
-    { path: ".benchrouter/sidecar.mjs", content: nextSidecar, sha256: sha256(nextSidecar) },
-    { path: ".github/workflows/benchrouter-evals.yml", content: workflow, sha256: sha256(workflow) },
-    { path: ".benchrouter/README.md", content: readme, sha256: sha256(readme) }
-  ];
-  assert.deepEqual(upgradeFiles.map((file) => file.path).sort(), [
-    ".benchrouter/README.md",
-    ".benchrouter/benchrouter-calibrate.mjs",
-    ".benchrouter/benchrouter-eval.mjs",
-    ".benchrouter/sidecar.mjs",
-    ".benchrouter/upload-results.mjs",
-    ".github/workflows/benchrouter-evals.yml"
-  ].sort());
-  await assert.rejects(
-    applyUpgradePacket({
-      outputDir: root,
-      setupKitVersion: "0.0.10",
-      files: [{
-        path: ".benchrouter/cases.compose.json",
-        content: "[]\n",
-        sha256: sha256("[]\n")
-      }]
-    }),
-    /unsupported path \.benchrouter\/cases\.compose\.json/
-  );
-  await applyUpgradePacket({
-    outputDir: root,
-    setupKitVersion: "0.0.10",
-    files: upgradeFiles,
-    onFile(action, filePath) {
-      events.push(`${action} ${filePath}`);
-    }
-  });
-
-  const upgradedState = JSON.parse(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"));
-  assert.equal(Object.hasOwn(upgradedState, "routes"), false);
-  assert.equal(upgradedState.version, "0.0.10");
-  assert.deepEqual(upgradedState.product, existingState.product);
-  assert.equal(upgradedState.files.find((file) => file.path === ".benchrouter/upload-results.mjs").sha256, sha256(nextUpload));
-  assert.equal(upgradedState.files.find((file) => file.path === ".benchrouter/benchrouter-eval.mjs").sha256, sha256(nextEvalRunner));
-  assert.equal(upgradedState.files.find((file) => file.path === ".benchrouter/scorer.compose.js").sha256, "a".repeat(64));
-  assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"), canonicalYaml);
-  assert.equal(await readFile(path.join(root, ".benchrouter/upload-results.mjs"), "utf8"), nextUpload);
-  assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), "utf8"), nextEvalRunner);
-  assert.doesNotMatch(await readFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), "utf8"), /wrong\/older-model|DEFAULT_MODEL/);
-  assert.equal(await readFile(path.join(root, ".github/workflows/benchrouter-evals.yml"), "utf8"), workflow);
-  for (const [relativePath, contents] of preservedFiles) {
-    assert.equal(await readFile(path.join(root, relativePath), "utf8"), contents);
-  }
-  assert.equal(events.at(-1), "updated .benchrouter/.kit-state.json");
-});
-
 test("upgrade validates canonical YAML before any preview or token consumption", async (t) => {
   const root = await createUpgradeTarget(t, { writeManifest: false });
-  const originalState = await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8");
   const server = await startFixtureProxy(t, {
     status: 200,
     body: upgradePacketBody(exactUpgradeFiles())
@@ -1123,20 +1005,16 @@ test("upgrade validates canonical YAML before any preview or token consumption",
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /benchrouter\.yml is not valid YAML.*ENOENT/);
   assert.equal(server.requests.length, 0);
-  assert.equal(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"), originalState);
 
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), "routes:\n  - [broken\n");
   const invalid = await runCli(args, root);
   assert.equal(invalid.status, 1);
   assert.match(invalid.stderr, /benchrouter\.yml is not valid YAML/);
   assert.equal(server.requests.length, 0);
-  assert.equal(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"), originalState);
 });
 
 test("upgrade revalidates canonical YAML immediately before apply", async (t) => {
   const root = await createUpgradeTarget(t);
-  const statePath = path.join(root, ".benchrouter/.kit-state.json");
-  const originalState = await readFile(statePath, "utf8");
   const server = await startFixtureProxy(t, {
     status: 200,
     body: upgradePacketBody(exactUpgradeFiles()),
@@ -1155,27 +1033,20 @@ test("upgrade revalidates canonical YAML immediately before apply", async (t) =>
   assert.equal(result.status, 1);
   assert.match(result.stderr, /benchrouter\.yml is not valid YAML/);
   assert.equal(server.requests.length, 1);
-  assert.equal(await readFile(statePath, "utf8"), originalState);
-  assert.equal(Object.hasOwn(JSON.parse(originalState), "routes"), true);
+  assert.equal(existsSync(path.join(root, ".benchrouter/bootstrap.mjs")), false);
 });
 
-test("upgrade rejects legacy, subset, and duplicate generated packets before writes", async (t) => {
+test("upgrade rejects subset and duplicate generated packets before writes", async (t) => {
   const exact = exactUpgradeFiles();
   const cases = [
-    ["legacy three-file packet", exact.filter((file) => [
-      ".github/workflows/benchrouter-evals.yml",
-      ".benchrouter/upload-results.mjs",
-      ".benchrouter/README.md"
-    ].includes(file.path))],
-    ["five-file subset", exact.slice(0, 5)],
-    ["duplicate path", [...exact.slice(0, 5), exact[0]]]
+    ["three-file subset", exact.slice(0, 3)],
+    ["duplicate path", [...exact.slice(0, 3), exact[0]]]
   ];
 
   for (const [label, files] of cases) {
     await t.test(label, async (subtest) => {
       const root = await createUpgradeTarget(subtest);
-      const originalState = await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8");
-      const server = await startFixtureProxy(subtest, {
+          const server = await startFixtureProxy(subtest, {
         status: 200,
         body: upgradePacketBody(files)
       });
@@ -1187,13 +1058,11 @@ test("upgrade rejects legacy, subset, and duplicate generated packets before wri
       assert.equal(result.status, 1);
       assert.match(result.stderr, /must contain exactly one of each generated path/);
       assert.equal(server.requests.length, 1);
-      assert.equal(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"), originalState);
-      assert.equal(Object.hasOwn(JSON.parse(originalState), "routes"), true);
-    });
+        });
   }
 });
 
-test("upgrade removes state routes only after valid YAML and an exact six-file apply", async (t) => {
+test("upgrade applies the exact signed kit while preserving canonical YAML", async (t) => {
   const root = await createUpgradeTarget(t);
   const yamlBefore = await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8");
   const files = exactUpgradeFiles();
@@ -1211,35 +1080,11 @@ test("upgrade removes state routes only after valid YAML and an exact six-file a
   assert.equal(server.requests.length, 2);
   assert.match(server.requests[0].url, /\/v1\/setup\/upgrade-packet\/preview$/);
   assert.match(server.requests[1].url, /\/v1\/control\/setup-packet\/upgrade$/);
-  const state = JSON.parse(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"));
-  assert.equal(Object.hasOwn(state, "routes"), false);
-  assert.equal(state.version, "0.0.10");
   assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"), yamlBefore);
   for (const file of files) {
     assert.equal(await readFile(path.join(root, file.path), "utf8"), file.content);
   }
   assert.match(result.stdout, /npx --yes --package @benchrouter\/cli benchrouter doctor --repo example\/app/);
-});
-
-test("upgrade fails closed before HTTP when repository kit state is missing or invalid", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-upgrade-invalid-state-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
-  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifestYaml());
-  const args = [
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", "http://127.0.0.1:1", "--output-dir", root, "--yes"
-  ];
-
-  const missing = await runCli(args, root);
-  assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /Cannot upgrade without \.benchrouter\/\.kit-state\.json/);
-  assert.match(missing.stderr, /benchrouter init/);
-
-  await writeFile(path.join(root, ".benchrouter/.kit-state.json"), "{broken json\n");
-  const invalid = await runCli(args, root);
-  assert.equal(invalid.status, 1);
-  assert.match(invalid.stderr, /\.kit-state\.json is not valid JSON/);
 });
 
 test("doctor fails when call_site.base_url_env is not referenced by route code_refs", async (t) => {
@@ -1316,26 +1161,12 @@ async function createUpgradeTarget(t, { writeManifest = true } = {}) {
   if (writeManifest) {
     await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifestYaml());
   }
-  await writeFile(
-    path.join(root, ".benchrouter/.kit-state.json"),
-    `${JSON.stringify({
-      version: "0.0.9",
-      generated_by: "benchrouter.setup_packet.v1",
-      product: { slug: "app", default_branch: "main", repo_full_name: "example/app" },
-      routes: [{ route_id: routeId, incumbent_model: "wrong/old-model" }],
-      files: []
-    }, null, 2)}\n`
-  );
   return root;
 }
 
 function exactUpgradeFiles() {
   return [
-    generatedUpgradeFile(".github/workflows/benchrouter-evals.yml", "name: BenchRouter Evals\n"),
-    generatedUpgradeFile(".benchrouter/upload-results.mjs", "// generic upload helper\n"),
-    generatedUpgradeFile(".benchrouter/benchrouter-eval.mjs", "// generic eval runner\n"),
-    generatedUpgradeFile(".benchrouter/benchrouter-calibrate.mjs", "// generic calibration runner\n"),
-    generatedUpgradeFile(".benchrouter/sidecar.mjs", "// generic capture sidecar\n"),
+    ...[...signedKitFixture].map(([filePath, content]) => generatedUpgradeFile(filePath, content)),
     generatedUpgradeFile(".benchrouter/README.md", "# BenchRouter\n")
   ];
 }
@@ -1366,56 +1197,18 @@ async function createTargetRepo(t, { codeRefText }) {
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifestYaml());
   await writeFile(path.join(root, ".benchrouter/README.md"), "# BenchRouter\n");
   await writeFile(path.join(root, ".benchrouter/SETUP_README.md"), "# BenchRouter Setup\n");
-  await writeFile(
-    path.join(root, ".benchrouter/.kit-state.json"),
-    `${JSON.stringify({
-      version: "0.0.10",
-      files: [
-        { path: ".benchrouter/scorer.app__chat.js", sha256: "a".repeat(64) },
-        { path: ".benchrouter/cases.app__chat.json", sha256: "b".repeat(64) }
-      ]
-    }, null, 2)}\n`
-  );
-  await writeFile(
-    path.join(root, ".benchrouter/upload-results.mjs"),
-    [
-      "const commands = ['prepare', 'validate-dispatch', 'report-snapshot', 'plan-pr', 'import-main', 'run-session', 'run-pack'];",
-      "const paths = ['/v1/control/eval-plan', '/v1/control/eval-session/next', '/v1/route-snapshots', '/v1/eval-model-runs/'];",
-      "const fields = ['pull_request_number', 'head_sha'];",
-      "void commands; void paths; void fields;",
-      ""
-    ].join("\n")
-  );
-  await writeFile(path.join(root, ".benchrouter/sidecar.mjs"), "export {};\n");
-  await writeFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), "export {};\n");
-  await writeFile(path.join(root, ".benchrouter/benchrouter-calibrate.mjs"), "export {};\n");
+  for (const [filePath, content] of signedKitFixture) {
+    await writeFile(path.join(root, filePath), content);
+  }
   await writeFile(path.join(root, ".benchrouter/scorer.app__chat.js"), "export function score() { return { pass: true, score: 1 }; }\n");
   await writeFile(
     path.join(root, ".benchrouter/cases.app__chat.json"),
     `${JSON.stringify([{ id: "case-1", input: { messages: [{ role: "user", content: "hello" }] } }], null, 2)}\n`
   );
   await writeFile(
-    path.join(root, ".github/workflows/benchrouter-evals.yml"),
-    [
-      "name: BenchRouter Evals",
-      "on: [pull_request, workflow_dispatch]",
-      "permissions:",
-      "  id-token: write",
-      "jobs:",
-      "  eval:",
-      "    steps:",
-      "      - name: Test route models and update the PPF",
-      "        run: node .benchrouter/upload-results.mjs run-session",
-      "        env:",
-      "          BENCHROUTER_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
-      "      - run: node .benchrouter/upload-results.mjs run-pack",
-      "      # workflow_dispatch benchrouter_plan pull_request id-token: write"
-    ].join("\n")
-  );
-  await writeFile(
     path.join(root, "package.json"),
     `${JSON.stringify({
-      scripts: { "benchrouter:eval": "node .benchrouter/benchrouter-eval.mjs" }
+      scripts: LOCAL_SCRIPTS
     }, null, 2)}\n`
   );
   await writeFile(path.join(root, ".env.example"), "BENCHROUTER_API_KEY=\nOPENAI_BASE_URL=https://api.benchrouter.com/v1\nOPENAI_API_KEY=\n");
