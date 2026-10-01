@@ -15,6 +15,23 @@ export const LOCAL_SCRIPTS = {
 };
 export const UPGRADE_GENERATED_PATHS = [WORKFLOW_PATH, BOOTSTRAP_PATH, TRUST_PATH, ".benchrouter/README.md"];
 const DISPATCH_ONLY = "github.event_name == 'workflow_dispatch'";
+const NODE24_ID = "benchrouter_node24";
+const INTERPRETER_ID = "benchrouter_bootstrap_node";
+const RUNTIME_ID = "benchrouter_runtime";
+const INTERPRETER_OUTPUT = "${{ steps.benchrouter_bootstrap_node.outputs.node }}";
+const RUNTIME_LAUNCH = '"$BENCHROUTER_BOOTSTRAP_NODE" .br-control/.benchrouter/bootstrap.mjs run';
+const INTERPRETER_SCRIPT = [
+  "node --input-type=module <<'BENCHROUTER_NODE'",
+  "import { appendFileSync, realpathSync } from 'node:fs';",
+  "import { isAbsolute } from 'node:path';",
+  "const node = realpathSync(process.execPath);",
+  "if (process.versions.node.split('.')[0] !== '24' || !isAbsolute(node) || node.includes('\\n') || node.includes('\\r')) {",
+  "  throw new Error('Expected an absolute Node 24 interpreter');",
+  "}",
+  "appendFileSync(process.env.GITHUB_OUTPUT, `node=${node}\\n`);",
+  "BENCHROUTER_NODE",
+  ""
+].join("\n");
 
 function workflowDocument(source) {
   const doc = parseDocument(source);
@@ -29,10 +46,24 @@ function evalSteps(doc) {
 }
 
 function setupBounds(steps) {
-  const setup = steps.items.findIndex((step) => step?.get?.("name") === "Setup Node.js");
-  const run = steps.items.findIndex((step) => step?.get?.("name") === "Run BenchRouter");
-  if (setup < 0 || run <= setup) throw new Error(`${WORKFLOW_PATH} must contain Setup Node.js before Run BenchRouter.`);
-  return { setup, run };
+  const ids = new Map();
+  for (const [index, step] of steps.items.entries()) {
+    const id = step?.get?.("id");
+    if (id === undefined) continue;
+    if (typeof id !== "string" || ids.has(id)) throw new Error(`${WORKFLOW_PATH} requires unique step IDs.`);
+    ids.set(id, index);
+  }
+  const setup = ids.get(NODE24_ID);
+  const interpreter = ids.get(INTERPRETER_ID);
+  const run = ids.get(RUNTIME_ID);
+  if (setup !== 1 || interpreter !== 2 || run === undefined || run <= interpreter) throw new Error(`${WORKFLOW_PATH} requires the canonical Node 24 prefix before customer setup and runtime.`);
+  const node = steps.items[setup].toJSON();
+  if (node.uses !== "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020" || node.with?.["node-version"] !== "24" || node.with?.["package-manager-cache"] !== false || Object.keys(node).some((key) => !["name", "id", "uses", "with"].includes(key)) || Object.keys(node.with).some((key) => !["node-version", "package-manager-cache"].includes(key))) throw new Error("requires the unconditional pinned Node 24 setup with package-manager-cache: false");
+  const recorder = steps.items[interpreter].toJSON();
+  if (recorder.shell !== "bash" || recorder.run !== INTERPRETER_SCRIPT || Object.keys(recorder).some((key) => !["name", "id", "shell", "run"].includes(key))) throw new Error("requires the exact unconditional Node 24 interpreter recorder");
+  const runtime = steps.items[run].toJSON();
+  if (runtime.shell !== "bash" || runtime.run !== RUNTIME_LAUNCH || runtime.env?.BENCHROUTER_BOOTSTRAP_NODE !== INTERPRETER_OUTPUT || Object.keys(runtime).some((key) => !["name", "id", "shell", "run", "env"].includes(key))) throw new Error("must run the signed runtime bootstrap with the saved Node 24 interpreter");
+  return { setup, interpreter, run };
 }
 
 function dispatchOnly(condition) {
@@ -41,21 +72,32 @@ function dispatchOnly(condition) {
   return text === DISPATCH_ONLY || text === "${{ " + DISPATCH_ONLY + " }}";
 }
 
-// RUN-001: customer setup stays between the pinned Node setup and the runtime.
+function validateCustomerSteps(steps, { interpreter, run }) {
+  for (const step of steps.items.slice(interpreter + 1, run)) {
+    if (!dispatchOnly(step?.get?.("if"))) throw new Error("Every customer setup step must use if: " + DISPATCH_ONLY);
+  }
+  // Customer postprocessing is distinct from dispatch-only evaluator setup.
+  for (const step of steps.items.slice(run + 1)) {
+    if (JSON.stringify(step.toJSON()).includes("secrets.")) throw new Error("Customer post steps must not add secret grants.");
+  }
+}
+
+// RUN-001: preserve customer setup after the generated recorder and postprocessing after runtime.
 export function preserveCustomerSetup(existingSource, generatedSource) {
-  if (existingSource === generatedSource) return existingSource;
   const existing = workflowDocument(existingSource);
   const generated = workflowDocument(generatedSource);
   const previousSteps = evalSteps(existing);
   const nextSteps = evalSteps(generated);
   const previous = setupBounds(previousSteps);
   const next = setupBounds(nextSteps);
-  const customerSteps = previousSteps.items.slice(previous.setup + 1, previous.run);
-  for (const step of customerSteps) {
-    if (!dispatchOnly(step?.get?.("if"))) throw new Error("Every customer setup step must use if: " + DISPATCH_ONLY);
-  }
-  if (customerSteps.length === 0) return generatedSource;
-  nextSteps.items.splice(next.setup + 1, next.run - next.setup - 1, ...customerSteps.map((step) => step.clone()));
+  validateCustomerSteps(previousSteps, previous);
+  validateCustomerSteps(nextSteps, next);
+  const customerSteps = previousSteps.items.slice(previous.interpreter + 1, previous.run);
+  const customerPostSteps = previousSteps.items.slice(previous.run + 1);
+  if (customerSteps.length === 0 && customerPostSteps.length === 0) return generatedSource;
+  nextSteps.items.splice(next.run + 1, nextSteps.items.length - next.run - 1, ...customerPostSteps.map((step) => step.clone()));
+  nextSteps.items.splice(next.interpreter + 1, next.run - next.interpreter - 1, ...customerSteps.map((step) => step.clone()));
+  setupBounds(nextSteps);
   return generated.toString();
 }
 
@@ -350,16 +392,9 @@ export function inspectSignedKit(root, failures) {
       if (!Array.isArray(paths) || !paths.includes(".benchrouter/**") || !paths.includes(WORKFLOW_PATH)) throw new Error(`${event} must trigger on the generated kit and workflow`);
     }
     const steps = evalSteps(doc);
-    const { setup, run } = setupBounds(steps);
+    const bounds = setupBounds(steps);
     const checkout = steps.items[0]?.toJSON();
     if (checkout?.uses !== "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || checkout.with?.["persist-credentials"] !== false || checkout.with?.path !== ".br-control") throw new Error("requires the pinned control checkout with persist-credentials: false");
-    const node = steps.items[setup].toJSON();
-    if (node.uses !== "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020") throw new Error("requires the pinned setup-node action");
-    if (node.with?.["node-version"] !== "24" || node.with?.["package-manager-cache"] !== false) throw new Error("requires Node 24 with package-manager-cache: false");
-    const runtime = steps.items[run].toJSON();
-    if (runtime.run !== "node .br-control/.benchrouter/bootstrap.mjs run") throw new Error("must run the signed runtime bootstrap");
-    for (const step of steps.items.slice(setup + 1, run)) {
-      if (!dispatchOnly(step?.get?.("if"))) throw new Error("Every customer setup step must use if: " + DISPATCH_ONLY);
-    }
+    validateCustomerSteps(steps, bounds);
   } catch (error) { failures.push(`${WORKFLOW_PATH}: ${error.message}`); }
 }

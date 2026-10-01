@@ -50,9 +50,13 @@ function packetFiles() {
 function customerWorkflow() {
   const doc = parseDocument(kit.get(WORKFLOW_PATH));
   const steps = doc.getIn(["jobs", "eval", "steps"]);
-  steps.items.splice(2, 0, doc.createNode({
+  steps.items.splice(3, 0, doc.createNode({
     name: "Install evaluator tools", if: "github.event_name == 'workflow_dispatch'",
     run: "python --version", env: { EVALUATOR_TOOL_ROOT: ".br-control" }
+  }));
+  steps.items.push(doc.createNode({
+    name: "Report speaker metrics", id: "customer_metrics", if: "always()", shell: "bash",
+    run: "node .benchrouter/summarize-speaker-metrics.mjs", env: { METRIC_FORMAT: "json" }
   }));
   return doc.toString();
 }
@@ -61,14 +65,15 @@ test("RUN-001 refresh keeps customer setup and rejects a step with broader autho
   const existing = customerWorkflow();
   const next = preserveCustomerSetup(existing, kit.get(WORKFLOW_PATH));
   const parsed = parseDocument(next).toJS();
-  assert.deepEqual(parsed.jobs.eval.steps[2], parseDocument(existing).toJS().jobs.eval.steps[2]);
+  assert.deepEqual(parsed.jobs.eval.steps[3], parseDocument(existing).toJS().jobs.eval.steps[3]);
+  assert.deepEqual(parsed.jobs.eval.steps.at(-1), parseDocument(existing).toJS().jobs.eval.steps.at(-1));
   const root = await targetRepo(t);
   await writeFile(path.join(root, WORKFLOW_PATH), next);
   const failures = [];
   inspectSignedKit(root, failures);
   assert.deepEqual(failures, []);
   const invalid = parseDocument(existing);
-  invalid.setIn(["jobs", "eval", "steps", 2, "if"], "always()");
+  invalid.setIn(["jobs", "eval", "steps", 3, "if"], "always()");
   assert.throws(() => preserveCustomerSetup(invalid.toString(), kit.get(WORKFLOW_PATH)), /Every customer setup step/);
 });
 
@@ -87,6 +92,60 @@ test("RUN-001 doctor refuses unsafe checkout, fork access, or a parallel job", a
     assert.equal(failures.length, 1);
     assert.match(failures[0], message);
   }
+});
+
+test("RUN-001 doctor and refresh refuse altered interpreter wiring before customer writes", async (t) => {
+  const root = await targetRepo(t);
+  const customerFile = path.join(root, ".benchrouter/customer-report.mjs");
+  await writeFile(customerFile, "Customer-authored report\n");
+  const canonical = kit.get(WORKFLOW_PATH);
+  for (const [keys, value, message] of [
+    [["jobs", "eval", "steps", 1, "id"], "customer_node", /canonical Node 24 prefix/],
+    [["jobs", "eval", "steps", 1, "with", "node-version"], "22.18.0", /pinned Node 24/],
+    [["jobs", "eval", "steps", 1, "with", "cache"], "npm", /pinned Node 24/],
+    [["jobs", "eval", "steps", 2, "id"], "benchrouter_node24", /unique step IDs/],
+    [["jobs", "eval", "steps", 2, "if"], "always()", /exact unconditional/],
+    [["jobs", "eval", "steps", 2, "shell"], "sh", /exact unconditional/],
+    [["jobs", "eval", "steps", 2, "run"], "echo node=node >> $GITHUB_OUTPUT", /exact unconditional/],
+    [["jobs", "eval", "steps", 3, "run"], "node .br-control/.benchrouter/bootstrap.mjs run", /saved Node 24/],
+    [["jobs", "eval", "steps", 3, "run"], '"$BENCHROUTER_BOOTSTRAP_NODE" .br-control/.benchrouter/bootstrap.mjs run; echo done', /saved Node 24/],
+    [["jobs", "eval", "steps", 3, "env", "BENCHROUTER_BOOTSTRAP_NODE"], "${{ steps.customer_node.outputs.node }}", /saved Node 24/],
+    [["jobs", "eval", "steps", 3, "continue-on-error"], true, /saved Node 24/]
+  ]) {
+    const doc = parseDocument(canonical);
+    doc.setIn(keys, value);
+    const invalid = doc.toString();
+    await writeFile(path.join(root, WORKFLOW_PATH), invalid);
+    const failures = [];
+    inspectSignedKit(root, failures);
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], message);
+    assert.throws(() => preserveCustomerSetup(invalid, canonical), message);
+    assert.equal(await readFile(customerFile, "utf8"), "Customer-authored report\n");
+  }
+});
+
+test("RUN-001 refresh preserves customer Node22 and post-step AST without new secret grants", async (t) => {
+  const doc = parseDocument(customerWorkflow());
+  const steps = doc.getIn(["jobs", "eval", "steps"]);
+  steps.items.splice(3, 0, doc.createNode({
+    name: "Evaluator Node", id: "customer_node22", if: "${{ github.event_name == 'workflow_dispatch' }}",
+    uses: "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    with: { "node-version": "22.18.0", "package-manager-cache": false }
+  }));
+  const before = doc.toJS().jobs.eval.steps;
+  const refreshed = preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH));
+  assert.deepEqual(parseDocument(refreshed).toJS().jobs.eval.steps.slice(3), before.slice(3));
+  const root = await targetRepo(t);
+  await writeFile(path.join(root, WORKFLOW_PATH), refreshed);
+  const failures = [];
+  inspectSignedKit(root, failures);
+  assert.deepEqual(failures, []);
+  doc.setIn(["jobs", "eval", "steps", 6, "id"], "benchrouter_runtime");
+  assert.throws(() => preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH)), /unique step IDs/);
+  doc.setIn(["jobs", "eval", "steps", 6, "id"], "customer_metrics");
+  doc.setIn(["jobs", "eval", "steps", 6, "env", "ADDED_SECRET"], "${{ secrets.REPORT_SECRET }}");
+  assert.throws(() => preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH)), /must not add secret grants/);
 });
 
 test("RUN-001 exact kit apply preserves customer files and checks every digest before writing", async (t) => {
@@ -111,7 +170,8 @@ test("RUN-001 exact kit apply preserves customer files and checks every digest b
   for (const [name, content] of preserved) assert.equal(await readFile(path.join(root, name), "utf8"), content);
   assert.equal(existsSync(path.join(root, ".benchrouter/.kit-state.json")), false);
   const workflow = parseDocument(await readFile(path.join(root, WORKFLOW_PATH), "utf8")).toJS();
-  assert.equal(workflow.jobs.eval.steps[2].name, "Install evaluator tools");
+  assert.equal(workflow.jobs.eval.steps[3].name, "Install evaluator tools");
+  assert.equal(workflow.jobs.eval.steps.at(-1).name, "Report speaker metrics");
 });
 
 test("RUN-001 local commands execute the canonical bootstrap and refuse invalid trust before network access", async (t) => {

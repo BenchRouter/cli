@@ -45,16 +45,33 @@ jobs:
             .github/workflows/benchrouter-evals.yml
           sparse-checkout-cone-mode: false
       - name: Setup Node.js
+        id: benchrouter_node24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "24"
           package-manager-cache: false
+      - name: Record BenchRouter Node interpreter
+        id: benchrouter_bootstrap_node
+        shell: bash
+        run: |
+          node --input-type=module <<'BENCHROUTER_NODE'
+          import { appendFileSync, realpathSync } from 'node:fs';
+          import { isAbsolute } from 'node:path';
+          const node = realpathSync(process.execPath);
+          if (process.versions.node.split('.')[0] !== '24' || !isAbsolute(node) || node.includes('\n') || node.includes('\r')) {
+            throw new Error('Expected an absolute Node 24 interpreter');
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `node=${node}\n`);
+          BENCHROUTER_NODE
       # ---- customer-setup (customer-owned). Add tools needed by your evaluator. ----
       # Every customer setup step must use: if: github.event_name == 'workflow_dispatch'
       # Replay-only repos need no customer setup.
       # ---- end customer-setup ----
       - name: Run BenchRouter
-        run: node .br-control/.benchrouter/bootstrap.mjs run
+        id: benchrouter_runtime
+        shell: bash
+        run: '"$BENCHROUTER_BOOTSTRAP_NODE" .br-control/.benchrouter/bootstrap.mjs run'
         env:
+          BENCHROUTER_BOOTSTRAP_NODE: ${{ steps.benchrouter_bootstrap_node.outputs.node }}
           BENCHROUTER_JOB_CEILING_MIN: "120"
           BENCHROUTER_FETCH_TOKEN: ${{ github.token }}
