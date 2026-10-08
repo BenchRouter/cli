@@ -22,11 +22,11 @@ env:
 jobs:
   package:
     name: Check package
-    # A same-repository PR has an authorized branch in this repository. Fork PRs
-    # are skipped and never reach the org runner or its network and credential
-    # boundary.
+    # This repository is public, so its jobs run on GitHub-hosted runners and
+    # never on the organization's own runners, network or credentials. Fork PRs
+    # are still skipped here.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, benchrouter-gcp]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,7 +42,7 @@ jobs:
     name: Publish package
     needs: package
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
-    runs-on: [self-hosted, linux, x64, benchrouter-gcp]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
