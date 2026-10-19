@@ -1,6 +1,6 @@
 {
   "name": "@benchrouter/cli",
-  "version": "0.2.19",
+  "version": "0.2.20",
   "description": "Command-line interface for BenchRouter",
   "type": "module",
   "scripts": {
