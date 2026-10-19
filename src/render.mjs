@@ -581,3 +581,87 @@ export function renderEvalsRefreshPreview(body) {
     `Model runs planned: ${models.length}`
   ]);
 }
+
+// RUN-001 R5: one line per block, then one line per repository for Unblock.
+function blockScope(block) {
+  return block?.route_key ? `route ${block.route_key}` : block?.context_key ? `context ${block.context_key}` : "repository";
+}
+
+export function renderBlocksList(repos) {
+  if (!Array.isArray(repos) || repos.length === 0) {
+    process.stdout.write("No repositories.\n");
+    return;
+  }
+  for (const repo of repos) {
+    const blocks = Array.isArray(repo.blocks) ? repo.blocks : [];
+    if (blocks.length === 0) {
+      process.stdout.write(`${repo.repo_full_name}: nothing blocked\n`);
+      continue;
+    }
+    for (const block of blocks) {
+      const when = block.until ? `until ${block.until}` : block.since ? `since ${block.since}` : "";
+      const mode = block.clearable ? "unblock clears it" : block.recheckable ? "unblock re-checks it" : "external";
+      const fields = [repo.repo_full_name, block.kind, blockScope(block), when, `(${mode})`, block.reason ?? "", `How to clear: ${block.how_to_clear ?? ""}`];
+      process.stdout.write(`${fields.filter((field) => field.length > 0).join("  ")}\n`);
+    }
+  }
+}
+
+export function renderUnblock(repos) {
+  if (!Array.isArray(repos) || repos.length === 0) {
+    process.stdout.write("No repository you own matched.\n");
+    return;
+  }
+  for (const repo of repos) {
+    const cleared = Array.isArray(repo.cleared) ? repo.cleared : [];
+    const still = Array.isArray(repo.still_blocked) ? repo.still_blocked : [];
+    const woke = Array.isArray(repo.woke) ? repo.woke : [];
+    const refresh = Array.isArray(repo.refresh_contexts) ? repo.refresh_contexts : [];
+    const failed = Array.isArray(repo.failed_while_blocked) ? repo.failed_while_blocked : [];
+    if (repo.nothing_blocked && cleared.length === 0) {
+      process.stdout.write(still.length === 0
+        ? `${repo.repo_full_name}: nothing blocked\n`
+        : `${repo.repo_full_name}: nothing to clear; still blocked: ${still.map((block) => `${block.kind} (${blockScope(block)})`).join(", ")}\n`);
+      continue;
+    }
+    const parts = [
+      cleared.length === 0 ? "cleared nothing" : `cleared ${cleared.map((block) => `${block.kind} (${blockScope(block)}${block.via === "recheck" ? ", GitHub re-check" : ""})`).join(", ")}`,
+      woke.length === 0 ? "woke no queued evaluation" : `woke ${woke.map((set) => set.result_set_id).join(", ")}`
+    ];
+    if (refresh.length > 0) parts.push(`snapshot refresh restarted for ${refresh.join(", ")}`);
+    if (still.length > 0) parts.push(`still blocked: ${still.map((block) => `${block.kind} (${blockScope(block)}): ${block.how_to_clear}`).join("; ")}`);
+    if (failed.length > 0) parts.push(`failed while blocked: ${failed.map((set) => `${set.result_set_id} (benchrouter evals retry --result-set ${set.result_set_id})`).join(", ")}`);
+    process.stdout.write(`${repo.repo_full_name}: ${parts.join("; ")}\n`);
+  }
+}
+
+export function renderEvalsRetry(body) {
+  const source = body.source_result_set_id ? ` (from ${body.source_result_set_id})` : "";
+  const lines = {
+    created: `${body.route_key}: created ${body.result_set_id} rerunning ${(body.models ?? []).join(", ")}${source}`,
+    woken: `${body.route_key}: woke ${body.result_set_id} for the dispatcher`,
+    finalizing: `${body.route_key}: ${body.source_result_set_id} is finishing; nothing to retry`,
+    nothing_to_retry: `${body.route_key}: nothing to retry${source}`
+  };
+  process.stdout.write(`${lines[body.outcome] ?? `${body.route_key}: unexpected retry answer`}\n`);
+}
+
+export function renderEvalsFullRefresh(body) {
+  process.stdout.write(`Queued full refresh ${body.result_set_id} for ${body.route_key} (${body.status}).\n`);
+}
+
+export function renderApiKeyState(body, keyId, enabled) {
+  const key = body.api_key ?? {};
+  process.stdout.write(`${enabled ? "Enabled" : "Disabled"} runtime API key ${key.id ?? keyId}${key.name ? ` (${key.name})` : ""}.\n`);
+}
+
+export function renderAutoReloadSetup(body) {
+  printLines([
+    `Checkout URL:\n${body.checkout_url}`,
+    "Open that URL in a browser to save the card. Automatic reload turns on after Stripe confirms it."
+  ]);
+}
+
+export function renderAutoReloadDisable(body) {
+  process.stdout.write(`Automatic reload is ${body.auto_reload?.enabled ? "still on" : "off"} (${body.auto_reload?.state ?? "unknown"}).\n`);
+}

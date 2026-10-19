@@ -22,7 +22,8 @@ export const CUSTOMER_ROOT_COMMANDS = new Set([
   "setup",
   "routes",
   "evals",
-  "baseline"
+  "baseline",
+  "blocks"
 ]);
 
 export const ADMIN_ROOT_COMMANDS = new Set(["proposals", "admin"]);
@@ -68,6 +69,7 @@ export async function runControlCommand(ctx) {
     if (command === "models") return await runModelsShow(ctx);
     if (command === "evals") return await runEvals(ctx);
     if (command === "baseline") return await runBaseline(ctx);
+    if (command === "blocks") return await runBlocks(ctx);
     if (command === "proposals") return await runProposals(ctx);
     if (command === "admin") return await runAdmin(ctx);
     ctx.usage(1, "all", `Unknown command: ${command}`);
@@ -123,6 +125,28 @@ async function runBilling(ctx) {
     const body = await accountRequest(ctx, customerPaths.billingTopUpCheckout(amountUsd));
     return emit(ctx, body, () => render.renderBillingTopUp(body));
   }
+  if (sub === "auto-reload") {
+    const action = ctx.args._[2];
+    if (action === "setup") {
+      const thresholdUsd = Number(optionValue(ctx, "threshold", "billing auto-reload setup"));
+      const reloadAmountUsd = Number(optionValue(ctx, "amount", "billing auto-reload setup"));
+      if (!Number.isFinite(thresholdUsd) || thresholdUsd <= 0 || !Number.isFinite(reloadAmountUsd) || reloadAmountUsd <= 0) {
+        return ctx.usage(1, "billing auto-reload setup", "--threshold and --amount must be positive USD amounts.");
+      }
+      await requireMutationConfirmation(
+        ctx,
+        render.mutationSummary("Set up automatic credit reload", `threshold_usd=${thresholdUsd} reload_amount_usd=${reloadAmountUsd}`)
+      );
+      const body = await accountRequest(ctx, customerPaths.autoReloadSetup({ thresholdUsd, reloadAmountUsd }));
+      return emit(ctx, body, () => render.renderAutoReloadSetup(body));
+    }
+    if (action === "disable") {
+      await requireMutationConfirmation(ctx, render.mutationSummary("Turn off automatic credit reload", "auto_reload=off"));
+      const body = await accountRequest(ctx, customerPaths.autoReloadDisable());
+      return emit(ctx, body, () => render.renderAutoReloadDisable(body));
+    }
+    return unknown(ctx, "billing auto-reload", action);
+  }
   return unknown(ctx, "billing", sub);
 }
 
@@ -154,6 +178,17 @@ async function runKeys(ctx) {
     );
     const body = await accountRequest(ctx, customerPaths.apiKeyRevoke(keyId));
     return emit(ctx, body, () => render.renderApiKeyRevoke(body, keyId));
+  }
+  if (sub === "disable" || sub === "enable") {
+    const keyId = ctx.stringArg("key-id") ?? ctx.args._[2];
+    if (!keyId) return ctx.usage(1, `keys ${sub}`, "Missing key id.");
+    const enabled = sub === "enable";
+    await requireMutationConfirmation(
+      ctx,
+      render.mutationSummary(`${enabled ? "Enable" : "Disable"} runtime API key`, `key_id=${keyId}`)
+    );
+    const body = await accountRequest(ctx, customerPaths.apiKeySetEnabled(keyId, enabled));
+    return emit(ctx, body, () => render.renderApiKeyState(body, keyId, enabled));
   }
   return unknown(ctx, "keys", sub);
 }
@@ -308,8 +343,19 @@ async function runEvals(ctx) {
   }
   if (sub === "run") {
     const routeKey = ctx.args._[2];
-    const model = ctx.stringArg("model") ?? ctx.args._[3];
     if (!routeKey) return ctx.usage(1, "evals run", "Missing route key.");
+    if (ctx.args["full-refresh"] !== undefined) {
+      if (ctx.args["full-refresh"] !== true || ctx.args.model !== undefined) {
+        return ctx.usage(1, "evals run", "--full-refresh takes no value and no --model.");
+      }
+      await requireMutationConfirmation(
+        ctx,
+        render.mutationSummary("Run every model of the route again (spends eval credits)", `route_key=${routeKey}`)
+      );
+      const body = await accountRequest(ctx, customerPaths.routeFullRefresh(routeKey));
+      return emit(ctx, body, () => render.renderEvalsFullRefresh(body));
+    }
+    const model = ctx.stringArg("model") ?? ctx.args._[3];
     if (!model) return ctx.usage(1, "evals run", "Missing --model.");
     await requireMutationConfirmation(
       ctx,
@@ -337,6 +383,35 @@ async function runEvals(ctx) {
     );
     return emit(ctx, body, () => render.renderEvalsRefreshPreview(body));
   }
+  if (sub === "retry") {
+    // RUN-001 R5: Retry reruns failed models or wakes a stuck evaluation. It never clears a block.
+    const resultSetId = optionValue(ctx, "result-set", "evals retry");
+    const routeKey = optionValue(ctx, "route", "evals retry");
+    if (Boolean(resultSetId) === Boolean(routeKey)) {
+      return ctx.usage(1, "evals retry", "Pass exactly one of --result-set <id> or --route <route-key>.");
+    }
+    await requireMutationConfirmation(
+      ctx,
+      render.mutationSummary("Retry evaluation", resultSetId ? `result_set_id=${resultSetId}` : `route_key=${routeKey}`)
+    );
+    const body = await accountRequest(ctx, customerPaths.evalsRetry({ resultSetId, routeKey }));
+    return emit(ctx, body, () => render.renderEvalsRetry(body));
+  }
+  if (sub === "harness-retry") {
+    const routeKey = ctx.args._[2];
+    if (!routeKey) return ctx.usage(1, "evals harness-retry", "Missing route key.");
+    const catalog = await accountRequest(ctx, customerPaths.routeCatalog(routeKey, "evals harness-retry"));
+    const block = catalog.route_harness_block;
+    if (!block) ctx.fail(`No evaluator block on ${routeKey}.`, "harness_block_missing");
+    const model = optionValue(ctx, "model", "evals harness-retry") ?? catalog.best_model ?? catalog.baseline_model;
+    if (!model) return ctx.usage(1, "evals harness-retry", "Missing --model.");
+    await requireMutationConfirmation(
+      ctx,
+      render.mutationSummary("Retry the evaluator with one model (spends eval credits)", `route_key=${routeKey} model=${model}`)
+    );
+    const body = await accountRequest(ctx, customerPaths.routeHarnessRetry(routeKey, model, block));
+    return emit(ctx, body, () => render.renderEvalsRun(body));
+  }
   if (sub === "failures") {
     const routeKey = ctx.args._[2];
     const modelId = ctx.stringArg("model") ?? ctx.args._[3];
@@ -360,6 +435,63 @@ async function runEvals(ctx) {
     return emit(ctx, payload, () => render.renderEvalsFailures(body, modelId));
   }
   return unknown(ctx, "evals", sub);
+}
+
+/**
+ * A string option. `--repo` given without a value (`--repo --all-blocked`,
+ * `--repo=`) is a usage error, never a silently absent option.
+ */
+function optionValue(ctx, name, usageName) {
+  const value = ctx.args[name];
+  if (value === true || value === "" || (Array.isArray(value) && (value.includes(true) || value.includes("")))) {
+    return ctx.usage(1, usageName, `--${name} needs a value.`);
+  }
+  return ctx.stringArg(name);
+}
+
+function flagOnly(ctx, name, usageName) {
+  const value = ctx.args[name];
+  if (value !== undefined && value !== true) return ctx.usage(1, usageName, `--${name} takes no value.`);
+  return value === true;
+}
+
+/** RUN-001 R5: list blocks, and Unblock. Unblock clears blocks only; it creates no evaluation. */
+async function runBlocks(ctx) {
+  const sub = subcommand(ctx);
+  if (!sub) return ctx.usage(1, "blocks", "Missing subcommand. Try: blocks list | blocks unblock");
+  if (sub === "list") {
+    const repo = optionValue(ctx, "repo", "blocks list");
+    const repos = [];
+    let cursor = null;
+    do {
+      const page = await accountRequest(ctx, customerPaths.blocksList(repo ? normalizeRepoFullName(repo) : null, cursor));
+      repos.push(...(Array.isArray(page.repos) ? page.repos : []));
+      cursor = typeof page.next_cursor === "string" && page.next_cursor ? page.next_cursor : null;
+    } while (cursor);
+    return emit(ctx, { ok: true, repos }, () => render.renderBlocksList(repos));
+  }
+  if (sub === "unblock") {
+    const repo = optionValue(ctx, "repo", "blocks unblock");
+    const routeKey = optionValue(ctx, "route", "blocks unblock");
+    const allBlocked = flagOnly(ctx, "all-blocked", "blocks unblock");
+    if (allBlocked === Boolean(repo || routeKey)) {
+      return ctx.usage(1, "blocks unblock", "Pass --repo owner/repo (or --route <route-key>), or --all-blocked alone.");
+    }
+    const repoFullName = repo ? normalizeRepoFullName(repo) : null;
+    await requireMutationConfirmation(
+      ctx,
+      render.mutationSummary("Unblock evaluations", allBlocked ? "every blocked repository you own" : `repo=${repoFullName ?? "(route's repository)"}${routeKey ? ` route_key=${routeKey}` : ""}`)
+    );
+    const repos = [];
+    let cursor = null;
+    do {
+      const page = await accountRequest(ctx, customerPaths.blocksUnblock({ repoFullName, routeKey, allBlocked, cursor }));
+      repos.push(...(Array.isArray(page.repos) ? page.repos : []));
+      cursor = typeof page.next_cursor === "string" && page.next_cursor ? page.next_cursor : null;
+    } while (cursor);
+    return emit(ctx, { ok: true, repos }, () => render.renderUnblock(repos));
+  }
+  return unknown(ctx, "blocks", sub);
 }
 
 async function runBaseline(ctx) {

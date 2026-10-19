@@ -135,6 +135,71 @@ export const customerPaths = {
     body: model ? { model } : {}
   }),
 
+  /** POST /v1/dashboard/routes/:routeKey/result-sets — body { full_refresh: true }: every model, fresh. */
+  routeFullRefresh: (routeKey) => ({
+    method: "POST",
+    path: `/v1/dashboard/routes/${encodeRouteKey(routeKey)}/result-sets`,
+    label: "evals run --full-refresh",
+    body: { full_refresh: true }
+  }),
+
+  /**
+   * POST /v1/dashboard/routes/:routeKey/result-sets — body { model, harness_retry }.
+   * EVAL-015: one owner probe of a harness-blocked route, bound to the exact block identity.
+   */
+  routeHarnessRetry: (routeKey, model, block) => ({
+    method: "POST",
+    path: `/v1/dashboard/routes/${encodeRouteKey(routeKey)}/result-sets`,
+    label: "evals harness-retry",
+    body: { model, harness_retry: { generation: block.generation ?? null, blocked_at: block.blocked_at } }
+  }),
+
+  /** GET /v1/dashboard/blocks[?repo=owner/repo][&cursor=] — RUN-001 R5 blocks of visible repositories. */
+  blocksList: (repoFullName, cursor) => {
+    const query = new URLSearchParams();
+    if (repoFullName) query.set("repo", repoFullName);
+    if (cursor) query.set("cursor", cursor);
+    const suffix = query.toString();
+    return { method: "GET", path: `/v1/dashboard/blocks${suffix ? `?${suffix}` : ""}`, label: "blocks list" };
+  },
+
+  /**
+   * POST /v1/dashboard/blocks/unblock — body { repo_full_name, route_key? } or { all_blocked: true, cursor? }.
+   * RUN-001 R5: clears blocks only; it creates no evaluation.
+   */
+  blocksUnblock: ({ repoFullName, routeKey, allBlocked, cursor }) => {
+    const body = allBlocked ? { all_blocked: true } : { repo_full_name: repoFullName };
+    if (routeKey) body.route_key = routeKey;
+    if (cursor) body.cursor = cursor;
+    return { method: "POST", path: "/v1/dashboard/blocks/unblock", label: "blocks unblock", body };
+  },
+
+  /** POST /v1/dashboard/evals/retry — body { result_set_id } or { route_key }. RUN-001 R5: never clears a block. */
+  evalsRetry: ({ resultSetId, routeKey }) => {
+    const body = {};
+    if (resultSetId) body.result_set_id = resultSetId;
+    if (routeKey) body.route_key = routeKey;
+    return { method: "POST", path: "/v1/dashboard/evals/retry", label: "evals retry", body };
+  },
+
+  /** POST /v1/dashboard/api-keys/:keyId/disable|enable — no body (KEYS-001). */
+  apiKeySetEnabled: (keyId, enabled) => ({
+    method: "POST",
+    path: `/v1/dashboard/api-keys/${encodePathSegment(keyId)}/${enabled ? "enable" : "disable"}`,
+    label: enabled ? "keys enable" : "keys disable"
+  }),
+
+  /** POST /v1/billing/auto-reload/setup — body { threshold_usd, reload_amount_usd, consent } (BILL-005). */
+  autoReloadSetup: ({ thresholdUsd, reloadAmountUsd }) => ({
+    method: "POST",
+    path: "/v1/billing/auto-reload/setup",
+    label: "billing auto-reload setup",
+    body: { threshold_usd: thresholdUsd, reload_amount_usd: reloadAmountUsd, consent: true }
+  }),
+
+  /** DELETE /v1/billing/auto-reload (BILL-005). */
+  autoReloadDisable: () => ({ method: "DELETE", path: "/v1/billing/auto-reload", label: "billing auto-reload disable" }),
+
   /** POST /v1/dashboard/routes/:routeKey/result-sets/:resultSetId/set-baseline — body { model } */
   routeBaselineSet: (routeKey, resultSetId, model) => ({
     method: "POST",
