@@ -54,9 +54,10 @@ function normalizeRoute(route, index) {
   }
   const caseRefs = evalPack.case_refs.map((entry, caseIndex) => requiredString(entry, `${prefix}.eval_pack.case_refs[${caseIndex}]`));
   const evalMode = evalPack.mode === "repository_executable" ? "repository_executable" : "isolated_replay";
-  const apiFamily = evalMode === "repository_executable"
-    ? requiredExecutableApiFamily(evalPack.api_family, `${prefix}.eval_pack.api_family`)
-    : "";
+  // The signed runtime reads this copy of the call site's family.
+  if (evalMode === "repository_executable") {
+    requiredExecutableApiFamily(evalPack.api_family, `${prefix}.eval_pack.api_family`);
+  }
   const inputRefs = evalMode === "repository_executable"
     ? requiredStringList(evalPack.input_refs, `${prefix}.eval_pack.input_refs`)
     : [];
@@ -69,12 +70,13 @@ function normalizeRoute(route, index) {
     name: requiredString(value.name, `${prefix}.name`),
     codeRefs: value.code_refs.map((entry) => entry.trim()),
     callSiteBaseUrlEnv: requiredString(callSite.base_url_env, `${prefix}.call_site.base_url_env`),
+    // EVAL-012: the protocol the call site speaks; it chooses the base URL value.
+    callSiteApiFamily: optionalString(callSite.api_family),
     providerId: optionalString(callSite.provider_id),
     providerRef: optionalString(callSite.provider_ref),
     incumbentModel: requiredString(seed.incumbent_model, `${prefix}.seed.incumbent_model`),
     evalArchetype: optionalString(metadata.eval_archetype),
     evalMode,
-    apiFamily,
     scorerPath: requiredString(evalPack.scorer, `${prefix}.eval_pack.scorer`),
     casesPath: caseRefs[0],
     caseRefs,

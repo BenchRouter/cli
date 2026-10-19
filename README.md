@@ -28,6 +28,20 @@ test command is used for local capture. Without it, setup emits no
 For a direct-provider incumbent, also pass `--provider-id <id>` and
 `--provider-ref <exact-ref>`. Pass both or neither.
 
+Pass `--base-url-env <NAME>` with the environment variable the call site reads
+for its LLM base URL, and `--api-family <family>` with the protocol the call
+site speaks: `openai_chat_completions`, `anthropic_messages`, or
+`openai_responses`. The family chooses the BenchRouter base URL value, not the
+variable's name: a native Anthropic Messages call site gets
+`https://api.benchrouter.com`, because the Anthropic SDK adds `/v1/messages`,
+and the OpenAI families get `https://api.benchrouter.com/v1`. `--api-family` is
+required for a route that sets `--base-url-env` or `--eval-pack`. Repeat either
+option once per `--route-id`, in the same order, or pass it once for all routes.
+The CLI sends both as the route's `call_site`, and setup records them in
+`.benchrouter/benchrouter.yml`. For a route that is already in that file, init
+keeps the local entry and writes only the `--api-family` you pass into its
+`call_site.api_family` (and into a repository-executable eval's `api_family`).
+
 BenchRouter preserves that exact observed tuple during setup. If the canonical
 incumbent cannot serve, `init` stops and lists only replacements backed by
 catalog evidence. The CLI prints the browser approval page. A signed-in GitHub
@@ -51,7 +65,6 @@ The file must use this contract:
 ```json
 {
   "mode": "repository_executable",
-  "api_family": "openai_chat_completions",
   "id": "contextual_synopsis_v1",
   "config_path": ".benchrouter/benchrouter.yml",
   "workflow": ".github/workflows/benchrouter-evals.yml",
@@ -75,9 +88,9 @@ The file must use this contract:
 }
 ```
 
-`api_family` is required. Use exactly one of `openai_chat_completions`,
-`anthropic_messages`, or `openai_responses` to match the evaluator's wire
-protocol.
+The eval pack has no `api_family`. It inherits the route's `--api-family`, so
+pass the family of the call site the evaluator exercises. The CLI rejects a pack
+that declares its own.
 
 The CLI rejects mutable runtime versions, unsafe paths, missing referenced
 files, invalid or reserved secret names, fractional count and timeout limits,
@@ -262,10 +275,11 @@ runnable case arrays and scorer syntax. For `repository_executable`, it checks
 that the declared lockfile, case, input, and acceptance refs exist. It does not
 apply isolated-replay JSON shapes or scorer execution to repository files.
 
-The runtime checklist uses the route's `call_site.base_url_env`. It prints
-`https://api.benchrouter.com/v1` for OpenAI-compatible base URLs and
-`https://api.benchrouter.com` for `ANTHROPIC_BASE_URL`, because the Anthropic SDK
-adds its own `/v1/messages` path.
+The runtime checklist uses the route's `call_site.base_url_env` and
+`call_site.api_family`. It prints `https://api.benchrouter.com/v1` for the OpenAI
+families and `https://api.benchrouter.com` for `anthropic_messages`, because the
+Anthropic SDK adds its own `/v1/messages` path. A route without
+`call_site.api_family` gets no value; the checklist names the missing field.
 
 `doctor` defaults to evaluation checks. It does not require production wiring or a runtime key and never implicitly makes a provider call. Use `--phase activation --route-id product/route` to check one selected call site.
 
