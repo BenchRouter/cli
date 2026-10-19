@@ -80,9 +80,6 @@ The file must use this contract:
   "acceptance_refs": ["eval/queries.json", "eval/qrels.json"],
   "result_path": ".benchrouter/executable-result.json",
   "primary_metric": "recall_at_5",
-  "max_model_calls": 1000,
-  "max_cost_usd": 10,
-  "max_cost_per_call_usd": 0.1,
   "timeout_minutes": 60,
   "secret_env": ["OPENAI_API_KEY"]
 }
@@ -93,9 +90,12 @@ pass the family of the call site the evaluator exercises. The CLI rejects a pack
 that declares its own.
 
 The CLI rejects mutable runtime versions, unsafe paths, missing referenced
-files, invalid or reserved secret names, fractional count and timeout limits,
-timeouts above 90 minutes, and invalid cost budgets before it sends the setup
-request. The generated workflow runs `argv` without a shell. It receives only
+files, invalid or reserved secret names, fractional timeouts, and timeouts above
+90 minutes before it sends the setup request. The eval pack declares no call or
+spend limit: BenchRouter bounds each executable run's spend itself, at five
+times the route baseline's measured spend on the same eval or $1, whichever is
+higher. The CLI rejects `max_model_calls`, `max_cost_usd` and
+`max_cost_per_call_usd` as unknown fields. The generated workflow runs `argv` without a shell. It receives only
 the declared customer secrets and the scoped BenchRouter eval contract.
 
 The setup key comes from the signed-in BenchRouter setup page. It is scoped to

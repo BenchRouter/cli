@@ -30,9 +30,6 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "acceptance_refs",
   "result_path",
   "primary_metric",
-  "max_model_calls",
-  "max_cost_usd",
-  "max_cost_per_call_usd",
   "timeout_minutes",
   "secret_env"
 ]);
@@ -1452,12 +1449,6 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   if (invalidSecret) {
     fail(`${at}.secret_env contains reserved or invalid name ${invalidSecret}.`);
   }
-  requirePositiveInteger(pack.max_model_calls, `${at}.max_model_calls`);
-  requirePositiveNumber(pack.max_cost_usd, `${at}.max_cost_usd`);
-  requirePositiveNumber(pack.max_cost_per_call_usd, `${at}.max_cost_per_call_usd`);
-  if (pack.max_cost_per_call_usd > pack.max_cost_usd) {
-    fail(`${at}.max_cost_per_call_usd must not exceed max_cost_usd.`);
-  }
   requirePositiveInteger(pack.timeout_minutes, `${at}.timeout_minutes`);
   if (pack.timeout_minutes > 90) {
     fail(`${at}.timeout_minutes must be from 1 through 90 so the workflow keeps its install and upload buffer.`);
@@ -1496,12 +1487,6 @@ function requireNonEmptyStringArray(value, label) {
 function requirePositiveInteger(value, label) {
   if (!Number.isInteger(value) || value <= 0) {
     fail(`${label} must be a positive integer.`);
-  }
-}
-
-function requirePositiveNumber(value, label) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    fail(`${label} must be a positive number.`);
   }
 }
 

@@ -1478,9 +1478,6 @@ routes:
         - eval/qrels.json
       result_path: .benchrouter/executable-result.json
       primary_metric: recall_at_5
-      max_model_calls: 100
-      max_cost_usd: 10
-      max_cost_per_call_usd: 0.1
       timeout_minutes: 60
       secret_env: []
 `;
@@ -1504,9 +1501,6 @@ function repositoryExecutableEvalPack(overrides = {}) {
     acceptance_refs: ["eval/qrels.json"],
     result_path: ".benchrouter/executable-result.json",
     primary_metric: "recall_at_5",
-    max_model_calls: 100,
-    max_cost_usd: 10,
-    max_cost_per_call_usd: 0.1,
     timeout_minutes: 60,
     secret_env: [],
     ...overrides
