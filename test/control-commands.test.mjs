@@ -236,6 +236,49 @@ test("newly wired customer routes build the exact documented request", () => {
   });
 });
 
+test("RUN-001 R5 unblock, retry and dashboard-parity routes build the exact server request", () => {
+  assert.deepEqual(customerPaths.blocksList("example/app", null), { method: "GET", path: "/v1/dashboard/blocks?repo=example%2Fapp", label: "blocks list" });
+  assert.deepEqual(customerPaths.blocksList(null, "prod_9"), { method: "GET", path: "/v1/dashboard/blocks?cursor=prod_9", label: "blocks list" });
+  assert.deepEqual(customerPaths.blocksUnblock({ repoFullName: "example/app", routeKey: "app/chat" }), {
+    method: "POST", path: "/v1/dashboard/blocks/unblock", label: "blocks unblock", body: { repo_full_name: "example/app", route_key: "app/chat" }
+  });
+  assert.deepEqual(customerPaths.blocksUnblock({ allBlocked: true, cursor: "prod_9" }).body, { all_blocked: true, cursor: "prod_9" });
+  assert.deepEqual(customerPaths.evalsRetry({ resultSetId: "ers_1" }), {
+    method: "POST", path: "/v1/dashboard/evals/retry", label: "evals retry", body: { result_set_id: "ers_1" }
+  });
+  assert.deepEqual(customerPaths.evalsRetry({ routeKey: "app/chat" }).body, { route_key: "app/chat" });
+  assert.deepEqual(customerPaths.apiKeySetEnabled("key_1", false), { method: "POST", path: "/v1/dashboard/api-keys/key_1/disable", label: "keys disable" });
+  assert.equal(customerPaths.apiKeySetEnabled("key_1", true).path, "/v1/dashboard/api-keys/key_1/enable");
+  assert.deepEqual(customerPaths.autoReloadSetup({ thresholdUsd: 5, reloadAmountUsd: 25 }).body, { threshold_usd: 5, reload_amount_usd: 25, consent: true });
+  assert.deepEqual(customerPaths.autoReloadDisable(), { method: "DELETE", path: "/v1/billing/auto-reload", label: "billing auto-reload disable" });
+  assert.deepEqual(customerPaths.routeFullRefresh("app/chat").body, { full_refresh: true });
+  assert.deepEqual(customerPaths.routeHarnessRetry("app/chat", "m/1", { blocked_at: "2026-10-02T00:00:00.000Z", generation: null }).body, {
+    model: "m/1", harness_retry: { generation: null, blocked_at: "2026-10-02T00:00:00.000Z" }
+  });
+});
+
+test("RUN-001 R5 blocks and retry refuse an ambiguous scope before authenticating", async () => {
+  const account = ["--account-token", "br_ctrl_recorded_fixture", "--yes", "--api-url", "http://127.0.0.1:9"];
+  // A string option with no value never becomes a silent cross-repository unblock.
+  const emptyRepo = await runCli(["blocks", "unblock", "--repo", "--all-blocked", ...account]);
+  assert.equal(emptyRepo.status, 1);
+  assert.match(emptyRepo.stderr, /--repo needs a value/);
+  const emptyInline = await runCli(["blocks", "unblock", "--repo=", "--all-blocked", ...account]);
+  assert.equal(emptyInline.status, 1);
+  assert.match(emptyInline.stderr, /--repo needs a value/);
+  const both = await runCli(["blocks", "unblock", "--repo", "example/app", "--all-blocked", ...account]);
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /or --all-blocked alone/);
+  const neither = await runCli(["blocks", "unblock", ...account]);
+  assert.equal(neither.status, 1);
+  const retryBoth = await runCli(["evals", "retry", "--result-set", "ers_1", "--route", "app/chat", ...account]);
+  assert.equal(retryBoth.status, 1);
+  assert.match(retryBoth.stderr, /exactly one of --result-set/);
+  const fullWithModel = await runCli(["evals", "run", "app/chat", "--full-refresh", "--model", "m/1", ...account]);
+  assert.equal(fullWithModel.status, 1);
+  assert.match(fullWithModel.stderr, /--full-refresh takes no value and no --model/);
+});
+
 test("newly wired admin routes build the exact documented request", () => {
   assert.deepEqual(adminPaths.mappingsList(), {
     method: "GET",

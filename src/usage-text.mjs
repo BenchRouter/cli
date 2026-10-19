@@ -54,6 +54,8 @@ ${ACCOUNT_FLAGS}`,
   billing: `Usage:
   benchrouter billing show
   benchrouter billing top-up --amount 25
+  benchrouter billing auto-reload setup --threshold <usd> --amount <usd>
+  benchrouter billing auto-reload disable
 
 billing show reads billing fields from GET /v1/dashboard/summary.
 
@@ -79,6 +81,8 @@ ${ACCOUNT_FLAGS}`,
   keys: `Usage:
   benchrouter keys list
   benchrouter keys create --product-id <id> [--name text]
+  benchrouter keys disable <key-id>
+  benchrouter keys enable <key-id>
   benchrouter keys revoke <key-id>
 
 These manage runtime API keys. Revoke is immediate and cannot be undone.
@@ -112,6 +116,87 @@ metadata. Any application still using that key stops working immediately.
 
 Options:
   --key-id <id>
+  --yes, -y
+${ACCOUNT_FLAGS}`,
+  "keys disable": `Usage:
+  benchrouter keys disable <key-id>
+
+Calls POST /v1/dashboard/api-keys/:keyId/disable. Requests with the key fail
+until you enable it again (KEYS-001).
+
+Options:
+  --key-id <id>
+  --yes, -y
+${ACCOUNT_FLAGS}`,
+  "keys enable": `Usage:
+  benchrouter keys enable <key-id>
+
+Calls POST /v1/dashboard/api-keys/:keyId/enable.
+
+Options:
+  --key-id <id>
+  --yes, -y
+${ACCOUNT_FLAGS}`,
+  "billing auto-reload": `Usage:
+  benchrouter billing auto-reload setup --threshold <usd> --amount <usd>
+  benchrouter billing auto-reload disable
+
+Options:
+${ACCOUNT_FLAGS}  --yes, -y
+`,
+  "billing auto-reload setup": `Usage:
+  benchrouter billing auto-reload setup --threshold <usd> --amount <usd>
+
+Prints a Stripe checkout URL that saves the card. Automatic reload turns on
+after Stripe confirms it (BILL-005). The CLI never opens a browser.
+
+Options:
+  --threshold <usd>            Reload when the balance falls below this.
+  --amount <usd>               Credit added on each reload.
+  --yes, -y
+${ACCOUNT_FLAGS}`,
+  "billing auto-reload disable": `Usage:
+  benchrouter billing auto-reload disable
+
+Options:
+  --yes, -y
+${ACCOUNT_FLAGS}`,
+  blocks: `Usage:
+  benchrouter blocks list [--repo owner/repo]
+  benchrouter blocks unblock --repo owner/repo [--route <route-key>]
+  benchrouter blocks unblock --route <route-key>
+  benchrouter blocks unblock --all-blocked
+
+Unblock clears BenchRouter's own breakers (startup_failing,
+snapshot_refresh_failing, harness_failing) and re-checks workflow_missing and
+installation_revoked against GitHub. Queued evaluations restart through the
+normal dispatcher. It creates no evaluation and reruns no model. Only an
+account owner can unblock. Use \`evals retry\` to rerun failed evaluations.
+
+Options:
+${ACCOUNT_FLAGS}  --yes, -y
+`,
+  "blocks list": `Usage:
+  benchrouter blocks list [--repo owner/repo]
+
+Prints one line per block: kind, scope, since or until, whether Unblock clears
+it, and how to clear it.
+
+Options:
+  --repo owner/repo
+${ACCOUNT_FLAGS}`,
+  "blocks unblock": `Usage:
+  benchrouter blocks unblock --repo owner/repo [--route <route-key>]
+  benchrouter blocks unblock --route <route-key>
+  benchrouter blocks unblock --all-blocked
+
+--route limits route blocks to one route; repository blocks always apply.
+A repository with nothing blocked is unchanged.
+
+Options:
+  --repo owner/repo
+  --route <route-key>
+  --all-blocked                Every repository the account owns.
   --yes, -y
 ${ACCOUNT_FLAGS}`,
   repos: `Usage:
@@ -228,6 +313,9 @@ ${ACCOUNT_FLAGS}`,
   evals: `Usage:
   benchrouter evals list <route-key>
   benchrouter evals run <route-key> --model <model-id>
+  benchrouter evals run <route-key> --full-refresh
+  benchrouter evals retry --result-set <id> | --route <route-key>
+  benchrouter evals harness-retry <route-key> [--model <model-id>]
   benchrouter evals failures <route-key> <model-id>
   benchrouter evals refresh-preview <route-key> <result-set-id> [--model <model-id>]
 
@@ -252,6 +340,36 @@ Options:
 ${ACCOUNT_FLAGS}`,
   "evals run": `Usage:
   benchrouter evals run <route-key> --model <model-id>
+  benchrouter evals run <route-key> --full-refresh
+
+--full-refresh runs every model of the route again with fresh cases. It spends
+eval credits.
+
+Options:
+  --model <id>
+  --full-refresh
+  --yes, -y
+${ACCOUNT_FLAGS}`,
+  "evals retry": `Usage:
+  benchrouter evals retry --result-set <id>
+  benchrouter evals retry --route <route-key>
+
+Reruns the failed models of one production evaluation in a new result set, or
+wakes it when it is still open. --route uses the route's newest production
+evaluation. Retry never clears a block; a blocked route is refused, so run
+\`blocks unblock\` first. Retry a PR preview with \`evals refresh-preview\`.
+
+Options:
+  --result-set <id>
+  --route <route-key>
+  --yes, -y
+${ACCOUNT_FLAGS}`,
+  "evals harness-retry": `Usage:
+  benchrouter evals harness-retry <route-key> [--model <model-id>]
+
+Runs one model against all of the route's tests while the evaluator is paused
+(EVAL-015). An accepted upload clears the block. The model defaults to the
+route's best, then its baseline. It spends eval credits. Account owners only.
 
 Options:
   --model <id>
@@ -441,12 +559,14 @@ export function topLevelControlUsageLines() {
   benchrouter account show|token save [--json]
   benchrouter billing show [--json]
   benchrouter billing top-up --amount <usd> [--yes]
-  benchrouter keys list|create|revoke [--json]
+  benchrouter billing auto-reload setup|disable [--yes]
+  benchrouter keys list|create|disable|enable|revoke [--json]
   benchrouter repos list [--json]
   benchrouter setup status|create|session show|upgrade-token [--json]
   benchrouter routes list|show|catalog|archive|unarchive [--json]
   benchrouter models show <route-key> <model-id> [--json]
-  benchrouter evals list|run|failures|refresh-preview [--json]
+  benchrouter evals list|run|retry|harness-retry|failures|refresh-preview [--json]
+  benchrouter blocks list|unblock [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
   benchrouter proposals list|approve|reject [--json]
   benchrouter admin providers|catalog|keys|token [--json]`;

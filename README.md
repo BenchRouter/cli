@@ -141,7 +141,8 @@ benchrouter account show [--json]
 benchrouter account token save --account-token br_ctrl_...
 benchrouter billing show [--json]
 benchrouter billing top-up --amount 25 [--yes]
-benchrouter keys list|create|revoke
+benchrouter billing auto-reload setup --threshold <usd> --amount <usd> | disable
+benchrouter keys list|create|disable|enable|revoke
 benchrouter repos list
 benchrouter setup status [--repo owner/repo]
 benchrouter setup create --repository-id <id> --installation-id <id> [--intent initial|new_route]
@@ -149,7 +150,12 @@ benchrouter setup session show <session-id>
 benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
 benchrouter routes list|show|catalog|archive|unarchive
 benchrouter evals list|run|failures
+benchrouter evals run <route-key> --full-refresh
+benchrouter evals retry --result-set <id> | --route <route-key>
+benchrouter evals harness-retry <route-key> [--model <id>]
 benchrouter evals refresh-preview <route-key> <result-set-id> [--model <id>]
+benchrouter blocks list [--repo owner/repo]
+benchrouter blocks unblock --repo owner/repo [--route <route-key>] | --route <route-key> | --all-blocked
 benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
 benchrouter proposals list|approve|reject [--admin-token bradm_...]
 benchrouter admin providers|catalog|keys|token [--admin-token bradm_...]
@@ -200,6 +206,16 @@ server-authored `init` command. `setup upgrade-token` mints a single-use
 `br_upgrade_` token and prints it once. Both secrets are printed once and never
 saved; pass them to `init --setup-key` and `upgrade --upgrade-token`. Read
 `repository_id` and `installation_id` from `repos list`.
+
+`blocks list` prints one line per block that stops evaluations: its kind, scope,
+time, whether Unblock clears it, and how to clear it. `blocks unblock` (account
+owners) clears BenchRouter's own breakers (`startup_failing`,
+`snapshot_refresh_failing`, `harness_failing`) and re-checks `workflow_missing`
+and `installation_revoked` against GitHub. Queued evaluations restart through
+the normal dispatcher; Unblock creates no evaluation and reruns no model.
+`evals retry` reruns the failed models of one production evaluation, or wakes it
+when it is still open. Retry never clears a block, so a blocked route is
+refused until you unblock it.
 
 `evals refresh-preview` re-dispatches an open-PR preview result set. The result
 set must be a PR preview; pass `--model` to refresh one model only.
