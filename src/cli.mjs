@@ -15,7 +15,6 @@ const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "help";
 const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "mode",
-  "api_family",
   "id",
   "config_path",
   "workflow",
@@ -37,7 +36,8 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "timeout_minutes",
   "secret_env"
 ]);
-const EXECUTABLE_API_FAMILIES = new Set([
+// EVAL-012: the protocol a call site speaks. It chooses the BenchRouter base URL value.
+const API_FAMILIES = new Set([
   "openai_chat_completions",
   "anthropic_messages",
   "openai_responses"
@@ -101,6 +101,7 @@ async function init() {
   const codeRefs = arrayArg("code-ref");
   const captureCommand = stringArg("eval-command");
   const baseUrlEnvs = arrayArg("base-url-env");
+  const apiFamilies = arrayArg("api-family");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
   const dryRun = Boolean(args["dry-run"]);
   const overwriteUserEdits = Boolean(args["overwrite-user-edits"]);
@@ -127,6 +128,13 @@ async function init() {
   if (baseUrlEnvs.length > 1 && baseUrlEnvs.length !== routeIds.length) {
     usage(1, "init", "When repeating --base-url-env, pass one value per --route-id (in the same order), or pass it once for all routes.");
   }
+  if (apiFamilies.length > 1 && apiFamilies.length !== routeIds.length) {
+    usage(1, "init", "When repeating --api-family, pass one value per --route-id (in the same order), or pass it once for all routes.");
+  }
+  const invalidApiFamily = apiFamilies.find((family) => !API_FAMILIES.has(family));
+  if (invalidApiFamily !== undefined) {
+    usage(1, "init", `--api-family ${invalidApiFamily} is not supported. Use openai_chat_completions, anthropic_messages, or openai_responses.`);
+  }
 
   const evalPacks = evalPackPaths.map((evalPackPath, index) =>
     readExecutableEvalPack(evalPackPath, routeIds[index], outputDir)
@@ -140,8 +148,14 @@ async function init() {
     eval_pack: evalPacks[index],
     code_refs: codeRefs,
     eval_command: captureCommand,
-    base_url_env: baseUrlEnvs[index] ?? baseUrlEnvs[0] ?? ""
+    base_url_env: baseUrlEnvs[index] ?? baseUrlEnvs[0] ?? "",
+    api_family: apiFamilies[index] ?? apiFamilies[0] ?? ""
   }));
+  // EVAL-012: a route that names a base URL env or runs an executable eval declares its protocol.
+  const undeclared = routeSpecs.find((spec) => !spec.api_family && (spec.base_url_env || spec.eval_pack));
+  if (undeclared) {
+    usage(1, "init", `Route ${undeclared.route_id} sets --base-url-env or --eval-pack, so pass --api-family: the protocol its call site speaks (openai_chat_completions, anthropic_messages, or openai_responses).`);
+  }
   const routeId = routeSpecs[0].route_id;
   const routeName = routeSpecs[0].name;
   const incumbentModel = routeSpecs[0].incumbent_model;
@@ -186,7 +200,7 @@ async function init() {
     const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
     let content = file.content;
     if (file.path === ".benchrouter/benchrouter.yml" && previous !== null) {
-      content = mergeRequestedRoutesIntoManifest(previous, content, routeIds);
+      content = mergeRequestedRoutesIntoManifest(previous, content, routeIds, declaredApiFamilies(routeSpecs));
     } else if (file.path === WORKFLOW_PATH && previous !== null) {
       content = preserveCustomerSetup(previous, content);
     } else if (previous !== null && previous !== content && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
@@ -231,7 +245,26 @@ async function init() {
   process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }));
 }
 
-function mergeRequestedRoutesIntoManifest(existingSource, previewSource, requestedRouteIds) {
+function declaredApiFamilies(routeSpecs) {
+  return new Map(routeSpecs.filter((spec) => spec.api_family).map((spec) => [spec.route_id, spec.api_family]));
+}
+
+// EVAL-012: rerunning init with --api-family updates an existing route's declared family. The
+// executable eval's api_family is the copy the signed runtime reads, so it follows.
+function setDeclaredApiFamily(route, apiFamily) {
+  let changed = false;
+  if (route.getIn(["call_site", "api_family"]) !== apiFamily) {
+    route.setIn(["call_site", "api_family"], apiFamily);
+    changed = true;
+  }
+  if (route.getIn(["eval_pack", "mode"]) === "repository_executable" && route.getIn(["eval_pack", "api_family"]) !== apiFamily) {
+    route.setIn(["eval_pack", "api_family"], apiFamily);
+    changed = true;
+  }
+  return changed;
+}
+
+function mergeRequestedRoutesIntoManifest(existingSource, previewSource, requestedRouteIds, apiFamilies) {
   const existingDocument = parseDocument(existingSource);
   const previewDocument = parseDocument(previewSource);
   if (existingDocument.errors.length > 0) {
@@ -255,6 +288,15 @@ function mergeRequestedRoutesIntoManifest(existingSource, previewSource, request
       .filter((routeId) => typeof routeId === "string")
   );
   let changed = false;
+  for (const existingRoute of existingRoutes.items) {
+    if (!isMap(existingRoute)) {
+      continue;
+    }
+    const apiFamily = apiFamilies.get(existingRoute.get("route_id"));
+    if (apiFamily && setDeclaredApiFamily(existingRoute, apiFamily)) {
+      changed = true;
+    }
+  }
   for (const previewRoute of previewRoutes.items) {
     if (!isMap(previewRoute)) {
       continue;
@@ -490,6 +532,11 @@ function printInitNextSteps() {
   process.stdout.write("- Run relevant product tests/build and `npx --yes --package @benchrouter/cli benchrouter doctor --phase evaluation` before opening the PR.\n");
 }
 
+function callSiteBody(spec) {
+  if (!spec.base_url_env && !spec.api_family) return undefined;
+  return { base_url_env: spec.base_url_env || undefined, api_family: spec.api_family || undefined };
+}
+
 async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, dryRun, recoveryUrl }) {
   const [primary, ...additional] = routeSpecs;
   const body = {
@@ -504,7 +551,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
       eval_pack: primary.eval_pack,
       eval_command: primary.eval_command,
       code_refs: primary.code_refs.length > 0 ? primary.code_refs : undefined,
-      base_url_env: primary.base_url_env || undefined
+      call_site: callSiteBody(primary)
     },
     routes: additional.length > 0
       ? additional.map((spec) => ({
@@ -516,7 +563,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
           eval_pack: spec.eval_pack,
           eval_command: spec.eval_command,
           code_refs: spec.code_refs.length > 0 ? spec.code_refs : undefined,
-          base_url_env: spec.base_url_env || undefined
+          call_site: callSiteBody(spec)
         }))
       : undefined
   };
@@ -770,7 +817,7 @@ async function doctor() {
 
   if (args["live-chat-completions"] && failures.length === 0) {
     const route = selectedRoutes[0];
-    if (process.env.BENCHROUTER_API_KEY && route.apiFamily && route.apiFamily !== "openai_chat_completions") {
+    if (process.env.BENCHROUTER_API_KEY && route.callSiteApiFamily && route.callSiteApiFamily !== "openai_chat_completions") {
       fail("This route declares a different protocol. Verify it with an authorized application request instead of the Chat Completions diagnostic.");
     }
     const proxyResult = await verifyProxyPingForDoctor({ apiUrl, apiKey: process.env.BENCHROUTER_API_KEY, routeId: selectedRouteId, failures });
@@ -1073,9 +1120,8 @@ function validateRuntimeWiringForDoctor(root, routes, failures) {
 function runtimeHostChecklist({ root, routes, apiUrl }) {
   const baseUrlAssignments = Array.from(new Set(
     routes
-      .map((route) => route.callSiteBaseUrlEnv)
-      .filter(Boolean)
-      .map((envName) => `${envName} to ${proxyBaseUrlForEnv(apiUrl, envName)}`)
+      .filter((route) => route.callSiteBaseUrlEnv)
+      .map((route) => `${route.callSiteBaseUrlEnv} to ${proxyBaseUrlForApiFamily(apiUrl, route.callSiteApiFamily)}`)
   ));
   const baseUrlLabel = baseUrlAssignments.length > 0
     ? baseUrlAssignments.join("; set ")
@@ -1095,10 +1141,12 @@ function proxyBaseUrl(apiUrl) {
   return `${apiUrl.replace(/\/+$/, "")}/v1`;
 }
 
-function proxyBaseUrlForEnv(apiUrl, envName) {
-  return envName === "ANTHROPIC_BASE_URL"
-    ? apiUrl.replace(/\/+$/, "")
-    : proxyBaseUrl(apiUrl);
+// EVAL-012: the call site's declared API family chooses the value, never the variable's name.
+function proxyBaseUrlForApiFamily(apiUrl, apiFamily) {
+  if (!API_FAMILIES.has(apiFamily)) {
+    return "the value its call_site.api_family chooses (declare openai_chat_completions, anthropic_messages, or openai_responses in .benchrouter/benchrouter.yml)";
+  }
+  return apiFamily === "anthropic_messages" ? apiUrl.replace(/\/+$/, "") : proxyBaseUrl(apiUrl);
 }
 
 function detectFallbackProviderEnvKeys(root) {
@@ -1360,15 +1408,15 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   if (!pack || typeof pack !== "object" || Array.isArray(pack)) {
     fail(`${at} must contain one JSON object.`);
   }
+  if (pack.api_family !== undefined) {
+    fail(`${at} must not contain api_family. Pass --api-family for the route; the eval inherits the call site's family.`);
+  }
   const unknownField = Object.keys(pack).find((field) => !EXECUTABLE_EVAL_PACK_FIELDS.has(field));
   if (unknownField) {
     fail(`${at} contains unknown field ${unknownField}.`);
   }
   if (pack.mode !== "repository_executable") {
     fail(`${at}.mode must be repository_executable.`);
-  }
-  if (!EXECUTABLE_API_FAMILIES.has(pack.api_family)) {
-    fail(`${at}.api_family must be openai_chat_completions, anthropic_messages, or openai_responses.`);
   }
   for (const field of ["id", "config_path", "workflow", "command", "scorer", "result_path", "primary_metric"]) {
     requireNonEmptyString(pack[field], `${at}.${field}`);
@@ -1589,6 +1637,9 @@ Options:
   --eval-command <command>  Existing customer test command for optional local capture.
   --code-ref <path>       Repeatable. Call-site files recorded on the primary route.
   --base-url-env <name>   Repeatable. Env var the call site uses for its LLM base URL.
+  --api-family <family>   Repeatable. Protocol the call site speaks: openai_chat_completions,
+                          anthropic_messages, or openai_responses. It chooses the base URL value.
+                          Required with --base-url-env or --eval-pack; an executable eval inherits it.
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --dry-run                Print planned writes without changing files.
   --force                  Overwrite BenchRouter-generated kit/readme files only.

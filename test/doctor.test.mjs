@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyUpgradePacket, LOCAL_SCRIPTS } from "../src/generated-kit.mjs";
+import { parse as parseYaml } from "yaml";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, "..");
@@ -256,6 +257,25 @@ test("doctor uses the Anthropic API root and validates repository-executable ref
   assert.doesNotMatch(result.stderr, /must be a JSON array|no runnable cases|scorer/);
 });
 
+// EVAL-012: the declared call-site family chooses the value, not the variable's name.
+test("doctor gives a native Anthropic call site the API root under any variable name", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.MY_CLAUDE_URL;" });
+  await mkdir(path.join(root, "eval"), { recursive: true });
+  await writeFile(path.join(root, "package-lock.json"), "{}\n");
+  await writeFile(path.join(root, "eval/evaluator.mjs"), "export {};\n");
+  await writeFile(path.join(root, "eval/corpus.json"), '{"documents":[]}\n');
+  await writeFile(path.join(root, "eval/qrels.json"), '{"query-1":{"document-1":1}}\n');
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), repositoryExecutableManifestYaml().replace("base_url_env: ANTHROPIC_BASE_URL", "base_url_env: MY_CLAUDE_URL"));
+  await writeFile(path.join(root, ".env.example"), "BENCHROUTER_API_KEY=\nMY_CLAUDE_URL=https://api.benchrouter.com\n");
+  await rm(path.join(root, ".benchrouter/scorer.app__chat.js"), { force: true });
+
+  const result = await runDoctor(root, "https://api.benchrouter.com", { BENCHROUTER_API_KEY: undefined });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /MY_CLAUDE_URL to https:\/\/api\.benchrouter\.com(?:\s|$)/);
+  assert.doesNotMatch(result.stdout, /MY_CLAUDE_URL to https:\/\/api\.benchrouter\.com\/v1/);
+});
+
 test("doctor reports disabled BenchRouter Evals workflow from gh", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   const ghBin = await createFixtureGh(t);
@@ -380,6 +400,8 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
       "gpt-4o-mini-2024-07-18",
       "--base-url-env",
       "OPENAI_BASE_URL",
+      "--api-family",
+      "openai_chat_completions",
       "--eval-command",
       "pnpm run test:customer",
       "--code-ref",
@@ -395,6 +417,8 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
 
   assert.equal(setupServer.requests[0].body.route.eval_command, "pnpm run test:customer");
   assert.equal(setupServer.requests[1].body.route.eval_command, "pnpm run test:customer");
+  // EVAL-012: the setup request carries the call site's base URL env and API family together.
+  assert.deepEqual(setupServer.requests[0].body.route.call_site, { base_url_env: "OPENAI_BASE_URL", api_family: "openai_chat_completions" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Runtime\/host BENCHROUTER_API_KEY: br_live_runtime_fixture/);
   assert.doesNotMatch(result.stdout, /BENCHROUTER_EVAL_API_KEY/);
@@ -842,7 +866,6 @@ test("init maps validated repository-executable eval packs to matching routes", 
     await writeFile(path.join(root, "eval", file), file.endsWith(".mjs") ? "// executable eval\n" : "{}\n");
   }
   const firstPack = repositoryExecutableEvalPack({
-    api_family: "anthropic_messages",
     id: "route_a_retrieval_v1",
     command: "node eval/route-a.mjs",
     scorer: ".benchrouter/scorer.route-a.js",
@@ -853,7 +876,6 @@ test("init maps validated repository-executable eval packs to matching routes", 
     primary_metric: "recall_at_5"
   });
   const secondPack = repositoryExecutableEvalPack({
-    api_family: "openai_responses",
     id: "route_b_retrieval_v1",
     command: "node eval/route-b.mjs",
     scorer: ".benchrouter/scorer.route-b.js",
@@ -879,10 +901,12 @@ test("init maps validated repository-executable eval packs to matching routes", 
     "--name", "Route A",
     "--incumbent-model", "openai/gpt-4o-mini",
     "--eval-pack", "route-a-pack.json",
+    "--api-family", "anthropic_messages",
     "--route-id", "app/route-b",
     "--name", "Route B",
     "--incumbent-model", "openai/gpt-4o-mini",
     "--eval-pack", "route-b-pack.json",
+    "--api-family", "openai_responses",
     "--api-url", setupServer.url,
     "--output-dir", root
   ], root);
@@ -891,8 +915,9 @@ test("init maps validated repository-executable eval packs to matching routes", 
   assert.equal(setupServer.requests.length, 1);
   assert.deepEqual(setupServer.requests[0].body.route.eval_pack, firstPack);
   assert.deepEqual(setupServer.requests[0].body.routes[0].eval_pack, secondPack);
-  assert.equal(setupServer.requests[0].body.route.eval_pack.api_family, "anthropic_messages");
-  assert.equal(setupServer.requests[0].body.routes[0].eval_pack.api_family, "openai_responses");
+  // EVAL-012: each route's family travels on its call_site; the eval pack inherits it server-side.
+  assert.deepEqual(setupServer.requests[0].body.route.call_site, { api_family: "anthropic_messages" });
+  assert.deepEqual(setupServer.requests[0].body.routes[0].call_site, { api_family: "openai_responses" });
 });
 
 test("init rejects an unsafe or mutable executable eval pack before HTTP", async (t) => {
@@ -911,6 +936,7 @@ test("init rejects an unsafe or mutable executable eval pack before HTTP", async
     "--name", "Chat",
     "--incumbent-model", "openai/gpt-4o-mini",
     "--eval-pack", "eval-pack.json",
+    "--api-family", "openai_chat_completions",
     "--api-url", "http://127.0.0.1:9",
     "--output-dir", root
   ];
@@ -921,17 +947,24 @@ test("init rejects an unsafe or mutable executable eval pack before HTTP", async
   assert.match(mutableRuntime.stderr, /runtime_version must be an exact version/);
   assert.doesNotMatch(mutableRuntime.stderr, /fetch failed/);
 
-  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ api_family: undefined }))}\n`);
-  const missingApiFamily = await runCli(command, root);
+  // EVAL-012: one family per route, declared with --api-family; the pack does not repeat it.
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ api_family: "anthropic_messages" }))}\n`);
+  const packApiFamily = await runCli(command, root);
+  assert.equal(packApiFamily.status, 1);
+  assert.match(packApiFamily.stderr, /must not contain api_family\. Pass --api-family for the route/);
+  assert.doesNotMatch(packApiFamily.stderr, /fetch failed/);
+
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack())}\n`);
+  const familyAt = command.indexOf("--api-family");
+  const missingApiFamily = await runCli([...command.slice(0, familyAt), ...command.slice(familyAt + 2)], root);
   assert.equal(missingApiFamily.status, 1);
-  assert.match(missingApiFamily.stderr, /api_family must be openai_chat_completions, anthropic_messages, or openai_responses/);
+  assert.match(missingApiFamily.stderr, /Route app\/chat sets --base-url-env or --eval-pack, so pass --api-family/);
   assert.doesNotMatch(missingApiFamily.stderr, /fetch failed/);
 
-  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ api_family: "responses" }))}\n`);
-  const legacyApiFamily = await runCli(command, root);
-  assert.equal(legacyApiFamily.status, 1);
-  assert.match(legacyApiFamily.stderr, /api_family must be openai_chat_completions, anthropic_messages, or openai_responses/);
-  assert.doesNotMatch(legacyApiFamily.stderr, /fetch failed/);
+  const unknownApiFamily = await runCli(command.map((value) => value === "openai_chat_completions" ? "responses" : value), root);
+  assert.equal(unknownApiFamily.status, 1);
+  assert.match(unknownApiFamily.stderr, /--api-family responses is not supported/);
+  assert.doesNotMatch(unknownApiFamily.stderr, /fetch failed/);
 
   await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ acceptance_refs: ["../qrels.json"] }))}\n`);
   const traversal = await runCli(command, root);
@@ -1253,6 +1286,95 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+// EVAL-012: a route without call_site.api_family gets no guessed base URL value.
+test("doctor names a missing call_site.api_family instead of guessing a base URL", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifestYaml().replace("      api_family: openai_chat_completions\n", ""));
+
+  const result = await runDoctor(root, "https://api.benchrouter.com", { BENCHROUTER_API_KEY: undefined });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /OPENAI_BASE_URL to the value its call_site\.api_family chooses/);
+  assert.doesNotMatch(result.stdout, /OPENAI_BASE_URL to https:/);
+});
+
+// EVAL-012: the call_site carries both values; one --api-family applies to every route.
+test("init pairs --api-family with routes and sends it on each call_site", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-api-family-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const setupServer = await startFixtureProxy(t, {
+    status: 401,
+    body: { error: "setup_scope_expired", message: "BenchRouter setup access has expired" }
+  });
+  const routes = [
+    "--route-id", "app/route-a", "--name", "Route A", "--incumbent-model", "openai/gpt-4o-mini",
+    "--route-id", "app/route-b", "--name", "Route B", "--incumbent-model", "openai/gpt-4o-mini"
+  ];
+  const base = ["init", "--setup-key", "br_setup_api_family", "--api-url", setupServer.url, "--output-dir", root, ...routes];
+
+  const shared = await runCli([...base, "--base-url-env", "LLM_BASE_URL", "--api-family", "openai_responses"], root);
+  assert.equal(shared.status, 1);
+  const sharedBody = setupServer.requests[0].body;
+  assert.deepEqual(sharedBody.route.call_site, { base_url_env: "LLM_BASE_URL", api_family: "openai_responses" });
+  assert.deepEqual(sharedBody.routes[0].call_site, { base_url_env: "LLM_BASE_URL", api_family: "openai_responses" });
+  assert.equal(Object.hasOwn(sharedBody.route, "base_url_env"), false);
+
+  const neither = await runCli(base, root);
+  assert.equal(neither.status, 1);
+  assert.equal(Object.hasOwn(setupServer.requests[1].body.route, "call_site"), false);
+  assert.equal(Object.hasOwn(setupServer.requests[1].body.routes[0], "call_site"), false);
+
+  const mismatched = await runCli([...base, "--api-family", "openai_chat_completions", "--api-family", "anthropic_messages", "--api-family", "openai_responses"], root);
+  assert.equal(mismatched.status, 1);
+  assert.match(mismatched.stderr, /When repeating --api-family, pass one value per --route-id/);
+  assert.equal(setupServer.requests.length, 2);
+});
+
+// EVAL-012: rerunning init with --api-family updates an existing route's declaration.
+test("init rerun writes --api-family into an existing route's call_site and executable eval", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-api-family-merge-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, "package.json"), '{"scripts":{}}\n');
+  const existingManifest = `version: 1
+product: { slug: app, repo: example/app, default_branch: main }
+routes:
+  - id: chat
+    route_id: app/chat
+    name: Local Chat Name
+    code_refs: [src/chat.ts]
+    call_site: { base_url_env: MY_CLAUDE_URL }
+    seed: { incumbent_model: anthropic/claude-haiku-4.5 }
+    eval_pack: { mode: repository_executable, api_family: openai_chat_completions, workflow: .github/workflows/benchrouter-evals.yml, scorer: .benchrouter/scorer.chat.js, result_schema: benchrouter.executable_result.v1, case_refs: [eval/cases.json] }
+`;
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), existingManifest);
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: {
+      repo_full_name: "example/app",
+      setup_packet: {
+        files: [{ path: ".benchrouter/benchrouter.yml", content: existingManifest.replace("name: Local Chat Name", "name: Server Chat") }],
+        package_json: { scripts: {}, dev_dependencies: [] },
+        runtime_env: {},
+        setup_api_keys: { production: { key: "br_live_api_family_merge" } }
+      }
+    }
+  });
+
+  const result = await runCli([
+    "init", "--setup-key", "br_setup_api_family_merge", "--repo", "example/app",
+    "--route-id", "app/chat", "--name", "Chat", "--incumbent-model", "anthropic/claude-haiku-4.5",
+    "--base-url-env", "MY_CLAUDE_URL", "--api-family", "anthropic_messages",
+    "--api-url", setupServer.url, "--output-dir", root
+  ], root);
+
+  assert.equal(result.status, 0, result.stderr);
+  const merged = parseYaml(await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"));
+  assert.equal(merged.routes[0].name, "Local Chat Name");
+  assert.deepEqual(merged.routes[0].call_site, { base_url_env: "MY_CLAUDE_URL", api_family: "anthropic_messages" });
+  assert.equal(merged.routes[0].eval_pack.api_family, "anthropic_messages");
+});
+
 function manifestYaml() {
   return `version: 1
 
@@ -1269,6 +1391,7 @@ routes:
       - src/llm.js
     call_site:
       base_url_env: OPENAI_BASE_URL
+      api_family: openai_chat_completions
     seed:
       incumbent_model: openai/gpt-4o-mini
     eval_pack:
@@ -1292,6 +1415,7 @@ function multiRouteManifestYaml() {
       - src/summarize.js
     call_site:
       base_url_env: SUMMARIZE_BASE_URL
+      api_family: openai_chat_completions
       provider_id: openai
       provider_ref: gpt-5.4-nano
     seed:
@@ -1325,6 +1449,7 @@ routes:
       - src/llm.js
     call_site:
       base_url_env: ANTHROPIC_BASE_URL
+      api_family: anthropic_messages
       provider_id: anthropic
       provider_ref: claude-haiku-4-5-20251001
     seed:
@@ -1364,7 +1489,6 @@ routes:
 function repositoryExecutableEvalPack(overrides = {}) {
   return {
     mode: "repository_executable",
-    api_family: "openai_chat_completions",
     id: "app_chat_repository_v1",
     config_path: ".benchrouter/benchrouter.yml",
     workflow: ".github/workflows/benchrouter-evals.yml",
