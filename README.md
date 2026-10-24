@@ -326,7 +326,9 @@ confirmation, then applies them. It preserves `.benchrouter/benchrouter.yml`
 byte-for-byte. That YAML is the single route declaration. Upgrade validates
 each file hash before it writes any file. It preserves customer setup steps
 between Setup Node.js and Run BenchRouter. Each customer step must use
-`if: github.event_name == 'workflow_dispatch'`. It never replaces cases,
+`if: github.event_name == 'workflow_dispatch'`. It keeps the eval job's
+`runs-on`, so a job moved to self-hosted runners stays there; `doctor` accepts
+any `runs-on` label, label list, or `group`/`labels` object. It never replaces cases,
 scorers, calibration fixtures, setup guides, or app files. Old generated-engine
 installations must be removed and re-onboarded; they have no compatibility path.
 

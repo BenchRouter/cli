@@ -77,6 +77,42 @@ test("RUN-001 refresh keeps customer setup and rejects a step with broader autho
   assert.throws(() => preserveCustomerSetup(invalid.toString(), kit.get(WORKFLOW_PATH)), /Every customer setup step/);
 });
 
+test("SETUP-001 doctor and refresh keep a customer runs-on and still check the rest of the job", async (t) => {
+  const root = await targetRepo(t);
+  const canonical = kit.get(WORKFLOW_PATH);
+  const check = async (source) => {
+    await writeFile(path.join(root, WORKFLOW_PATH), source);
+    const failures = [];
+    inspectSignedKit(root, failures);
+    return failures;
+  };
+  for (const base of [canonical, customerWorkflow()]) {
+    for (const runsOn of ["gcp-eval", ["self-hosted", "linux", "gcp"], { group: "gcp-runners", labels: ["linux"] }]) {
+      const doc = parseDocument(base);
+      doc.setIn(["jobs", "eval", "runs-on"], runsOn);
+      const refreshed = preserveCustomerSetup(doc.toString(), canonical);
+      assert.deepEqual(parseDocument(refreshed).toJS().jobs.eval, { ...doc.toJS().jobs.eval, "runs-on": runsOn });
+      assert.deepEqual(await check(refreshed), []);
+    }
+  }
+  for (const [keys, value, message] of [
+    [["jobs", "eval", "runs-on"], [], /runs-on/],
+    [["jobs", "eval", "runs-on"], { group: "gcp-runners", env: "prod" }, /runs-on/],
+    [["jobs", "eval", "timeout-minutes"], 360, /120-minute job ceiling/],
+    [["jobs", "eval", "steps", 0, "with", "persist-credentials"], true, /persist-credentials/]
+  ]) {
+    const doc = parseDocument(canonical);
+    doc.setIn(["jobs", "eval", "runs-on"], ["self-hosted", "gcp"]);
+    doc.setIn(keys, value);
+    const failures = await check(doc.toString());
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], message);
+  }
+  const invalid = parseDocument(canonical);
+  invalid.setIn(["jobs", "eval", "runs-on"], []);
+  assert.equal(preserveCustomerSetup(invalid.toString(), canonical), canonical);
+});
+
 test("RUN-001 doctor refuses unsafe checkout, fork access, or a parallel job", async (t) => {
   const root = await targetRepo(t);
   for (const [keys, value, message] of [
