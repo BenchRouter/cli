@@ -95,7 +95,18 @@ function validateCustomerSteps(steps, { interpreter, run }) {
   }
 }
 
+// SETUP-001: the customer owns the eval job's runner, GitHub-hosted or self-hosted.
+// Any GitHub runs-on shape passes: a label, a list of labels, or a group/labels object.
+function validRunsOn(value) {
+  const label = (item) => typeof item === "string" && item.trim() !== "";
+  const labels = (item) => label(item) || (Array.isArray(item) && item.length > 0 && item.every(label));
+  if (labels(value)) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length === 0) return false;
+  return Object.entries(value).every(([key, item]) => key === "group" ? label(item) : key === "labels" && labels(item));
+}
+
 // RUN-001: preserve customer setup after the generated recorder and postprocessing after runtime.
+// SETUP-001: also keep the customer's valid eval-job runs-on.
 export function preserveCustomerSetup(existingSource, generatedSource) {
   const existing = workflowDocument(existingSource);
   const generated = workflowDocument(generatedSource);
@@ -107,7 +118,10 @@ export function preserveCustomerSetup(existingSource, generatedSource) {
   validateCustomerSteps(nextSteps, next);
   const customerSteps = previousSteps.items.slice(previous.interpreter + 1, previous.run);
   const customerPostSteps = previousSteps.items.slice(previous.run + 1);
-  if (customerSteps.length === 0 && customerPostSteps.length === 0) return generatedSource;
+  const runsOn = existing.toJS().jobs.eval["runs-on"];
+  const customerRunsOn = validRunsOn(runsOn) && JSON.stringify(runsOn) !== JSON.stringify(generated.toJS().jobs.eval["runs-on"]);
+  if (!customerRunsOn && customerSteps.length === 0 && customerPostSteps.length === 0) return generatedSource;
+  if (customerRunsOn) generated.setIn(["jobs", "eval", "runs-on"], generated.createNode(runsOn));
   nextSteps.items.splice(next.run + 1, nextSteps.items.length - next.run - 1, ...customerPostSteps.map((step) => step.clone()));
   nextSteps.items.splice(next.interpreter + 1, next.run - next.interpreter - 1, ...customerSteps.map((step) => step.clone()));
   setupBounds(nextSteps);
@@ -397,7 +411,8 @@ export function inspectSignedKit(root, failures) {
     if (workflow.concurrency !== undefined || workflow.jobs?.eval?.strategy !== undefined) throw new Error("the signed runtime job must have no concurrency or matrix");
     if (Object.keys(workflow.jobs ?? {}).length !== 1) throw new Error("requires exactly one eval job");
     const job = workflow.jobs?.eval;
-    if (job?.["timeout-minutes"] !== 120 || job?.["runs-on"] !== "ubuntu-24.04") throw new Error("requires ubuntu-24.04 and a 120-minute job ceiling");
+    if (job?.["timeout-minutes"] !== 120) throw new Error("requires a 120-minute job ceiling");
+    if (!validRunsOn(job["runs-on"])) throw new Error("requires runs-on: a runner label, a list of labels, or a group/labels object");
     const guard = "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository";
     if (job.if !== guard && job.if !== "${{ " + guard + " }}") throw new Error("requires the same-repository PR guard");
     for (const event of ["pull_request", "push"]) {
