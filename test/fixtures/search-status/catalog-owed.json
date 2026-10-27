@@ -1,0 +1,75 @@
+{
+  "route_key": "validation/request-router",
+  "view_evidence": [
+    {
+      "id": "production",
+      "label": "Production",
+      "search_status": {
+        "state": "owed",
+        "eligible": {
+          "count": 0,
+          "target": 4
+        },
+        "waiting": null,
+        "result_set": {
+          "id": "rs_val_production_seed",
+          "decided_result_set_id": "rs_val_production_seed",
+          "stop_reason": null,
+          "held_models": 0,
+          "reused_models": 0,
+          "measured_models": 3
+        },
+        "models": [
+          {
+            "model": "deepseek/deepseek-v4-flash",
+            "roles": [
+              "serving"
+            ],
+            "score": 1,
+            "pass_rate": 1,
+            "cost_usd": 0.01,
+            "p95_ms": 350,
+            "verdict": "eligible",
+            "reason": "eligible",
+            "reused": false,
+            "breaker_open_until": null
+          },
+          {
+            "model": "google/gemini-2.5-flash-lite",
+            "roles": [
+              "baseline"
+            ],
+            "score": 1,
+            "pass_rate": 1,
+            "cost_usd": 0.02,
+            "p95_ms": 400,
+            "verdict": "baseline",
+            "reason": "baseline",
+            "reused": false,
+            "breaker_open_until": null
+          },
+          {
+            "model": "openai/gpt-oss-20b",
+            "roles": [],
+            "score": 0.2,
+            "pass_rate": 0.2,
+            "cost_usd": 0.005,
+            "p95_ms": 350,
+            "verdict": "low_pass_rate",
+            "reason": "low_pass_rate",
+            "reused": false,
+            "breaker_open_until": null
+          }
+        ],
+        "next": [
+          {
+            "action": "broad_search_resume",
+            "at": "2026-10-27T18:17:00.000Z",
+            "text": "A broad search resumes at the next batch (up to 10 contexts a batch)."
+          }
+        ],
+        "summary": "Searching: 0 of 4 eligible, broad search owed, next batch 18:17Z"
+      }
+    }
+  ]
+}

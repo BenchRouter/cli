@@ -326,7 +326,7 @@ async function runModelsShow(ctx) {
 async function runEvals(ctx) {
   const sub = subcommand(ctx);
   if (!sub) {
-    return ctx.usage(1, "evals", "Missing subcommand. Try: evals list | run | failures | refresh-preview");
+    return ctx.usage(1, "evals", "Missing subcommand. Try: evals list | status | run | failures | refresh-preview");
   }
   if (sub === "list") {
     const routeKey = ctx.args._[2];
@@ -337,9 +337,32 @@ async function runEvals(ctx) {
       route_key: body.route_key,
       eval_history: body.eval_history ?? [],
       evals: body.evals ?? {},
-      latest_eval_batch: body.latest_eval_batch ?? null
+      latest_eval_batch: body.latest_eval_batch ?? null,
+      // EVAL-011 / ROUTE-005: each context's search status, by evidence view id.
+      search_status: Object.fromEntries(
+        (Array.isArray(body.view_evidence) ? body.view_evidence : [])
+          .filter((view) => view && view.search_status)
+          .map((view) => [view.id, view.search_status])
+      )
     };
     return emit(ctx, payload, () => render.renderEvalsList(body));
+  }
+  if (sub === "status") {
+    const routeKey = ctx.args._[2];
+    if (!routeKey) return ctx.usage(1, "evals status", "Missing route key.");
+    const prArg = optionValue(ctx, "pr", "evals status");
+    const prNumber = prArg === undefined ? null : Number.parseInt(prArg, 10);
+    // A decimal PR number only: `0x4c` or `7.6e1` is not PR 76.
+    if (prNumber !== null && (String(prNumber) !== prArg || !Number.isSafeInteger(prNumber) || prNumber < 1)) {
+      return ctx.usage(1, "evals status", "--pr must be a pull request number.");
+    }
+    const body = await accountRequest(ctx, customerPaths.routeCatalog(routeKey, "evals status"));
+    const viewId = prNumber === null ? "production" : `pr-${prNumber}`;
+    const view = (Array.isArray(body.view_evidence) ? body.view_evidence : []).find((entry) => entry && entry.id === viewId);
+    if (!view) ctx.fail(`No ${prNumber === null ? "production" : `open PR #${prNumber} preview`} evidence on ${routeKey}.`, "view_not_found");
+    if (!view.search_status) ctx.fail(`The server returned no search status for ${routeKey} (${viewId}).`, "search_status_missing");
+    const payload = { ok: true, route_key: body.route_key, view_id: view.id, label: view.label, search_status: view.search_status };
+    return emit(ctx, payload, () => render.renderEvalsStatus(payload));
   }
   if (sub === "run") {
     const routeKey = ctx.args._[2];
