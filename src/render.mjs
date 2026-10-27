@@ -286,6 +286,10 @@ export function renderRouteModel(body) {
 
 export function renderEvalsList(body) {
   const history = Array.isArray(body.eval_history) ? body.eval_history : [];
+  // EVAL-011 / ROUTE-005: one search-status line per context.
+  for (const view of Array.isArray(body.view_evidence) ? body.view_evidence : []) {
+    if (view && view.search_status) process.stdout.write(`${view.label}: ${view.search_status.summary}\n`);
+  }
   if (history.length === 0) {
     process.stdout.write(`${body.route_key}: no eval history.\n`);
     return;
@@ -295,6 +299,52 @@ export function renderEvalsList(body) {
       `- ${entry.id ?? entry.model_run_id ?? "?"}: ${entry.model ?? "unknown"} ${entry.status ?? "unknown"}\n`
     );
   }
+}
+
+/** "2026-10-27 18:17Z". */
+function utcMinute(iso) {
+  return typeof iso === "string" && iso.length >= 16 ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z` : "-";
+}
+
+function metric(value, format) {
+  return typeof value === "number" && Number.isFinite(value) ? format(value) : "-";
+}
+
+/** EVAL-011 / ROUTE-005: `benchrouter evals status`. */
+export function renderEvalsStatus(payload) {
+  const status = payload.search_status;
+  const out = [`${payload.route_key} · ${payload.label}`, `State: ${status.state}. ${status.summary}`];
+  if (status.waiting) {
+    out.push(`Waiting: ${status.waiting.reason}${status.waiting.until ? ` until ${utcMinute(status.waiting.until)}` : ""}`);
+  }
+  const set = status.result_set ?? {};
+  const decided = set.decided_result_set_id && set.decided_result_set_id !== set.id ? `; latest decided ${set.decided_result_set_id}` : "";
+  const stop = set.stop_reason ? `; search stopped: ${set.stop_reason}${set.held_models > 0 ? ` (${set.held_models} held)` : ""}` : "";
+  out.push(`Result set: ${set.id ?? "none"}${decided}${stop}; ${set.measured_models ?? 0} measured, ${set.reused_models ?? 0} reused`);
+  const models = Array.isArray(status.models) ? status.models : [];
+  if (models.length > 0) {
+    out.push("Models:");
+    const width = Math.max(...models.map((model) => model.model.length));
+    for (const model of models) {
+      const shown = model.roles.filter((role) => role !== model.verdict);
+      const roles = shown.length > 0 ? ` [${shown.join(", ")}]` : "";
+      const verdict = model.verdict === "failed" && model.reason ? `failed: ${model.reason}` : model.verdict;
+      const notes = [
+        model.reused ? "reused" : null,
+        model.breaker_open_until ? `breaker open until ${utcMinute(model.breaker_open_until)}` : null
+      ].filter(Boolean);
+      out.push(
+        `  ${model.model.padEnd(width)}  score ${metric(model.score, (v) => v.toFixed(3))}  cost ${metric(model.cost_usd, (v) => `$${v.toFixed(4)}`)}` +
+        `  p95 ${metric(model.p95_ms, (v) => `${Math.round(v)}ms`)}  ${verdict}${roles}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`
+      );
+    }
+  }
+  const next = Array.isArray(status.next) ? status.next : [];
+  if (next.length > 0) {
+    out.push("Next:");
+    for (const step of next) out.push(`  ${step.at ? utcMinute(step.at) : "-"}  ${step.text}`);
+  }
+  process.stdout.write(`${out.join("\n")}\n`);
 }
 
 export function renderEvalsRun(body) {

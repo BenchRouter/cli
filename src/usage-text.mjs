@@ -312,6 +312,7 @@ Options:
 ${ACCOUNT_FLAGS}`,
   evals: `Usage:
   benchrouter evals list <route-key>
+  benchrouter evals status <route-key> [--pr <number>]
   benchrouter evals run <route-key> --model <model-id>
   benchrouter evals run <route-key> --full-refresh
   benchrouter evals retry --result-set <id> | --route <route-key>
@@ -337,6 +338,16 @@ ${ACCOUNT_FLAGS}`,
   benchrouter evals list <route-key>
 
 Options:
+${ACCOUNT_FLAGS}`,
+  "evals status": `Usage:
+  benchrouter evals status <route-key> [--pr <number>]
+
+Says whether the eval search of the route's production context (or of an open PR's
+preview with --pr) is searching, done, waiting or owed a broad search, with each
+model's score, cost, p95 latency and verdict, and what happens next and when.
+
+Options:
+  --pr <number>
 ${ACCOUNT_FLAGS}`,
   "evals run": `Usage:
   benchrouter evals run <route-key> --model <model-id>
@@ -565,7 +576,7 @@ export function topLevelControlUsageLines() {
   benchrouter setup status|create|session show|upgrade-token [--json]
   benchrouter routes list|show|catalog|archive|unarchive [--json]
   benchrouter models show <route-key> <model-id> [--json]
-  benchrouter evals list|run|retry|harness-retry|failures|refresh-preview [--json]
+  benchrouter evals list|status|run|retry|harness-retry|failures|refresh-preview [--json]
   benchrouter blocks list|unblock [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
   benchrouter proposals list|approve|reject [--json]
