@@ -89,26 +89,6 @@ export function renderBillingShow(summary) {
   }
 }
 
-/** BILL-006: the outcome of `billing charge`. */
-export function renderCardCharge(body, retry) {
-  const amounts = (value) => `$${formatUsd(value.charge_total_usd)} ($${formatUsd(value.credit_usd)} credit + $${formatUsd(value.service_fee_usd)} fee)`;
-  if (body.outcome === "charged") {
-    printLines([`${body.replayed ? "Already charged" : "Charged"} ${amounts(body)} on the saved card. Balance: $${formatUsd(body.balance_usd)}.`]);
-  } else if (body.outcome === "processing") {
-    printLines([body.message, `Read its result with: ${retry}`]);
-  } else if (body.outcome === "needs_review") {
-    printLines([body.message, `Charge ${body.charge_id}, ${amounts(body)}.`]);
-  } else if (body.outcome === "checkout") {
-    printLines([
-      body.reason === "card_failed" ? `Nothing was charged; the saved card failed: ${body.error?.message ?? "declined."}` : "No saved card, so nothing was charged.",
-      `Pay $${formatUsd(body.checkout.checkout_total_usd)} in a browser (credit $${formatUsd(body.checkout.credit_usd)}; fee $${formatUsd(body.checkout.service_fee_usd)}):`,
-      body.checkout.checkout_url
-    ]);
-  } else {
-    printLines([`Unknown outcome ${body.outcome}. Check the billing history before paying again: benchrouter billing show`]);
-  }
-}
-
 /** BILL-001: `benchrouter billing activity`, the ledger newest first. */
 export function renderBillingActivity(body, { payments }) {
   const entries = Array.isArray(body.entries) ? body.entries : [];

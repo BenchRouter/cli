@@ -58,7 +58,6 @@ ${ACCOUNT_FLAGS}`,
   benchrouter billing show
   benchrouter billing activity [--from <iso>] [--to <iso>] [--payments] [--cursor <cursor>]
   benchrouter billing statement [--from <iso>] [--to <iso>]
-  benchrouter billing charge --amount 25
   benchrouter billing top-up --amount 25
   benchrouter billing auto-reload setup --threshold <usd> --amount <usd>
   benchrouter billing auto-reload disable
@@ -66,7 +65,7 @@ ${ACCOUNT_FLAGS}`,
 billing show reads billing fields from GET /v1/dashboard/summary.
 
 Options:
-${ACCOUNT_FLAGS}  --yes, -y                    Skip confirmation for charge and top-up.
+${ACCOUNT_FLAGS}  --yes, -y                    Skip confirmation for top-up.
 `,
   "billing show": `Usage:
   benchrouter billing show
@@ -98,22 +97,6 @@ route (runtime and evals). The period defaults to the last 30 days. Owner only.
 Options:
   --from <iso>
   --to <iso>
-${ACCOUNT_FLAGS}`,
-  "billing charge": `Usage:
-  benchrouter billing charge --amount <usd> [--idempotency-key <key>] [--yes]
-
-Buys credit on the card saved for automatic reload, as the account page's purchase
-does: whole USD from 25 to 25000, plus the service fee. It spends money. With no
-saved card, or when the card is declined, it prints a Stripe Checkout link instead
-and charges nothing. Owner only.
-
-Each run sends a new idempotency key. To retry a run that failed or is still
-processing, repeat it with the key it printed: the same key never charges twice.
-
-Options:
-  --amount <usd>
-  --idempotency-key <key>      Repeat an earlier purchase's key (8 to 200 characters).
-  --yes, -y                    Required with --json; skips the confirmation prompt.
 ${ACCOUNT_FLAGS}`,
   "billing top-up": `Usage:
   benchrouter billing top-up --amount <usd>
@@ -767,7 +750,6 @@ export function topLevelControlUsageLines() {
   return `  benchrouter login [--name text] [--expires-in-days 90]
   benchrouter account show|token save [--json]
   benchrouter billing show|activity|statement [--json]
-  benchrouter billing charge --amount <usd> [--idempotency-key <key>] [--yes]
   benchrouter billing top-up --amount <usd> [--yes]
   benchrouter billing auto-reload setup|disable [--yes]
   benchrouter keys list|create|disable|enable|revoke [--json]
