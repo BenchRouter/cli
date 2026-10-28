@@ -8,39 +8,70 @@ import { fileURLToPath } from "node:url";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const cliPath = path.resolve(testDir, "../bin/benchrouter.mjs");
-// A real route catalog response's search status (see fixtures/search-status/README.md).
+// Real server responses (see fixtures/search-status/README.md).
 const catalog = JSON.parse(await readFile(path.join(testDir, "fixtures/search-status/catalog-owed.json"), "utf8"));
+const hostedStatus = JSON.parse(await readFile(path.join(testDir, "fixtures/search-status/hosted-status-no-eval.json"), "utf8"));
 const token = ["--account-token", "br_ctrl_recorded_fixture"];
 
-test("evals status renders the production context's search status from the route catalog read", async (t) => {
-  const replay = await startFixtureServer(t, catalog);
-  const human = await runCli(["evals", "status", "validation/request-router", "--api-url", replay.url, ...token]);
+test("evals status prints the hosted-eval status read's summary, next steps and spend for production (ROUTE-005)", async (t) => {
+  const replay = await startFixtureServer(t, hostedStatus);
+  const human = await runCli(["evals", "status", "pinned-smoke/br-b4-smoke", "--api-url", replay.url, ...token]);
   assert.equal(human.status, 0, human.stderr);
   assert.equal(human.stdout, [
-    "validation/request-router · Production",
-    "State: owed. Searching: 0 of 4 eligible, broad search owed, next batch 18:17Z",
-    "Result set: rs_val_production_seed; 3 measured, 0 reused",
-    "Models:",
-    "  deepseek/deepseek-v4-flash    score 1.000  cost $0.0100  p95 350ms  eligible [serving]",
-    "  google/gemini-2.5-flash-lite  score 1.000  cost $0.0200  p95 400ms  baseline",
-    "  openai/gpt-oss-20b            score 0.200  cost $0.0050  p95 350ms  low_pass_rate",
+    "pinned-smoke/br-b4-smoke · no eval yet",
+    "Search: No eval yet: the route serves its current model",
+    "Eval spend: $0.00",
     "Next:",
-    "  2026-10-27 18:17Z  A broad search resumes at the next batch (up to 10 contexts a batch).",
+    "  -  The search starts when the route has an eval: a merged repository eval or an approved hosted eval.",
+    "Waiting: no_eval",
+    "Result set: none; 0 measured, 0 reused",
+    "Models:",
+    "  google/gemini-2.5-flash-lite  score -  cost -  p95 -  not_comparable [baseline, serving]",
     ""
   ].join("\n"));
 
-  const json = await runCli(["evals", "status", "validation/request-router", "--api-url", replay.url, ...token, "--json"]);
+  const json = await runCli(["evals", "status", "pinned-smoke/br-b4-smoke", "--api-url", replay.url, ...token, "--json"]);
   assert.equal(json.status, 0, json.stderr);
   assert.deepEqual(JSON.parse(json.stdout), {
     ok: true,
-    route_key: "validation/request-router",
+    route_key: "pinned-smoke/br-b4-smoke",
     view_id: "production",
-    label: "Production",
-    search_status: catalog.view_evidence[0].search_status
+    label: "no eval yet",
+    search_status: hostedStatus.search_status,
+    spend_usd: 0,
+    polling: false
   });
   assert.deepEqual(replay.requests, Array(2).fill({
-    method: "GET", url: "/v1/dashboard/routes/validation/request-router/catalog", authorization: "Bearer br_ctrl_recorded_fixture"
+    method: "GET", url: "/v1/hosted-evals/pinned-smoke%2Fbr-b4-smoke/status", authorization: "Bearer br_ctrl_recorded_fixture"
   }));
+});
+
+test("evals status says the search is still running while the server polls", async (t) => {
+  // The live fixture with the fields of a running search (the server sets polling while the state is searching).
+  const running = {
+    ...hostedStatus,
+    search_status: { ...hostedStatus.search_status, state: "searching", waiting: null, summary: "Searching: 0 of 4 eligible" },
+    spend_usd: 0.4213,
+    polling: true
+  };
+  const replay = await startFixtureServer(t, running);
+  const human = await runCli(["evals", "status", "pinned-smoke/br-b4-smoke", "--api-url", replay.url, ...token]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.deepEqual(human.stdout.split("\n").slice(1, 3), ["Search: Searching: 0 of 4 eligible; still running", "Eval spend: $0.42"]);
+});
+
+test("evals status --pr reads the preview context from the route catalog", async (t) => {
+  const preview = { ...catalog, view_evidence: [{ ...catalog.view_evidence[0], id: "pr-76", label: "PR #76 preview" }] };
+  const replay = await startFixtureServer(t, preview);
+  const human = await runCli(["evals", "status", "validation/request-router", "--pr", "76", "--api-url", replay.url, ...token]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.deepEqual(human.stdout.split("\n").slice(0, 4), [
+    "validation/request-router · PR #76 preview",
+    "Search: Searching: 0 of 4 eligible, broad search owed, next batch 18:17Z",
+    "Next:",
+    "  2026-10-27 18:17Z  A broad search resumes at the next batch (up to 10 contexts a batch)."
+  ]);
+  assert.deepEqual(replay.requests.map((request) => request.url), ["/v1/dashboard/routes/validation/request-router/catalog"]);
 });
 
 test("evals status --pr names a missing preview, and evals list leads with each context's summary", async (t) => {

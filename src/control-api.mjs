@@ -174,6 +174,16 @@ export const customerPaths = {
     return { method: "POST", path: "/v1/dashboard/blocks/unblock", label: "blocks unblock", body };
   },
 
+  /**
+   * GET /v1/hosted-evals/:routeKey/status — the production context's search status, the
+   * route's eval spend and polling (ROUTE-005). The route key is one encoded path segment.
+   */
+  evalsStatus: (routeKey) => ({
+    method: "GET",
+    path: `/v1/hosted-evals/${encodePathSegment(routeKey)}/status`,
+    label: "evals status"
+  }),
+
   /** POST /v1/dashboard/evals/retry — body { result_set_id } or { route_key }. RUN-001 R5: never clears a block. */
   evalsRetry: ({ resultSetId, routeKey }) => {
     const body = {};
