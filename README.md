@@ -151,7 +151,7 @@ benchrouter explain <model> [--route <route-key>] [--json]
 benchrouter login [--name text] [--expires-in-days 90]
 benchrouter account show [--json]
 benchrouter account token save --account-token br_ctrl_...
-benchrouter billing show [--json]
+benchrouter billing show|activity|statement [--json]
 benchrouter billing charge --amount 25 [--idempotency-key <key>] [--yes]
 benchrouter billing top-up --amount 25 [--yes]
 benchrouter billing auto-reload setup --threshold <usd> --amount <usd> | disable
@@ -161,7 +161,7 @@ benchrouter setup status [--repo owner/repo]
 benchrouter setup create --repository-id <id> --installation-id <id> [--intent initial|new_route]
 benchrouter setup session show <session-id>
 benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
-benchrouter routes list|show|catalog|create|pin|archive|unarchive
+benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive
 benchrouter evals list|run
 benchrouter evals status <route-key> [--pr <number>]
 benchrouter evals results <route-key>
@@ -176,6 +176,7 @@ benchrouter evals harness-retry <route-key> [--model <id>]
 benchrouter evals refresh-preview <route-key> <result-set-id> [--model <id>]
 benchrouter blocks list [--repo owner/repo]
 benchrouter blocks unblock --repo owner/repo [--route <route-key>] | --route <route-key> | --all-blocked
+benchrouter public status|frontier [--json]
 benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
 benchrouter proposals list|approve|reject [--admin-token bradm_...]
 benchrouter admin providers|catalog|keys|token [--admin-token bradm_...]

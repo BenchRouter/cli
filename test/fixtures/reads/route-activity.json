@@ -1,0 +1,49 @@
+{
+  "ok": true,
+  "route_key": "timeywimey/voice-places",
+  "eval_activity": {
+    "result_set_id": "erset_2b2861d6bf7d48ada4480e199eaad99e",
+    "state": "up_to_date",
+    "serving_evidence_valid": true,
+    "serving_evidence_state": "valid",
+    "coverage_status": "complete",
+    "trigger": "background_coverage",
+    "total_models": 59,
+    "terminal_models": 59,
+    "uploaded_models": 1,
+    "reused_models": 58,
+    "usable_models": 59,
+    "failed_models": 0,
+    "pending_models": 0,
+    "running_models": 0,
+    "queued_models": 0,
+    "skipped_models": 0,
+    "current_tranche": 1,
+    "active_packs": 0,
+    "recovery_state": "none",
+    "estimate": {
+      "candidate_count": 1,
+      "inference_count": 1,
+      "job_count": 2,
+      "rounded_action_minutes": 15
+    },
+    "actual": {
+      "job_count": 0,
+      "duration_seconds": 0,
+      "rounded_action_minutes": 0
+    },
+    "github_run_url": "https://github.com/patelnav/timeywimey/actions/runs/40687469899",
+    "requested_at": "2026-10-28T12:24:13.045Z",
+    "accepted_at": "2026-10-28T12:24:12.641Z",
+    "observed_at": "2026-10-28T12:24:12.641Z",
+    "started_at": "2026-10-28T12:24:12.641Z",
+    "completed_at": "2026-10-28T12:24:56.704Z",
+    "execution_released_at": "2026-10-28T12:24:51.548Z",
+    "conclusion": null,
+    "first_failure": null,
+    "failure_display": null,
+    "failure_summary": null,
+    "serving_best_so_far": false,
+    "production_unaffected": false
+  }
+}

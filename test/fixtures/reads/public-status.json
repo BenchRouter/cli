@@ -1,0 +1,150 @@
+{
+  "updated_at": "2026-10-28T20:46:55.752Z",
+  "overall": "operational",
+  "description": "All systems operational",
+  "monitoring": {
+    "state": "healthy",
+    "last_tick_minute": "2026-10-28T20:45:00.000Z",
+    "last_tick_status": "completed",
+    "detail": null
+  },
+  "history": {
+    "state": "current",
+    "evidence_through": "2026-10-28T20:46:00.000Z"
+  },
+  "components": [
+    {
+      "id": "api",
+      "name": "BenchRouter API",
+      "description": "Core API and request routing",
+      "status": "operational",
+      "uptime": 0.9999,
+      "data_state": "measured",
+      "current_data_state": "measured",
+      "current_observed_minutes": 15,
+      "observed_minutes": 77659,
+      "closed_minutes": 129406,
+      "synthetic_minutes": 77194,
+      "days": [
+        {
+          "day": "2026-10-27",
+          "status": "operational",
+          "uptime": 1,
+          "data_state": "measured",
+          "observed_minutes": 1440,
+          "closed_minutes": 1440,
+          "synthetic_minutes": 1440
+        },
+        {
+          "day": "2026-10-28",
+          "status": "operational",
+          "uptime": 1,
+          "data_state": "measured",
+          "observed_minutes": 1243,
+          "closed_minutes": 1246,
+          "synthetic_minutes": 1243
+        }
+      ]
+    },
+    {
+      "id": "chat",
+      "name": "Chat Completions",
+      "description": "POST /v1/chat/completions",
+      "status": "operational",
+      "uptime": 1,
+      "data_state": "measured",
+      "current_data_state": "measured",
+      "current_observed_minutes": 15,
+      "observed_minutes": 77656,
+      "closed_minutes": 129406,
+      "synthetic_minutes": 50382,
+      "days": [
+        {
+          "day": "2026-10-27",
+          "status": "operational",
+          "uptime": 1,
+          "data_state": "measured",
+          "observed_minutes": 1440,
+          "closed_minutes": 1440,
+          "synthetic_minutes": 1196
+        },
+        {
+          "day": "2026-10-28",
+          "status": "operational",
+          "uptime": 1,
+          "data_state": "measured",
+          "observed_minutes": 1243,
+          "closed_minutes": 1246,
+          "synthetic_minutes": 1083
+        }
+      ]
+    },
+    {
+      "id": "messages",
+      "name": "Messages",
+      "description": "POST /v1/messages",
+      "status": "operational",
+      "uptime": 0.9998,
+      "data_state": "measured",
+      "current_data_state": "measured",
+      "current_observed_minutes": 15,
+      "observed_minutes": 77197,
+      "closed_minutes": 129406,
+      "synthetic_minutes": 77188,
+      "days": [
+        {
+          "day": "2026-10-27",
+          "status": "operational",
+          "uptime": 1,
+          "data_state": "measured",
+          "observed_minutes": 1440,
+          "closed_minutes": 1440,
+          "synthetic_minutes": 1440
+        },
+        {
+          "day": "2026-10-28",
+          "status": "operational",
+          "uptime": 1,
+          "data_state": "measured",
+          "observed_minutes": 1243,
+          "closed_minutes": 1246,
+          "synthetic_minutes": 1243
+        }
+      ]
+    },
+    {
+      "id": "responses",
+      "name": "Responses",
+      "description": "POST /v1/responses",
+      "status": "operational",
+      "uptime": 0.9998,
+      "data_state": "measured",
+      "current_data_state": "measured",
+      "current_observed_minutes": 15,
+      "observed_minutes": 77197,
+      "closed_minutes": 129406,
+      "synthetic_minutes": 77192,
+      "days": [
+        {
+          "day": "2026-10-27",
+          "status": "operational",
+          "uptime": 1,
+          "data_state": "measured",
+          "observed_minutes": 1440,
+          "closed_minutes": 1440,
+          "synthetic_minutes": 1440
+        },
+        {
+          "day": "2026-10-28",
+          "status": "operational",
+          "uptime": 1,
+          "data_state": "measured",
+          "observed_minutes": 1243,
+          "closed_minutes": 1246,
+          "synthetic_minutes": 1243
+        }
+      ]
+    }
+  ],
+  "incidents": []
+}
