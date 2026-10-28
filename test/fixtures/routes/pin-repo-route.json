@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "route_key": "timeywimey/voice-places",
+  "product": {
+    "productId": "prod_acct_patelnav_timeywimey",
+    "source": "repo",
+    "displayName": "timeywimey",
+    "repo": {
+      "fullName": "patelnav/timeywimey",
+      "repoId": "repo_gh_852369115",
+      "defaultBranch": "main"
+    }
+  },
+  "model": "deepseek/deepseek-v4-flash",
+  "model_available": true,
+  "route_id": "route_acct_patelnav_timeywimey_voice_places",
+  "repin_blocked_reason": "repo_route",
+  "history": [
+    {
+      "model": "deepseek/deepseek-v4-flash",
+      "pinned_at": "2026-06-19T19:24:58.945Z",
+      "ended_at": null
+    }
+  ]
+}

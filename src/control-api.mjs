@@ -98,6 +98,20 @@ export const customerPaths = {
     label
   }),
 
+  /** POST /v1/control/routes — body { name, model, route_slug?, product: { name, slug? } } or { ..., product_id } (SERVE-001). */
+  routeCreate: (body) => ({ method: "POST", path: "/v1/control/routes", label: "routes create", body }),
+
+  /** GET /v1/control/routes/:routeKey/pin — the model a route serves, its generations, and whether it can be re-pinned (ROUTE-004). */
+  routePin: (routeKey) => ({ method: "GET", path: `/v1/control/routes/${encodePathSegment(routeKey)}/pin`, label: "routes pin" }),
+
+  /** POST /v1/control/routes/:routeKey/pin — body { model, expected_route_id }; a stale id answers 409 route_changed (ROUTE-004). */
+  routeRepin: (routeKey, model, expectedRouteId) => ({
+    method: "POST",
+    path: `/v1/control/routes/${encodePathSegment(routeKey)}/pin`,
+    label: "routes pin",
+    body: { model, expected_route_id: expectedRouteId }
+  }),
+
   /** POST /v1/dashboard/routes/:routeKey/archive */
   routeArchive: (routeKey) => ({
     method: "POST",

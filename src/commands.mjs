@@ -277,7 +277,7 @@ function requireRepoFullName(ctx, usageName) {
 async function runRoutes(ctx) {
   const sub = subcommand(ctx);
   if (!sub) {
-    return ctx.usage(1, "routes", "Missing subcommand. Try: routes list | show | catalog | archive | unarchive");
+    return ctx.usage(1, "routes", "Missing subcommand. Try: routes list | show | catalog | create | pin | archive | unarchive");
   }
   if (sub === "list") {
     const summary = await accountRequest(ctx, customerPaths.dashboardSummary("routes list"));
@@ -300,6 +300,43 @@ async function runRoutes(ctx) {
     if (!routeKey) return ctx.usage(1, "routes catalog", "Missing route key.");
     const body = await accountRequest(ctx, customerPaths.routeCatalog(routeKey));
     return emit(ctx, body, () => render.renderRouteCatalog(body));
+  }
+  if (sub === "create") {
+    // SERVE-001: a pinned route (no eval) in a new hosted product or an existing one with no repository.
+    const name = optionValue(ctx, "name", "routes create");
+    const model = optionValue(ctx, "model", "routes create");
+    const productName = optionValue(ctx, "product", "routes create");
+    const productId = optionValue(ctx, "product-id", "routes create");
+    if (!name || !model || Boolean(productName) === Boolean(productId)) {
+      return ctx.usage(1, "routes create", "Pass --name, --model, and one of --product <name> or --product-id <id>.");
+    }
+    const productSlug = optionValue(ctx, "product-slug", "routes create");
+    if (productSlug && !productName) return ctx.usage(1, "routes create", "--product-slug goes with --product.");
+    const body = { name, model };
+    const routeSlug = optionValue(ctx, "route-slug", "routes create");
+    if (routeSlug) body.route_slug = routeSlug;
+    if (productId) body.product_id = productId;
+    else body.product = productSlug ? { name: productName, slug: productSlug } : { name: productName };
+    await requireMutationConfirmation(ctx, render.mutationSummary(
+      "Create pinned route",
+      `name=${name}; model=${model}; ${productId ? `product_id=${productId}` : `product=${productName}`}`
+    ));
+    const created = await accountRequest(ctx, customerPaths.routeCreate(body));
+    return emit(ctx, created, () => render.renderRouteCreated(created));
+  }
+  if (sub === "pin") {
+    // ROUTE-004: read the pin, then re-pin with its generation id as the fence.
+    const routeKey = ctx.args._[2];
+    if (!routeKey) return ctx.usage(1, "routes pin", "Missing route key.");
+    const model = optionValue(ctx, "model", "routes pin");
+    const current = await accountRequest(ctx, customerPaths.routePin(routeKey));
+    if (!model) return emit(ctx, current, () => render.renderRoutePin(current));
+    if (current.repin_blocked_reason) {
+      ctx.fail(`${routeKey} cannot be re-pinned (${current.repin_blocked_reason}).`, current.repin_blocked_reason);
+    }
+    await requireMutationConfirmation(ctx, render.mutationSummary("Re-pin route", `${routeKey}: ${current.model} -> ${model}`));
+    const body = await accountRequest(ctx, customerPaths.routeRepin(routeKey, model, current.route_id));
+    return emit(ctx, body, () => render.renderRouteRepinned(body));
   }
   if (sub === "archive") {
     const routeKey = ctx.args._[2];
