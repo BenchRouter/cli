@@ -86,8 +86,19 @@ async function runAccount(ctx) {
   const sub = subcommand(ctx);
   if (!sub) return ctx.usage(1, "account", "Missing subcommand. Try: account show | account token save");
   if (sub === "show") {
-    const body = await accountRequest(ctx, customerPaths.accountSelf());
-    return emit(ctx, body, () => render.renderAccountShow(body));
+    // MCP-001 / BILL-001: the website's account page, with the credential's role and products from the control read.
+    const [self, page] = await Promise.all([
+      accountRequest(ctx, customerPaths.accountSelf()),
+      accountRequest(ctx, customerPaths.dashboardAccount())
+    ]);
+    const payload = {
+      ok: true,
+      account_id: self.account?.id ?? null,
+      role: self.membership_role ?? null,
+      visible_products: self.visible_products ?? [],
+      ...page
+    };
+    return emit(ctx, payload, () => render.renderAccountShow(payload));
   }
   if (sub === "token") {
     if (ctx.args._[2] !== "save") return unknown(ctx, "account token", ctx.args._[2]);

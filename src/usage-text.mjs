@@ -34,7 +34,10 @@ ${ACCOUNT_FLAGS}`,
   "account show": `Usage:
   benchrouter account show
 
-Reads GET /v1/account/control/me.
+Shows the account page of the website and your role. An owner also sees the balance,
+free credit, spend, savings, auto-reload (with a paused reload's last error),
+endpoint key prefixes (never full keys) and GitHub installations. --json adds the
+recent ledger, top-up limits and products.
 
 Options:
 ${ACCOUNT_FLAGS}`,
