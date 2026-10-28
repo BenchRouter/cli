@@ -18,17 +18,53 @@ export function formatUsd(value) {
   return number.toFixed(2);
 }
 
+/** MCP-001 / BILL-001: `benchrouter account show`, the account page with the credential's role. */
 export function renderAccountShow(body) {
   const account = body.account ?? {};
+  const out = [
+    `Account: ${account.display_name ?? account.slug ?? "unknown"}${body.account_id ? ` (${body.account_id})` : ""}`,
+    ...(body.role ? [`Role: ${body.role}`] : [])
+  ];
+  // BILL-001: only an owner's read has billing; a member's spend, savings and keys are empty, not the account's.
+  if (body.billing) {
+    out.push(`Balance: $${formatUsd(body.billing.balance_usd)} (available $${formatUsd(body.billing.available_usd)})`);
+    if (body.free_credit?.granted) out.push(`Free credit: $${formatUsd(body.free_credit.amount_usd)}, granted ${utcMinute(body.free_credit.granted_at)}`);
+    const spend = body.spend ?? {};
+    out.push(
+      `Spend: $${formatUsd(spend.total_usd)} ($${formatUsd(spend.production_usd)} production, $${formatUsd(spend.evaluation_usd)} evaluation);` +
+      ` $${formatUsd(spend.last_30d_usd)} in the last 30 days`
+    );
+    out.push(`Savings: $${formatUsd(body.savings?.total_usd)}; $${formatUsd(body.savings?.last_30d_usd)} in the last 30 days`);
+    if (body.auto_reload) out.push(autoReloadLine(body.auto_reload));
+    const keys = Array.isArray(body.api_keys) ? body.api_keys : [];
+    out.push(keys.length > 0 ? "Endpoint keys:" : "Endpoint keys: none");
+    for (const key of keys) {
+      out.push(
+        `  ${key.prefix}…  ${key.name}  ${key.product_label ?? key.product_id ?? "-"}  last used ${utcMinute(key.last_used_at)}` +
+        `${key.disabled_at ? `  disabled ${utcMinute(key.disabled_at)}` : ""}`
+      );
+    }
+    const installations = Array.isArray(body.installations) ? body.installations : [];
+    if (installations.length > 0) {
+      out.push(`GitHub installations: ${installations.map((entry) => `${entry.owner_login} (${entry.repo_count} repo${entry.repo_count === 1 ? "" : "s"})`).join(", ")}`);
+    }
+  }
   const products = Array.isArray(body.visible_products) ? body.visible_products : [];
-  printLines([
-    `Account: ${account.displayName ?? account.slug ?? account.id ?? "unknown"}`,
-    ...(account.slug ? [`Slug: ${account.slug}`] : []),
-    ...(body.membership_role ? [`Role: ${body.membership_role}`] : []),
-    products.length === 0
-      ? "Visible products: none"
-      : `Visible products: ${products.map((p) => p.repo_full_name ?? p.product_id).join(", ")}`
-  ]);
+  out.push(products.length === 0 ? "Visible products: none" : `Visible products: ${products.map((p) => p.repo_full_name ?? p.product_id).join(", ")}`);
+  printLines(out);
+}
+
+/** BILL-005: the auto-reload state, with a paused reload's last error. */
+function autoReloadLine(reload) {
+  if (!reload.enabled) return "Auto-reload: off";
+  const card = reload.payment_method ? ` on ${reload.payment_method.brand ?? "card"} ending ${reload.payment_method.last4}` : "";
+  const parts = [
+    `Auto-reload: ${reload.state}; adds $${formatUsd(reload.reload_amount_usd)} (charge $${formatUsd(reload.charge_total_usd)}${card})` +
+    ` when the balance falls below $${formatUsd(reload.threshold_usd)}`
+  ];
+  if (reload.last_error) parts.push(`last error: ${reload.last_error.message}${reload.consecutive_failures > 0 ? ` (${reload.consecutive_failures} failed)` : ""}`);
+  if (reload.retry_after) parts.push(`retries after ${utcMinute(reload.retry_after)}`);
+  return parts.join("; ");
 }
 
 /**

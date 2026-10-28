@@ -13,6 +13,9 @@ export const customerPaths = {
   /** GET /v1/account/control/me */
   accountSelf: () => ({ method: "GET", path: "/v1/account/control/me", label: "account show" }),
 
+  /** GET /v1/dashboard/account — the website's account page; billing, auto-reload and keys only for an owner (MCP-001, BILL-001). */
+  dashboardAccount: () => ({ method: "GET", path: "/v1/dashboard/account", label: "account show" }),
+
   /** GET /v1/dashboard/summary — billing, api_keys, and routes all live here. */
   dashboardSummary: (label = "dashboard summary") => ({
     method: "GET",
