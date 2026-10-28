@@ -310,16 +310,6 @@ export function renderRouteCatalog(body) {
   ]);
 }
 
-export function renderRouteModel(body) {
-  printLines([
-    `${body.route_key} / ${body.model}`,
-    ...(body.role ? [`Role: ${body.role}`] : []),
-    ...(body.result
-      ? [`Result: pass_rate ${body.result.pass_rate ?? "n/a"}; cases ${body.result.cases ?? "n/a"}`]
-      : [])
-  ]);
-}
-
 export function renderEvalsList(body) {
   const history = Array.isArray(body.eval_history) ? body.eval_history : [];
   // EVAL-011 / ROUTE-005: one search-status line per context.
@@ -428,6 +418,53 @@ export function renderEvalsResults(body) {
   printLines(out);
 }
 
+/** MCP-001: `benchrouter evals model`, the route model page: result, latest run and its failing cases. */
+export function renderEvalsModel(body) {
+  const detail = body.detail ?? {};
+  const result = detail.result;
+  const out = [
+    `${body.route_key} / ${body.model} · ${body.label}`,
+    `Context: ${detail.evidence_view?.label ?? "Production"}; role ${detail.role ?? "none"}`,
+    result
+      ? `Result: pass ${result.pass_count ?? "-"}/${result.cases ?? "-"} (${metric(result.pass_rate, (v) => v.toFixed(3))})` +
+        `  cost ${metric(result.actual_cost_usd, (v) => `$${v.toFixed(4)}`)}  p95 ${metric(result.p95_latency_ms, (v) => `${Math.round(v)}ms`)}`
+      : "Result: not measured"
+  ];
+  const latest = detail.latest_eval;
+  if (!latest) {
+    out.push("No eval run of this model in this context.");
+    printLines(out);
+    return;
+  }
+  const cases = Array.isArray(latest.results) ? latest.results : [];
+  out.push(`Latest run: ${latest.model_run_id ?? latest.id} ${latest.status ?? "unknown"}, ${utcMinute(latest.decided_at ?? latest.created_at)}; ${cases.length} case(s)`);
+  if (latest.failure) out.push(`Run failure: ${latest.failure.message ?? latest.failure.code ?? JSON.stringify(latest.failure)}`);
+  const failing = cases.filter((row) => row.outcome !== "pass");
+  if (failing.length > 0) {
+    out.push(`Failing cases: ${failing.length}`);
+    const width = Math.max(...failing.map((row) => row.case_id.length));
+    for (const row of failing) {
+      const notes = [row.output_archived ? "output archived" : null, row.output_cut_off ? "output cut off" : null].filter(Boolean);
+      out.push(
+        `  ${row.case_id.padEnd(width)}  ${(row.critical ? "critical" : "").padEnd(8)}  ${row.outcome}${row.result?.error ? `: ${row.result.error}` : ""}` +
+        `${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`
+      );
+    }
+  }
+  const earlier = (Array.isArray(detail.eval_history) ? detail.eval_history.length : 0) - 1;
+  if (earlier > 0) out.push(`Earlier runs: ${earlier} (--json lists them)`);
+  if (cases.length > 0) {
+    out.push(`Full output of a case: benchrouter evals case-output ${body.route_key} --run ${latest.model_run_id} --case <case-id>`);
+  }
+  printLines(out);
+}
+
+/** MCP-001: `benchrouter evals case-output` prints the model's output as it is. */
+export function renderCaseOutput(body) {
+  const text = String(body.raw_output ?? "");
+  process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+}
+
 /** MCP-001: `benchrouter evals overview`, every route of the account and the open drafts. */
 export function renderEvalsOverview(body) {
   const out = [`Account: ${body.account?.name ?? "?"} (${body.account?.id ?? "?"})${body.account?.guest ? ", guest" : ""}`];
@@ -474,26 +511,6 @@ export function renderEvalsRun(body) {
   process.stdout.write(
     `Queued result set ${body.result_set_id} for ${body.route_key} / ${body.model} (${body.status})\n`
   );
-}
-
-export function renderEvalsFailures(body, modelId) {
-  const latest = body.latest_eval;
-  if (!latest) {
-    process.stdout.write(`No eval evidence for ${body.route_key} / ${modelId}.\n`);
-    return;
-  }
-  const results = Array.isArray(latest.results) ? latest.results : [];
-  const failures = results.filter((row) => row && row.outcome && row.outcome !== "pass");
-  process.stdout.write(`${body.route_key}: ${modelId} (${latest.model_run_id ?? latest.id})\n`);
-  if (failures.length === 0) {
-    process.stdout.write("No failed cases in the latest model evidence.\n");
-    return;
-  }
-  for (const failure of failures) {
-    process.stdout.write(
-      `- ${failure.case_id}: ${failure.critical ? "critical; " : ""}${failure.outcome}\n`
-    );
-  }
 }
 
 export function renderBaselineSet(body) {

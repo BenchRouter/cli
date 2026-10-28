@@ -12,6 +12,8 @@ const cliPath = path.resolve(testDir, "../bin/benchrouter.mjs");
 // Real server responses (see fixtures/hosted-evals/README.md).
 const overview = JSON.parse(await readFile(path.join(testDir, "fixtures/hosted-evals/overview.json"), "utf8"));
 const results = JSON.parse(await readFile(path.join(testDir, "fixtures/hosted-evals/results.json"), "utf8"));
+const modelLowPass = JSON.parse(await readFile(path.join(testDir, "fixtures/hosted-evals/model-low-pass.json"), "utf8"));
+const caseOutput = JSON.parse(await readFile(path.join(testDir, "fixtures/hosted-evals/case-output-archived.json"), "utf8"));
 const token = ["--account-token", "br_ctrl_recorded_fixture"];
 const cardHash = "sha256:6c1f0e1d9a7b";
 const draftResponse = {
@@ -75,6 +77,42 @@ test("evals overview and results print the hosted-eval reads (MCP-001, EVAL-016)
   assert.deepEqual(JSON.parse(json.stdout), results);
   // The approval audit tells the CLI from the API by this header.
   assert.ok(replay.requests.every((request) => request.client === "cli" && request.authorization === "Bearer br_ctrl_recorded_fixture"));
+});
+
+test("evals model prints a model's failing cases and evals case-output prints an archived output as it is (MCP-001)", async (t) => {
+  const run = "emrun_541d6bfe5b684ff6a1187503d7ed5347";
+  const replay = await startServer(t, {
+    "GET /v1/hosted-evals/timeywimey%2Fvoice-places/models/bytedance-seed%2Fseed-2.0-mini": modelLowPass,
+    "GET /v1/hosted-evals/timeywimey%2Fvoice-places/models/bytedance-seed%2Fseed-2.0-mini?view=pr-76": modelLowPass,
+    [`GET /v1/hosted-evals/timeywimey%2Fvoice-places/case-output?model_run_id=${run}&case_id=additive_preserves_existing`]: caseOutput
+  });
+  const human = await runCli(["evals", "model", "timeywimey/voice-places", "bytedance-seed/seed-2.0-mini", "--api-url", replay.url, ...token]);
+  assert.equal(human.status, 0, human.stderr);
+  const lines = human.stdout.split("\n");
+  assert.deepEqual(lines.slice(0, 6), [
+    "timeywimey/voice-places / bytedance-seed/seed-2.0-mini · your eval, version 6ebfa4f47deae9c97cc02efb947875ee33875d50",
+    "Context: Production; role none",
+    "Result: pass 0/10 (0.000)  cost $0.0038  p95 -",
+    `Latest run: ${run} decided, 2026-08-05 21:37Z; 10 case(s)`,
+    "Failing cases: 10",
+    "  additive_preserves_existing      critical  assertion_failure: The case reported a failure. (output archived)"
+  ]);
+  assert.equal(lines[11], "  add_and_set_home_new_by_address            assertion_failure: The case reported a failure. (output archived)");
+  assert.deepEqual(lines.slice(-3), [
+    "Earlier runs: 1 (--json lists them)",
+    `Full output of a case: benchrouter evals case-output timeywimey/voice-places --run ${run} --case <case-id>`,
+    ""
+  ]);
+  const preview = await runCli(["evals", "model", "timeywimey/voice-places", "bytedance-seed/seed-2.0-mini", "--pr", "76", "--api-url", replay.url, ...token, "--json"]);
+  assert.deepEqual(JSON.parse(preview.stdout), modelLowPass);
+
+  const output = await runCli(["evals", "case-output", "timeywimey/voice-places", "--run", run, "--case", "additive_preserves_existing", "--api-url", replay.url, ...token]);
+  assert.equal(output.status, 0, output.stderr);
+  assert.equal(output.stdout, `${caseOutput.raw_output}\n`);
+  const missing = await runCli(["evals", "case-output", "timeywimey/voice-places", "--run", run, "--api-url", replay.url, ...token]);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /--run <model-run-id> and --case <case-id>/);
+  assert.equal(replay.requests.length, 3);
 });
 
 test("evals draft sends the cases file and scorer file as the documented draft body", async (t) => {

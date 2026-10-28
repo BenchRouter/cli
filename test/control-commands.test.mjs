@@ -171,12 +171,6 @@ test("customer request construction uses exact service methods, paths, and bodie
     customerPaths.setupDiagnostic("example/app").path,
     `/v1/setup/diagnostic?repo=${encodeURIComponent("example/app")}`
   );
-  // Dashboard route keys stay slash-separated: the service matches
-  // /v1/dashboard/routes/([^/]+/[^/]+)/models/(.+), so percent-encoding the key breaks it.
-  assert.equal(
-    customerPaths.routeModel("app/chat", "minimax/minimax-m2.7").path,
-    `/v1/dashboard/routes/app/chat/models/${encodeURIComponent("minimax/minimax-m2.7")}`
-  );
   assert.equal(customerPaths.routeCatalog("app/chat").path, "/v1/dashboard/routes/app/chat/catalog");
   assert.equal(customerPaths.routeArchive("app/chat").path, "/v1/dashboard/routes/app/chat/archive");
   assert.equal(customerPaths.routeUnarchive("rt_1").path, "/v1/dashboard/archived-routes/rt_1/unarchive");
@@ -487,7 +481,6 @@ test("--help resolves to the deepest matching command and never sends a request"
   assert.equal(resolveControlUsageName(["setup", "session", "show", "s_1"]), "setup session show");
   assert.equal(resolveControlUsageName(["setup", "upgrade-token"]), "setup upgrade-token");
   assert.equal(resolveControlUsageName(["evals", "refresh-preview", "app/chat"]), "evals refresh-preview");
-  assert.equal(resolveControlUsageName(["models", "show", "app/chat", "m/1"]), "models show");
   assert.equal(resolveControlUsageName(["account", "token", "save"]), "account token save");
   assert.equal(resolveControlUsageName(["doctor"]), null);
 });
@@ -588,9 +581,11 @@ test("nested help answers every level without a token or a request", async () =>
   assert.equal(providersList.status, 0, providersList.stderr);
   assert.match(providersList.stdout, /admin providers list/);
 
-  const modelsShow = await runCli(["models", "show", "--help"]);
-  assert.equal(modelsShow.status, 0, modelsShow.stderr);
-  assert.match(modelsShow.stdout, /models show <route-key> <model-id>/);
+  // `models show` is gone; the catalog command refuses arguments instead of printing the catalog.
+  const modelsShow = await runCli(["models", "show", "app/chat", "m/1"]);
+  assert.notEqual(modelsShow.status, 0);
+  assert.match(modelsShow.stderr, /benchrouter evals model <route-key> <model-id>/);
+
 });
 
 function restoreEnv(name, previous) {

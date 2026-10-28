@@ -144,7 +144,6 @@ benchrouter init --help
 benchrouter upgrade --help
 benchrouter doctor
 benchrouter models [--filter text] [--json]
-benchrouter models show <route-key> <model-id> [--account-token br_ctrl_...] [--json]
 benchrouter status [--json]
 benchrouter frontier <route-key> [--json]
 benchrouter failures <route-key> [model] [--json]
@@ -162,9 +161,11 @@ benchrouter setup create --repository-id <id> --installation-id <id> [--intent i
 benchrouter setup session show <session-id>
 benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
 benchrouter routes list|show|catalog|archive|unarchive
-benchrouter evals list|run|failures
+benchrouter evals list|run
 benchrouter evals status <route-key> [--pr <number>]
 benchrouter evals results <route-key>
+benchrouter evals model <route-key> <model-id> [--pr <number>]
+benchrouter evals case-output <route-key> --run <model-run-id> --case <case-id>
 benchrouter evals overview
 benchrouter evals draft --name <text> --cases <cases.jsonl> --scorer <scorer.json>
 benchrouter evals approve <draft-id> --card <card-hash> [--yes]

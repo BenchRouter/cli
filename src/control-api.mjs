@@ -98,13 +98,6 @@ export const customerPaths = {
     label
   }),
 
-  /** GET /v1/dashboard/routes/:routeKey/models/:modelId */
-  routeModel: (routeKey, modelId, label = "models show") => ({
-    method: "GET",
-    path: `/v1/dashboard/routes/${encodeRouteKey(routeKey)}/models/${encodePathSegment(modelId)}`,
-    label
-  }),
-
   /** POST /v1/dashboard/routes/:routeKey/archive */
   routeArchive: (routeKey) => ({
     method: "POST",
@@ -192,6 +185,23 @@ export const customerPaths = {
     method: "GET",
     path: `/v1/hosted-evals/${encodePathSegment(routeKey)}/results`,
     label: "evals results"
+  }),
+
+  /**
+   * GET /v1/hosted-evals/:routeKey/models/:model[?view=<id>] — one model's result, runs and case
+   * results, as the route model page reads them (MCP-001). The view is a PR preview context.
+   */
+  evalsModel: (routeKey, modelId, viewId) => ({
+    method: "GET",
+    path: `/v1/hosted-evals/${encodePathSegment(routeKey)}/models/${encodePathSegment(modelId)}${viewId ? `?view=${encodeURIComponent(viewId)}` : ""}`,
+    label: "evals model"
+  }),
+
+  /** GET /v1/hosted-evals/:routeKey/case-output?model_run_id=&case_id= — one case's full output, archived ones too (MCP-001). */
+  evalsCaseOutput: (routeKey, modelRunId, caseId) => ({
+    method: "GET",
+    path: `/v1/hosted-evals/${encodePathSegment(routeKey)}/case-output?${new URLSearchParams({ model_run_id: modelRunId, case_id: caseId })}`,
+    label: "evals case-output"
   }),
 
   /** GET /v1/hosted-evals — every route of the account, as the dashboard lists it, and the open drafts (MCP-001). */

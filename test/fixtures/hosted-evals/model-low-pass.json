@@ -1,0 +1,1066 @@
+{
+  "ok": true,
+  "route_key": "timeywimey/voice-places",
+  "model": "bytedance-seed/seed-2.0-mini",
+  "label": "your eval, version 6ebfa4f47deae9c97cc02efb947875ee33875d50",
+  "version": "6ebfa4f47deae9c97cc02efb947875ee33875d50",
+  "detail": {
+    "ok": true,
+    "route_key": "timeywimey/voice-places",
+    "access_kind": "owner",
+    "repo_owner_login": "patelnav",
+    "model": "bytedance-seed/seed-2.0-mini",
+    "catalog_model": {
+      "id": "bytedance-seed/seed-2.0-mini",
+      "family": "bytedance-seed",
+      "cost_per_1k": 0.24,
+      "candidate_standing": "eligible",
+      "serving_standing": "active",
+      "target_available": true,
+      "inclusion_reasons": [
+        "candidate",
+        "evidence"
+      ],
+      "recommendation_eligible": true,
+      "explicit_rerun_allowed": true
+    },
+    "role": null,
+    "evidence_view": {
+      "id": "production",
+      "kind": "production",
+      "label": "Production",
+      "result_set_id": "erset_2b2861d6bf7d48ada4480e199eaad99e",
+      "pr_number": null,
+      "pr_url": null,
+      "is_serving": true,
+      "eval_activity": {
+        "result_set_id": "erset_2b2861d6bf7d48ada4480e199eaad99e",
+        "state": "up_to_date",
+        "serving_evidence_valid": true,
+        "serving_evidence_state": "valid",
+        "coverage_status": "complete",
+        "trigger": "background_coverage",
+        "total_models": 59,
+        "terminal_models": 59,
+        "uploaded_models": 1,
+        "reused_models": 58,
+        "usable_models": 59,
+        "failed_models": 0,
+        "pending_models": 0,
+        "running_models": 0,
+        "queued_models": 0,
+        "skipped_models": 0,
+        "current_tranche": 1,
+        "active_packs": 0,
+        "recovery_state": "none",
+        "estimate": {
+          "candidate_count": 1,
+          "inference_count": 1,
+          "job_count": 2,
+          "rounded_action_minutes": 15
+        },
+        "actual": {
+          "job_count": 0,
+          "duration_seconds": 0,
+          "rounded_action_minutes": 0
+        },
+        "github_run_url": "https://github.com/patelnav/timeywimey/actions/runs/40687469899",
+        "requested_at": "2026-10-28T12:24:13.045Z",
+        "accepted_at": "2026-10-28T12:24:12.641Z",
+        "observed_at": "2026-10-28T12:24:12.641Z",
+        "started_at": "2026-10-28T12:24:12.641Z",
+        "completed_at": "2026-10-28T12:24:56.704Z",
+        "execution_released_at": "2026-10-28T12:24:51.548Z",
+        "conclusion": null,
+        "first_failure": null,
+        "failure_display": null,
+        "failure_summary": null,
+        "serving_best_so_far": false,
+        "production_unaffected": false
+      }
+    },
+    "result": {
+      "actual_cost_usd": 0.003775,
+      "uncached_cost_usd": 0.003775,
+      "pass_rate": 0,
+      "cases": 10,
+      "pass_count": 0,
+      "completeness": "current",
+      "last_attempt_status": "ok",
+      "served_provider": "openrouter",
+      "served_ref": "bytedance-seed/seed-2.0-mini",
+      "prompt_tokens": 17752,
+      "completion_tokens": 5000,
+      "cached_prompt_tokens": 4008,
+      "cache_write_tokens": 0,
+      "source_result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+      "source_model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+      "reuse_age_expired": {
+        "measured_at": "2026-08-05T21:34:30.823Z"
+      },
+      "comparison_only": true
+    },
+    "latest_eval": {
+      "id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+      "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+      "status": "decided",
+      "model_run_status": "uploaded",
+      "action": "run",
+      "model": "bytedance-seed/seed-2.0-mini",
+      "best_model": "openai/gpt-5.6-luna",
+      "baseline_model": "openai/gpt-5.6-luna",
+      "eval_ref": "main",
+      "dispatch_ref": "main",
+      "github_run_url": "https://github.com/patelnav/timeywimey/actions/runs/31049130171",
+      "pr_number": null,
+      "pr_head_sha": null,
+      "decision": null,
+      "reason": "Selected the cheapest viable model from current evidence.",
+      "failure": null,
+      "setup_kit_version": "0.0.7",
+      "preview": null,
+      "created_at": "2026-08-05T21:33:01.863Z",
+      "uploaded_at": "2026-08-05T21:34:39.927Z",
+      "decided_at": "2026-08-05T21:37:18.043Z",
+      "total_cases": 10,
+      "pass_rate": 0,
+      "quality_score": null,
+      "quality_metric": null,
+      "cost_usd": 0.0037752,
+      "uncached_cost_usd": 0.0037752000000000003,
+      "median_latency_ms": null,
+      "p95_latency_ms": null,
+      "served_provider": "openrouter",
+      "served_ref": "bytedance-seed/seed-2.0-mini",
+      "prompt_tokens": 17752,
+      "completion_tokens": 5000,
+      "cached_prompt_tokens": 4008,
+      "cache_write_tokens": 0,
+      "failed_comparison": false,
+      "last_attempt_status": "ok",
+      "case_reuse": null,
+      "evidence_oldest_output_at": "2026-08-05T21:34:30.823Z",
+      "case_source": {
+        "repository": "patelnav/timeywimey",
+        "ref": "7e5b2d691571e0a48903b18c44c20cdd5fb38b3e",
+        "path": ".benchrouter/cases.voice-places.json",
+        "url": "https://github.com/patelnav/timeywimey/blob/7e5b2d691571e0a48903b18c44c20cdd5fb38b3e/.benchrouter/cases.voice-places.json"
+      },
+      "results": [
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "additive_preserves_existing",
+          "case_version": "sha256:f6563f70de420f10c0f87b57dbe8a1a0787bff66e0363afb16eea94a1afa3d0d",
+          "critical": true,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_5d777a1873414b16bdeb6f37ec66d6af"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.000381,
+            "latency_ms": 4794,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        },
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "country_passthrough_single_add",
+          "case_version": "sha256:f55fd1bb15c036913013d434d73fb716a9fe23e5a5e35f8fa9d10478fbaf3d56",
+          "critical": true,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_2a0f4c83bec149e180ca0ecfdd2984ad"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.000382,
+            "latency_ms": 4323,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        },
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "remove_by_key",
+          "case_version": "sha256:51dd822d640abf2b4252597261d52cefcfaf61902ae1dd896b00039228f64456",
+          "critical": true,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_0a3c4ae136b24f89b140cc4e26d9e71b"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.0003811,
+            "latency_ms": 4215,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        },
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "replacement_removes_then_adds",
+          "case_version": "sha256:c045c49b87e2a45ca7bf84e48235ed32b787583216c2b7f11c90ba7d28d7c541",
+          "critical": true,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_8f43d881983c41a781214053562f2258"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.000381,
+            "latency_ms": 4663,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        },
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "set_home_existing_by_key",
+          "case_version": "sha256:cb59aeacbbb2528849ece1640016f315bab8c2602c8eb24c5c0d890d92175da3",
+          "critical": true,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_747a10b3b37945cdbd41a9435ee6188a"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.0003809,
+            "latency_ms": 3964,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        },
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "translate_question_single_add",
+          "case_version": "sha256:001bb644a3fd3fceaf0c175e9204783ef2cbf8ca40f9f22d563704388b5ba4b2",
+          "critical": true,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_4759ee8b22d64c2c9d094b0d1773fce9"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.0003739,
+            "latency_ms": 5056,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        },
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "add_and_set_home_new_by_address",
+          "case_version": "sha256:a4225a0273a0249a03fa7a1e61e8f23dd7e396e4925d32e6fac01f8468d0a9e9",
+          "critical": false,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_71eede9a46f746ed8507b319d1fd81d3"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.0003739,
+            "latency_ms": 4178,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        },
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "compare_two_adds",
+          "case_version": "sha256:ab1167f6e6cb119a1f573e42eb28c5dce09cf14e42fec214cb9899fe2ef0bfeb",
+          "critical": false,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_4526e4b3ac7445c9987fa1408b85f7e4"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.0003737,
+            "latency_ms": 4303,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        },
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "couple_means_two_adds",
+          "case_version": "sha256:7f9f928b61320d212e2825d01f385ec6487e5c939cd25d67fe9e3a07f780983e",
+          "critical": false,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_8103bc2d261945b3a7bc6990e22052c9"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.0003739,
+            "latency_ms": 4128,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        },
+        {
+          "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+          "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+          "route_id": "timeywimey/voice-places",
+          "case_id": "regional_three_adds",
+          "case_version": "sha256:4af3c8d70dfd3e5f8bc3786499398ed6979e30ff976d0f77c0f3a85e9a496a2b",
+          "critical": false,
+          "outcome": "assertion_failure",
+          "result": {
+            "model": "bytedance-seed/seed-2.0-mini",
+            "selected_model": "bytedance-seed/seed-2.0-mini",
+            "model_call_ids": [
+              "call_d752e6d978f84f96a85b8b97b2a913a8"
+            ],
+            "pass": false,
+            "score": 0,
+            "cost_usd": 0.0003738,
+            "latency_ms": 3887,
+            "error": "The case reported a failure.",
+            "raw_output": null,
+            "judge_cost_usd": null
+          },
+          "output_cut_off": false,
+          "output_archived": true,
+          "created_at": "2026-08-05T21:34:39.927Z"
+        }
+      ],
+      "output_cut_off_calls": 0
+    },
+    "eval_history": [
+      {
+        "id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+        "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+        "status": "decided",
+        "model_run_status": "uploaded",
+        "action": "run",
+        "model": "bytedance-seed/seed-2.0-mini",
+        "best_model": "openai/gpt-5.6-luna",
+        "baseline_model": "openai/gpt-5.6-luna",
+        "eval_ref": "main",
+        "dispatch_ref": "main",
+        "github_run_url": "https://github.com/patelnav/timeywimey/actions/runs/31049130171",
+        "pr_number": null,
+        "pr_head_sha": null,
+        "decision": null,
+        "reason": "Selected the cheapest viable model from current evidence.",
+        "failure": null,
+        "setup_kit_version": "0.0.7",
+        "preview": null,
+        "created_at": "2026-08-05T21:33:01.863Z",
+        "uploaded_at": "2026-08-05T21:34:39.927Z",
+        "decided_at": "2026-08-05T21:37:18.043Z",
+        "total_cases": 10,
+        "pass_rate": 0,
+        "quality_score": null,
+        "quality_metric": null,
+        "cost_usd": 0.0037752,
+        "uncached_cost_usd": 0.0037752000000000003,
+        "median_latency_ms": null,
+        "p95_latency_ms": null,
+        "served_provider": "openrouter",
+        "served_ref": "bytedance-seed/seed-2.0-mini",
+        "prompt_tokens": 17752,
+        "completion_tokens": 5000,
+        "cached_prompt_tokens": 4008,
+        "cache_write_tokens": 0,
+        "failed_comparison": false,
+        "last_attempt_status": "ok",
+        "case_reuse": null,
+        "evidence_oldest_output_at": "2026-08-05T21:34:30.823Z",
+        "case_source": {
+          "repository": "patelnav/timeywimey",
+          "ref": "7e5b2d691571e0a48903b18c44c20cdd5fb38b3e",
+          "path": ".benchrouter/cases.voice-places.json",
+          "url": "https://github.com/patelnav/timeywimey/blob/7e5b2d691571e0a48903b18c44c20cdd5fb38b3e/.benchrouter/cases.voice-places.json"
+        },
+        "results": [
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "additive_preserves_existing",
+            "case_version": "sha256:f6563f70de420f10c0f87b57dbe8a1a0787bff66e0363afb16eea94a1afa3d0d",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_5d777a1873414b16bdeb6f37ec66d6af"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.000381,
+              "latency_ms": 4794,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          },
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "country_passthrough_single_add",
+            "case_version": "sha256:f55fd1bb15c036913013d434d73fb716a9fe23e5a5e35f8fa9d10478fbaf3d56",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_2a0f4c83bec149e180ca0ecfdd2984ad"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.000382,
+              "latency_ms": 4323,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          },
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "remove_by_key",
+            "case_version": "sha256:51dd822d640abf2b4252597261d52cefcfaf61902ae1dd896b00039228f64456",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_0a3c4ae136b24f89b140cc4e26d9e71b"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003811,
+              "latency_ms": 4215,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          },
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "replacement_removes_then_adds",
+            "case_version": "sha256:c045c49b87e2a45ca7bf84e48235ed32b787583216c2b7f11c90ba7d28d7c541",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_8f43d881983c41a781214053562f2258"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.000381,
+              "latency_ms": 4663,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          },
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "set_home_existing_by_key",
+            "case_version": "sha256:cb59aeacbbb2528849ece1640016f315bab8c2602c8eb24c5c0d890d92175da3",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_747a10b3b37945cdbd41a9435ee6188a"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003809,
+              "latency_ms": 3964,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          },
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "translate_question_single_add",
+            "case_version": "sha256:001bb644a3fd3fceaf0c175e9204783ef2cbf8ca40f9f22d563704388b5ba4b2",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_4759ee8b22d64c2c9d094b0d1773fce9"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003739,
+              "latency_ms": 5056,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          },
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "add_and_set_home_new_by_address",
+            "case_version": "sha256:a4225a0273a0249a03fa7a1e61e8f23dd7e396e4925d32e6fac01f8468d0a9e9",
+            "critical": false,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_71eede9a46f746ed8507b319d1fd81d3"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003739,
+              "latency_ms": 4178,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          },
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "compare_two_adds",
+            "case_version": "sha256:ab1167f6e6cb119a1f573e42eb28c5dce09cf14e42fec214cb9899fe2ef0bfeb",
+            "critical": false,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_4526e4b3ac7445c9987fa1408b85f7e4"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003737,
+              "latency_ms": 4303,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          },
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "couple_means_two_adds",
+            "case_version": "sha256:7f9f928b61320d212e2825d01f385ec6487e5c939cd25d67fe9e3a07f780983e",
+            "critical": false,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_8103bc2d261945b3a7bc6990e22052c9"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003739,
+              "latency_ms": 4128,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          },
+          {
+            "run_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "model_run_id": "emrun_541d6bfe5b684ff6a1187503d7ed5347",
+            "result_set_id": "erset_2d434f5663d04516a3720f1e21fcefaa",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "regional_three_adds",
+            "case_version": "sha256:4af3c8d70dfd3e5f8bc3786499398ed6979e30ff976d0f77c0f3a85e9a496a2b",
+            "critical": false,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_d752e6d978f84f96a85b8b97b2a913a8"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003738,
+              "latency_ms": 3887,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:34:39.927Z"
+          }
+        ],
+        "output_cut_off_calls": 0
+      },
+      {
+        "id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+        "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+        "status": "decided",
+        "model_run_status": "uploaded",
+        "action": "run",
+        "model": "bytedance-seed/seed-2.0-mini",
+        "best_model": "openai/gpt-5.6-luna",
+        "baseline_model": "openai/gpt-5.6-luna",
+        "eval_ref": "main",
+        "dispatch_ref": "main",
+        "github_run_url": "https://github.com/patelnav/timeywimey/actions/runs/31049127245",
+        "pr_number": null,
+        "pr_head_sha": null,
+        "decision": null,
+        "reason": "Selected the cheapest viable model from current evidence.",
+        "failure": null,
+        "setup_kit_version": "0.0.7",
+        "preview": null,
+        "created_at": "2026-08-05T21:33:01.756Z",
+        "uploaded_at": "2026-08-05T21:36:43.357Z",
+        "decided_at": "2026-08-05T21:39:25.030Z",
+        "total_cases": 10,
+        "pass_rate": 0,
+        "quality_score": null,
+        "quality_metric": null,
+        "cost_usd": 0.0037752,
+        "uncached_cost_usd": 0.0037752000000000003,
+        "median_latency_ms": null,
+        "p95_latency_ms": null,
+        "served_provider": "openrouter",
+        "served_ref": "bytedance-seed/seed-2.0-mini",
+        "prompt_tokens": 17752,
+        "completion_tokens": 5000,
+        "cached_prompt_tokens": 4008,
+        "cache_write_tokens": 0,
+        "failed_comparison": false,
+        "last_attempt_status": "ok",
+        "case_reuse": null,
+        "evidence_oldest_output_at": null,
+        "case_source": {
+          "repository": "patelnav/timeywimey",
+          "ref": "7e5b2d691571e0a48903b18c44c20cdd5fb38b3e",
+          "path": ".benchrouter/cases.voice-places.json",
+          "url": "https://github.com/patelnav/timeywimey/blob/7e5b2d691571e0a48903b18c44c20cdd5fb38b3e/.benchrouter/cases.voice-places.json"
+        },
+        "results": [
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "additive_preserves_existing",
+            "case_version": "sha256:f6563f70de420f10c0f87b57dbe8a1a0787bff66e0363afb16eea94a1afa3d0d",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_614823785e154206878b56fd342d1f2f"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.000381,
+              "latency_ms": 4794,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          },
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "country_passthrough_single_add",
+            "case_version": "sha256:f55fd1bb15c036913013d434d73fb716a9fe23e5a5e35f8fa9d10478fbaf3d56",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_0e71245f1c2146b3a815752ef0a94e6a"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.000382,
+              "latency_ms": 4323,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          },
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "remove_by_key",
+            "case_version": "sha256:51dd822d640abf2b4252597261d52cefcfaf61902ae1dd896b00039228f64456",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_bf413e5e86d5410aa3d568a61e05aa33"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003811,
+              "latency_ms": 4215,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          },
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "replacement_removes_then_adds",
+            "case_version": "sha256:c045c49b87e2a45ca7bf84e48235ed32b787583216c2b7f11c90ba7d28d7c541",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_735211ccec0c488bb830d27f32e25ea9"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.000381,
+              "latency_ms": 4663,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          },
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "set_home_existing_by_key",
+            "case_version": "sha256:cb59aeacbbb2528849ece1640016f315bab8c2602c8eb24c5c0d890d92175da3",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_42fbe631859c42d8829dd11a13a471e2"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003809,
+              "latency_ms": 3964,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          },
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "translate_question_single_add",
+            "case_version": "sha256:001bb644a3fd3fceaf0c175e9204783ef2cbf8ca40f9f22d563704388b5ba4b2",
+            "critical": true,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_34dc6b9bdca54ca69e36926117e4209c"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003739,
+              "latency_ms": 5056,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          },
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "add_and_set_home_new_by_address",
+            "case_version": "sha256:a4225a0273a0249a03fa7a1e61e8f23dd7e396e4925d32e6fac01f8468d0a9e9",
+            "critical": false,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_673fc5a076204ff0973e42945388de3e"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003739,
+              "latency_ms": 4178,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          },
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "compare_two_adds",
+            "case_version": "sha256:ab1167f6e6cb119a1f573e42eb28c5dce09cf14e42fec214cb9899fe2ef0bfeb",
+            "critical": false,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_5252beddf75f4dae89755f4bad00643f"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003737,
+              "latency_ms": 4303,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          },
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "couple_means_two_adds",
+            "case_version": "sha256:7f9f928b61320d212e2825d01f385ec6487e5c939cd25d67fe9e3a07f780983e",
+            "critical": false,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_5d6e8699e24d4ff8a3d0b47c436e008b"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003739,
+              "latency_ms": 4128,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          },
+          {
+            "run_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "model_run_id": "emrun_98874675d5b949be8bcdc8ba787ff832",
+            "result_set_id": "erset_eb3f04a41a674657a03abcf38b53e3ea",
+            "route_id": "timeywimey/voice-places",
+            "case_id": "regional_three_adds",
+            "case_version": "sha256:4af3c8d70dfd3e5f8bc3786499398ed6979e30ff976d0f77c0f3a85e9a496a2b",
+            "critical": false,
+            "outcome": "assertion_failure",
+            "result": {
+              "model": "bytedance-seed/seed-2.0-mini",
+              "selected_model": "bytedance-seed/seed-2.0-mini",
+              "model_call_ids": [
+                "call_6d083f3a57df4f4988727b720027a926"
+              ],
+              "pass": false,
+              "score": 0,
+              "cost_usd": 0.0003738,
+              "latency_ms": 3887,
+              "error": "The case reported a failure.",
+              "raw_output": null,
+              "judge_cost_usd": null
+            },
+            "output_cut_off": false,
+            "output_archived": true,
+            "created_at": "2026-08-05T21:36:43.357Z"
+          }
+        ],
+        "output_cut_off_calls": 0
+      }
+    ]
+  }
+}

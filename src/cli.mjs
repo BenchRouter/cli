@@ -40,7 +40,7 @@ const API_FAMILIES = new Set([
   "openai_responses"
 ]);
 
-if (isControlPlaneCommand(command, args._)) {
+if (isControlPlaneCommand(command)) {
   await runControlCommand({
     args,
     command,
@@ -659,7 +659,8 @@ async function models() {
   if (args.help) {
     usage(0, "models");
   }
-  // `models show` is handled by the customer command tree before this branch.
+  // One model's results on a route: `benchrouter evals model <route-key> <model-id>`.
+  if (args._.length > 1) usage(1, "models", "models takes no arguments. For one model on a route, use: benchrouter evals model <route-key> <model-id>");
 
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
   const filter = stringArg("filter");
@@ -1635,7 +1636,6 @@ Options:
   } else if (commandName === "models") {
     stream.write(`Usage:
   benchrouter models [options]
-  benchrouter models show <route-key> <model-id> [--account-token br_ctrl_...] [--json]
 
 Options:
   --api-url <url>          Defaults to https://api.benchrouter.com.
