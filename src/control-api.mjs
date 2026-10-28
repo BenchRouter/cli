@@ -24,6 +24,17 @@ export const customerPaths = {
   }),
 
   /** POST /v1/billing/top-up-checkout — body { amount_usd } */
+  /**
+   * POST /v1/billing/card-charge — body { amount_usd, idempotency_key } (BILL-006). Charges the saved
+   * card, or opens Checkout when there is none. A repeat with the same key never charges again.
+   */
+  billingCardCharge: (amountUsd, idempotencyKey) => ({
+    method: "POST",
+    path: "/v1/billing/card-charge",
+    label: "billing charge",
+    body: { amount_usd: amountUsd, idempotency_key: idempotencyKey }
+  }),
+
   billingTopUpCheckout: (amountUsd) => ({
     method: "POST",
     path: "/v1/billing/top-up-checkout",

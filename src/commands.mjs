@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { normalizeRepoFullName, saveAccountToken, saveAdminToken } from "./config.mjs";
 import { adminPaths, adminKeysMintBrowserSessionRequired, customerPaths } from "./control-api.mjs";
@@ -104,7 +105,7 @@ async function runAccount(ctx) {
 
 async function runBilling(ctx) {
   const sub = subcommand(ctx);
-  if (!sub) return ctx.usage(1, "billing", "Missing subcommand. Try: billing show | billing top-up");
+  if (!sub) return ctx.usage(1, "billing", "Missing subcommand. Try: billing show | billing charge | billing top-up");
   if (sub === "show") {
     const summary = await accountRequest(ctx, customerPaths.dashboardSummary("billing show"));
     const payload = {
@@ -115,6 +116,28 @@ async function runBilling(ctx) {
       top_up: summary.top_up ?? null
     };
     return emit(ctx, payload, () => render.renderBillingShow(summary));
+  }
+  if (sub === "charge") {
+    // BILL-006: one purchase, one idempotency key. A retry with the same key never charges twice.
+    const amountUsd = Number(optionValue(ctx, "amount", "billing charge") ?? ctx.args._[2]);
+    if (!Number.isInteger(amountUsd) || amountUsd <= 0) {
+      return ctx.usage(1, "billing charge", "Missing or invalid --amount: whole USD.");
+    }
+    const idempotencyKey = optionValue(ctx, "idempotency-key", "billing charge") ?? `cli-${randomUUID()}`;
+    const retry = `benchrouter billing charge --amount ${amountUsd} --idempotency-key ${idempotencyKey}`;
+    await requireMutationConfirmation(ctx, render.mutationSummary(
+      "Buy credit on the saved card",
+      `$${amountUsd} of credit plus the service fee; with no saved card, a Checkout link instead and no charge`
+    ));
+    let body;
+    try {
+      body = await accountRequest(ctx, customerPaths.billingCardCharge(amountUsd, idempotencyKey));
+    } catch (error) {
+      // The charge may have reached Stripe before the error: the same key reads its result.
+      process.stderr.write(`To retry without charging twice, repeat with the same key: ${retry}\n`);
+      throw error;
+    }
+    return emit(ctx, { ...body, idempotency_key: idempotencyKey }, () => render.renderCardCharge(body, retry));
   }
   if (sub === "top-up") {
     const amountUsd = Number(ctx.stringArg("amount") ?? ctx.args._[2]);
