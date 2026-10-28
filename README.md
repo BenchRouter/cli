@@ -164,6 +164,10 @@ benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
 benchrouter routes list|show|catalog|archive|unarchive
 benchrouter evals list|run|failures
 benchrouter evals status <route-key> [--pr <number>]
+benchrouter evals results <route-key>
+benchrouter evals overview
+benchrouter evals draft --name <text> --cases <cases.jsonl> --scorer <scorer.json>
+benchrouter evals approve <draft-id> --card <card-hash> [--yes]
 benchrouter evals run <route-key> --full-refresh
 benchrouter evals retry --result-set <id> | --route <route-key>
 benchrouter evals harness-retry <route-key> [--model <id>]

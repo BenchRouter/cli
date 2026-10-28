@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { normalizeRepoFullName, saveAccountToken, saveAdminToken } from "./config.mjs";
 import { adminPaths, adminKeysMintBrowserSessionRequired, customerPaths } from "./control-api.mjs";
 import {
@@ -326,7 +327,7 @@ async function runModelsShow(ctx) {
 async function runEvals(ctx) {
   const sub = subcommand(ctx);
   if (!sub) {
-    return ctx.usage(1, "evals", "Missing subcommand. Try: evals list | status | run | failures | refresh-preview");
+    return ctx.usage(1, "evals", "Missing subcommand. Try: evals list | status | results | overview | draft | approve | run | failures | refresh-preview");
   }
   if (sub === "list") {
     const routeKey = ctx.args._[2];
@@ -473,7 +474,72 @@ async function runEvals(ctx) {
     };
     return emit(ctx, payload, () => render.renderEvalsFailures(body, modelId));
   }
+  if (sub === "results") {
+    const routeKey = ctx.args._[2];
+    if (!routeKey) return ctx.usage(1, "evals results", "Missing route key.");
+    const body = await accountRequest(ctx, customerPaths.evalsResults(routeKey));
+    return emit(ctx, body, () => render.renderEvalsResults(body));
+  }
+  if (sub === "overview") {
+    const body = await accountRequest(ctx, customerPaths.evalsOverview());
+    return emit(ctx, body, () => render.renderEvalsOverview(body));
+  }
+  if (sub === "draft") {
+    // EVAL-016: cases and a built-in scorer go to the server, which returns the card to show before approval.
+    const name = optionValue(ctx, "name", "evals draft");
+    const casesPath = optionValue(ctx, "cases", "evals draft");
+    const scorerPath = optionValue(ctx, "scorer", "evals draft");
+    if (!name || !casesPath || !scorerPath) {
+      return ctx.usage(1, "evals draft", "Pass --name, --cases <cases.jsonl> and --scorer <scorer.json>.");
+    }
+    const body = {
+      name,
+      cases_jsonl: await readOptionFile(ctx, casesPath, "--cases"),
+      scorer: parseScorerFile(ctx, scorerPath, await readOptionFile(ctx, scorerPath, "--scorer")),
+      judge_model: optionValue(ctx, "judge-model", "evals draft") ?? null
+    };
+    for (const [flag, field] of [["incumbent", "incumbent"], ["route", "route"], ["parent-version", "parent_version"], ["request-id", "request_id"]]) {
+      const value = optionValue(ctx, flag, "evals draft");
+      if (value !== undefined) body[field] = value;
+    }
+    const response = await accountRequest(ctx, customerPaths.evalsDraft(body));
+    return emit(ctx, response, () => render.renderEvalsDraft(response));
+  }
+  if (sub === "approve") {
+    const draftId = ctx.args._[2];
+    const cardHash = optionValue(ctx, "card", "evals approve");
+    if (!draftId || !cardHash) return ctx.usage(1, "evals approve", "Pass the draft id and --card <card hash> from evals draft.");
+    // EVAL-016: approval starts a search that spends from the balance, so it asks first.
+    await requireMutationConfirmation(ctx, render.mutationSummary(
+      "Approve hosted eval",
+      `draft=${draftId}; BenchRouter will keep testing new models against this eval and spend from your balance until it runs out`
+    ));
+    const body = await accountRequest(ctx, customerPaths.evalsApprove(draftId, cardHash));
+    return emit(ctx, body, () => render.renderEvalsApprove(body));
+  }
   return unknown(ctx, "evals", sub);
+}
+
+async function readOptionFile(ctx, filePath, flag) {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    return ctx.fail(`Could not read ${flag} file ${filePath}: ${error instanceof Error ? error.message : String(error)}`, "file_unreadable");
+  }
+}
+
+/** The scorer file is the API's scorer object, `{ "builtin": "<id>@<version>", "params": { ... } }`; the server checks its fields. */
+function parseScorerFile(ctx, filePath, text) {
+  let scorer;
+  try {
+    scorer = JSON.parse(text);
+  } catch (error) {
+    return ctx.fail(`--scorer file ${filePath} is not JSON: ${error instanceof Error ? error.message : String(error)}`, "invalid_scorer");
+  }
+  if (!scorer || typeof scorer !== "object" || Array.isArray(scorer)) {
+    return ctx.fail(`--scorer file ${filePath} must hold a JSON object: { "builtin": "<id>@<version>", "params": { ... } }.`, "invalid_scorer");
+  }
+  return scorer;
 }
 
 /**

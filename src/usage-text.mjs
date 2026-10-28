@@ -313,6 +313,11 @@ ${ACCOUNT_FLAGS}`,
   evals: `Usage:
   benchrouter evals list <route-key>
   benchrouter evals status <route-key> [--pr <number>]
+  benchrouter evals results <route-key>
+  benchrouter evals overview
+  benchrouter evals draft --name <text> --cases <cases.jsonl> --scorer <scorer.json> [--judge-model <id>] [--incumbent <id>]
+  benchrouter evals draft ... --route <route-key> --parent-version <version>
+  benchrouter evals approve <draft-id> --card <card-hash> [--yes]
   benchrouter evals run <route-key> --model <model-id>
   benchrouter evals run <route-key> --full-refresh
   benchrouter evals retry --result-set <id> | --route <route-key>
@@ -350,6 +355,62 @@ With --json, search_status.state and search_status.waiting.reason give the reaso
 
 Options:
   --pr <number>
+${ACCOUNT_FLAGS}`,
+  "evals results": `Usage:
+  benchrouter evals results <route-key>
+
+Shows the route's eval results: the search status, the best available model, the
+best-available chain down to the incumbent, and each measured model's pass rate,
+run cost, p95 latency and verdict. --json returns every model.
+
+Options:
+${ACCOUNT_FLAGS}`,
+  "evals overview": `Usage:
+  benchrouter evals overview
+
+Lists every route of the account as the dashboard lists it (repository routes and
+hosted evals), with each route's eval state, and the hosted-eval drafts that wait
+for approval.
+
+Options:
+${ACCOUNT_FLAGS}`,
+  "evals draft": `Usage:
+  benchrouter evals draft --name <text> --cases <cases.jsonl> --scorer <scorer.json>
+  benchrouter evals draft ... --route <route-key> --parent-version <version>
+
+Drafts a hosted eval: BenchRouter runs your cases on its own Worker, with no eval
+pack or GitHub workflow. Prints the card to approve, with its cost estimate. A
+draft spends nothing.
+
+--cases is a JSONL file of cases (at most 250). --scorer is a JSON file with one
+built-in scorer: { "builtin": "json_structure@1", "params": { "schema": { ... } } }.
+The built-ins are json_structure@1, field_match@1 and judge_compare@1. A judge
+scorer needs --judge-model with the same model as its params.
+
+To change an eval, pass its route and its current version (evals results shows it).
+Leave out --incumbent only when there is no app yet; BenchRouter then proposes one.
+
+Options:
+  --name <text>
+  --cases <file>
+  --scorer <file>
+  --judge-model <id>
+  --incumbent <id>
+  --route <route-key>
+  --parent-version <version>
+  --request-id <text>   a repeat with the same id returns the same draft
+${ACCOUNT_FLAGS}`,
+  "evals approve": `Usage:
+  benchrouter evals approve <draft-id> --card <card-hash> [--yes]
+
+Approves a draft with the card hash that evals draft printed. Approval stores the
+eval version, creates the route on the first approval and starts the first search.
+BenchRouter then keeps testing new models against the eval and spends from your
+balance until it runs out.
+
+Options:
+  --card <hash>
+  --yes, -y
 ${ACCOUNT_FLAGS}`,
   "evals run": `Usage:
   benchrouter evals run <route-key> --model <model-id>
@@ -578,7 +639,7 @@ export function topLevelControlUsageLines() {
   benchrouter setup status|create|session show|upgrade-token [--json]
   benchrouter routes list|show|catalog|archive|unarchive [--json]
   benchrouter models show <route-key> <model-id> [--json]
-  benchrouter evals list|status|run|retry|harness-retry|failures|refresh-preview [--json]
+  benchrouter evals list|status|results|overview|draft|approve|run|retry|harness-retry|failures|refresh-preview [--json]
   benchrouter blocks list|unblock [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
   benchrouter proposals list|approve|reject [--json]

@@ -184,6 +184,27 @@ export const customerPaths = {
     label: "evals status"
   }),
 
+  /** GET /v1/hosted-evals/:routeKey/results — the best available model, the chain and per-model results (EVAL-016). */
+  evalsResults: (routeKey) => ({
+    method: "GET",
+    path: `/v1/hosted-evals/${encodePathSegment(routeKey)}/results`,
+    label: "evals results"
+  }),
+
+  /** GET /v1/hosted-evals — every route of the account, as the dashboard lists it, and the open drafts (MCP-001). */
+  evalsOverview: () => ({ method: "GET", path: "/v1/hosted-evals", label: "evals overview" }),
+
+  /** POST /v1/hosted-evals/drafts — body { name, cases_jsonl, scorer, judge_model, ... }; returns the card (EVAL-016). */
+  evalsDraft: (body) => ({ method: "POST", path: "/v1/hosted-evals/drafts", label: "evals draft", body }),
+
+  /** POST /v1/hosted-evals/drafts/:draftId/approve — body { card_hash }; starts the first search (EVAL-016). */
+  evalsApprove: (draftId, cardHash) => ({
+    method: "POST",
+    path: `/v1/hosted-evals/drafts/${encodePathSegment(draftId)}/approve`,
+    label: "evals approve",
+    body: { card_hash: cardHash }
+  }),
+
   /** POST /v1/dashboard/evals/retry — body { result_set_id } or { route_key }. RUN-001 R5: never clears a block. */
   evalsRetry: ({ resultSetId, routeKey }) => {
     const body = {};
