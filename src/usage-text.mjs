@@ -343,8 +343,10 @@ ${ACCOUNT_FLAGS}`,
   benchrouter evals status <route-key> [--pr <number>]
 
 Says whether the eval search of the route's production context (or of an open PR's
-preview with --pr) is searching, done, waiting or owed a broad search, with each
-model's score, cost, p95 latency and verdict, and what happens next and when.
+preview with --pr) is searching, done, waiting or owed a broad search, what happens
+next and when, and each model's score, cost, p95 latency and verdict. For production
+it also gives the route's eval spend and says "still running" while the search runs.
+With --json, search_status.state and search_status.waiting.reason give the reason.
 
 Options:
   --pr <number>

@@ -1,0 +1,55 @@
+{
+  "ok": true,
+  "route_key": "pinned-smoke/br-b4-smoke",
+  "name": "br-b4-smoke",
+  "label": "no eval yet",
+  "version": null,
+  "serving_model": "google/gemini-2.5-flash-lite",
+  "incumbent": "google/gemini-2.5-flash-lite",
+  "search_status": {
+    "state": "waiting",
+    "eligible": {
+      "count": 0,
+      "target": 4
+    },
+    "waiting": {
+      "reason": "no_eval",
+      "until": null
+    },
+    "result_set": {
+      "id": null,
+      "decided_result_set_id": null,
+      "stop_reason": null,
+      "held_models": 0,
+      "reused_models": 0,
+      "measured_models": 0
+    },
+    "models": [
+      {
+        "model": "google/gemini-2.5-flash-lite",
+        "roles": [
+          "baseline",
+          "serving"
+        ],
+        "score": null,
+        "pass_rate": null,
+        "cost_usd": null,
+        "p95_ms": null,
+        "verdict": "not_comparable",
+        "reason": "untested",
+        "reused": false,
+        "breaker_open_until": null
+      }
+    ],
+    "next": [
+      {
+        "action": "waits_for_fix",
+        "at": null,
+        "text": "The search starts when the route has an eval: a merged repository eval or an approved hosted eval."
+      }
+    ],
+    "summary": "No eval yet: the route serves its current model"
+  },
+  "spend_usd": 0,
+  "polling": false
+}

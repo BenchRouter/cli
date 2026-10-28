@@ -313,7 +313,14 @@ function metric(value, format) {
 /** EVAL-011 / ROUTE-005: `benchrouter evals status`. */
 export function renderEvalsStatus(payload) {
   const status = payload.search_status;
-  const out = [`${payload.route_key} · ${payload.label}`, `State: ${status.state}. ${status.summary}`];
+  // ROUTE-005: the server's summary and next-step text, printed as they are.
+  const out = [`${payload.route_key} · ${payload.label}`, `Search: ${status.summary}${payload.polling ? "; still running" : ""}`];
+  if (payload.spend_usd !== undefined) out.push(`Eval spend: $${formatUsd(payload.spend_usd)}`);
+  const next = Array.isArray(status.next) ? status.next : [];
+  if (next.length > 0) {
+    out.push("Next:");
+    for (const step of next) out.push(`  ${step.at ? utcMinute(step.at) : "-"}  ${step.text}`);
+  }
   if (status.waiting) {
     out.push(`Waiting: ${status.waiting.reason}${status.waiting.until ? ` until ${utcMinute(status.waiting.until)}` : ""}`);
   }
@@ -338,11 +345,6 @@ export function renderEvalsStatus(payload) {
         `  p95 ${metric(model.p95_ms, (v) => `${Math.round(v)}ms`)}  ${verdict}${roles}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`
       );
     }
-  }
-  const next = Array.isArray(status.next) ? status.next : [];
-  if (next.length > 0) {
-    out.push("Next:");
-    for (const step of next) out.push(`  ${step.at ? utcMinute(step.at) : "-"}  ${step.text}`);
   }
   process.stdout.write(`${out.join("\n")}\n`);
 }

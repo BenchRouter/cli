@@ -356,10 +356,26 @@ async function runEvals(ctx) {
     if (prNumber !== null && (String(prNumber) !== prArg || !Number.isSafeInteger(prNumber) || prNumber < 1)) {
       return ctx.usage(1, "evals status", "--pr must be a pull request number.");
     }
+    if (prNumber === null) {
+      // ROUTE-005: production reads the hosted-eval status, which adds the route's eval spend and polling.
+      const body = await accountRequest(ctx, customerPaths.evalsStatus(routeKey));
+      if (!body.search_status) ctx.fail(`The server returned no search status for ${routeKey} (production).`, "search_status_missing");
+      const payload = {
+        ok: true,
+        route_key: body.route_key,
+        view_id: "production",
+        label: body.label,
+        search_status: body.search_status,
+        spend_usd: body.spend_usd,
+        polling: body.polling
+      };
+      return emit(ctx, payload, () => render.renderEvalsStatus(payload));
+    }
+    // A PR preview context is only on the route catalog read.
     const body = await accountRequest(ctx, customerPaths.routeCatalog(routeKey, "evals status"));
-    const viewId = prNumber === null ? "production" : `pr-${prNumber}`;
+    const viewId = `pr-${prNumber}`;
     const view = (Array.isArray(body.view_evidence) ? body.view_evidence : []).find((entry) => entry && entry.id === viewId);
-    if (!view) ctx.fail(`No ${prNumber === null ? "production" : `open PR #${prNumber} preview`} evidence on ${routeKey}.`, "view_not_found");
+    if (!view) ctx.fail(`No open PR #${prNumber} preview evidence on ${routeKey}.`, "view_not_found");
     if (!view.search_status) ctx.fail(`The server returned no search status for ${routeKey} (${viewId}).`, "search_status_missing");
     const payload = { ok: true, route_key: body.route_key, view_id: view.id, label: view.label, search_status: view.search_status };
     return emit(ctx, payload, () => render.renderEvalsStatus(payload));
