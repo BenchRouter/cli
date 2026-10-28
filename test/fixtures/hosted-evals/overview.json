@@ -1,0 +1,76 @@
+{
+  "ok": true,
+  "account": {
+    "id": "acct_patelnav",
+    "name": "patelnav",
+    "guest": false
+  },
+  "chatgpt_merge": null,
+  "routes": [
+    {
+      "route_key": "pinned-smoke/br-b4-smoke",
+      "name": "br-b4-smoke",
+      "source": {
+        "kind": "pinned",
+        "label": "Pinned, no eval"
+      },
+      "repo_full_name": null,
+      "state": "active",
+      "serving_model": "google/gemini-2.5-flash-lite",
+      "incumbent": "google/gemini-2.5-flash-lite",
+      "baseline_model": "google/gemini-2.5-flash-lite",
+      "serving_model_evidenced": false,
+      "eval_state": "no_eval",
+      "latest_eval": null,
+      "saved_usd": 0,
+      "spend": {
+        "total_usd": 0.000004,
+        "production_usd": 0.000004,
+        "evaluation_usd": 0
+      },
+      "runtime_calls": 4,
+      "access_kind": "owner",
+      "open_pr_url": null
+    },
+    {
+      "route_key": "timeywimey/voice-places",
+      "name": "Voice Places",
+      "source": {
+        "kind": "repo",
+        "label": "patelnav/timeywimey"
+      },
+      "repo_full_name": "patelnav/timeywimey",
+      "state": "active",
+      "serving_model": "deepseek/deepseek-v4-flash",
+      "incumbent": "anthropic/claude-haiku-4.5",
+      "baseline_model": "openai/gpt-5.6-luna",
+      "serving_model_evidenced": true,
+      "eval_state": "up_to_date",
+      "latest_eval": {
+        "status": "reused",
+        "eval_ref": "6ebfa4f47deae9c97cc02efb947875ee33875d50",
+        "best_model": "deepseek/deepseek-v4-flash",
+        "created_at": "2026-10-28T12:23:49.109Z",
+        "decided_at": "2026-10-28T12:24:56.704Z"
+      },
+      "saved_usd": 0.042101,
+      "spend": {
+        "total_usd": 0.716697,
+        "production_usd": 0.005908,
+        "evaluation_usd": 0.710789
+      },
+      "runtime_calls": 29,
+      "access_kind": "owner",
+      "open_pr_url": null
+    }
+  ],
+  "open_drafts": [
+    {
+      "draft_id": "evd_fcba62966ce2409c90a4abc455ec0b9a",
+      "name": "Smoke 608",
+      "route_key": null,
+      "card_hash": "sha256:d7fae541efbad30267aa3f81a17d2c2a265a3eb4a38255492dcc9d4dbb5cc332",
+      "created_at": "2026-10-24T16:51:13.637Z"
+    }
+  ]
+}

@@ -310,17 +310,24 @@ function metric(value, format) {
   return typeof value === "number" && Number.isFinite(value) ? format(value) : "-";
 }
 
-/** EVAL-011 / ROUTE-005: `benchrouter evals status`. */
-export function renderEvalsStatus(payload) {
+/** ROUTE-005: the server's summary and next-step text, printed as they are, with spend and polling when the read has them. */
+function searchLines(payload) {
   const status = payload.search_status;
-  // ROUTE-005: the server's summary and next-step text, printed as they are.
-  const out = [`${payload.route_key} · ${payload.label}`, `Search: ${status.summary}${payload.polling ? "; still running" : ""}`];
+  if (!status) return ["Search: none (archived route)"];
+  const out = [`Search: ${status.summary}${payload.polling ? "; still running" : ""}`];
   if (payload.spend_usd !== undefined) out.push(`Eval spend: $${formatUsd(payload.spend_usd)}`);
   const next = Array.isArray(status.next) ? status.next : [];
   if (next.length > 0) {
     out.push("Next:");
     for (const step of next) out.push(`  ${step.at ? utcMinute(step.at) : "-"}  ${step.text}`);
   }
+  return out;
+}
+
+/** EVAL-011 / ROUTE-005: `benchrouter evals status`. */
+export function renderEvalsStatus(payload) {
+  const status = payload.search_status;
+  const out = [`${payload.route_key} · ${payload.label}`, ...searchLines(payload)];
   if (status.waiting) {
     out.push(`Waiting: ${status.waiting.reason}${status.waiting.until ? ` until ${utcMinute(status.waiting.until)}` : ""}`);
   }
@@ -347,6 +354,84 @@ export function renderEvalsStatus(payload) {
     }
   }
   process.stdout.write(`${out.join("\n")}\n`);
+}
+
+/** EVAL-016: `benchrouter evals results`. Lists the measured models; the JSON output has every model. */
+export function renderEvalsResults(body) {
+  const out = [`${body.route_key} · ${body.label}`, ...searchLines(body)];
+  if (body.current_version && body.version !== body.current_version) {
+    out.push(`These results measured ${body.version ?? "no version"}; version ${body.current_version} is being measured.`);
+  }
+  out.push(`Serving: ${body.serving_model ?? "none"}; incumbent ${body.incumbent ?? "none"}`);
+  out.push(`Best available: ${body.best_available ?? "none yet"}`);
+  const chain = Array.isArray(body.chain) ? body.chain : [];
+  if (chain.length > 0) out.push(`Chain: ${chain.join(" > ")}`);
+  const models = Array.isArray(body.models) ? body.models : [];
+  const measured = models.filter((model) => model.pass_rate !== null);
+  if (measured.length > 0) {
+    out.push("Models:");
+    const width = Math.max(...measured.map((model) => model.model.length));
+    for (const model of measured) {
+      const notes = [
+        model.role !== model.outcome ? model.role : null,
+        model.measured_version && model.measured_version !== body.version ? `measured ${model.measured_version}` : null
+      ].filter(Boolean);
+      out.push(
+        `  ${model.model.padEnd(width)}  pass ${model.pass_count ?? "-"}/${model.cases ?? "-"} (${metric(model.pass_rate, (v) => v.toFixed(3))})` +
+        `  cost ${metric(model.run_cost_usd, (v) => `$${v.toFixed(4)}`)}  p95 ${metric(model.p95_latency_ms, (v) => `${Math.round(v)}ms`)}` +
+        `  ${model.outcome ?? "-"}${model.eligible_rank ? ` #${model.eligible_rank}` : ""}${notes.length > 0 ? ` [${notes.join(", ")}]` : ""}`
+      );
+    }
+  }
+  if (models.length > measured.length) out.push(`${models.length - measured.length} model(s) not measured.`);
+  const untested = Array.isArray(body.not_tested_yet) ? body.not_tested_yet : [];
+  if (untested.length > 0) {
+    out.push("Not tested yet:");
+    for (const entry of untested) out.push(`  ${entry.model}: ${entry.reason}`);
+  }
+  printLines(out);
+}
+
+/** MCP-001: `benchrouter evals overview`, every route of the account and the open drafts. */
+export function renderEvalsOverview(body) {
+  const out = [`Account: ${body.account?.name ?? "?"} (${body.account?.id ?? "?"})${body.account?.guest ? ", guest" : ""}`];
+  const routes = Array.isArray(body.routes) ? body.routes : [];
+  out.push(routes.length > 0 ? "Routes:" : "No routes.");
+  const width = Math.max(0, ...routes.map((route) => route.route_key.length));
+  for (const route of routes) {
+    out.push(
+      `  ${route.route_key.padEnd(width)}  eval ${route.eval_state}  serving ${route.serving_model}${route.serving_model_evidenced === false ? " (no eval evidence)" : ""}` +
+      `  saved $${formatUsd(route.saved_usd)}  (${route.source?.label ?? route.source?.kind ?? "?"})`
+    );
+  }
+  const drafts = Array.isArray(body.open_drafts) ? body.open_drafts : [];
+  if (drafts.length > 0) {
+    out.push("Open drafts:");
+    for (const draft of drafts) {
+      out.push(`  ${draft.draft_id}  ${draft.name}  ${draft.route_key ?? "new route"}  created ${utcMinute(draft.created_at)}  card ${draft.card_hash}`);
+    }
+  }
+  const merge = body.chatgpt_merge;
+  if (merge) {
+    out.push(`ChatGPT routes: ${merge.pending} still being added${merge.failed.length > 0 ? `; could not add ${merge.failed.map((row) => `${row.name} (${row.reason})`).join(", ")}` : ""}`);
+  }
+  printLines(out);
+}
+
+/** EVAL-016: the card the person approves, as the server wrote it. */
+export function renderEvalsDraft(body) {
+  printLines([
+    body.card_text,
+    ...(body.replayed ? ["This request id already made this draft."] : []),
+    `Approve with: benchrouter evals approve ${body.draft_id} --card ${body.card_hash}`
+  ]);
+}
+
+export function renderEvalsApprove(body) {
+  printLines([
+    `Approved version ${body.version_id} for ${body.route_key}; first search result set ${body.result_set_id}.${body.replayed ? " (already approved)" : ""}`,
+    `Follow it with: benchrouter evals status ${body.route_key}`
+  ]);
 }
 
 export function renderEvalsRun(body) {

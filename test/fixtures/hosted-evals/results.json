@@ -1,0 +1,268 @@
+{
+  "ok": true,
+  "route_key": "timeywimey/voice-places",
+  "label": "your eval, version 6ebfa4f47deae9c97cc02efb947875ee33875d50",
+  "version": "6ebfa4f47deae9c97cc02efb947875ee33875d50",
+  "current_version": "6ebfa4f47deae9c97cc02efb947875ee33875d50",
+  "serving_model": "deepseek/deepseek-v4-flash",
+  "incumbent": "anthropic/claude-haiku-4.5",
+  "best_available": "sao10k/l3-lunaris-8b",
+  "chain": [
+    "sao10k/l3-lunaris-8b",
+    "mistralai/voxtral-small-24b-2507",
+    "microsoft/phi-4",
+    "meta-llama/llama-3.1-8b-instruct",
+    "openai/gpt-5.6-luna"
+  ],
+  "not_tested_yet": [],
+  "models": [
+    {
+      "model": "sao10k/l3-lunaris-8b",
+      "pass_rate": 1,
+      "cases": 10,
+      "pass_count": 10,
+      "run_cost_usd": 0.000608,
+      "p95_latency_ms": 1333,
+      "role": "previous",
+      "outcome": "eligible",
+      "eligible_rank": 1,
+      "measured_version": "6ebfa4f47deae9c97cc02efb947875ee33875d50"
+    },
+    {
+      "model": "mistralai/voxtral-small-24b-2507",
+      "pass_rate": 1,
+      "cases": 10,
+      "pass_count": 10,
+      "run_cost_usd": 0.00079,
+      "p95_latency_ms": 1262,
+      "role": null,
+      "outcome": "eligible",
+      "eligible_rank": 2,
+      "measured_version": "6ebfa4f47deae9c97cc02efb947875ee33875d50"
+    },
+    {
+      "model": "microsoft/phi-4",
+      "pass_rate": 1,
+      "cases": 10,
+      "pass_count": 10,
+      "run_cost_usd": 0.001097,
+      "p95_latency_ms": 1851,
+      "role": null,
+      "outcome": "eligible",
+      "eligible_rank": 3,
+      "measured_version": "6ebfa4f47deae9c97cc02efb947875ee33875d50"
+    },
+    {
+      "model": "meta-llama/llama-3.1-8b-instruct",
+      "pass_rate": 1,
+      "cases": 10,
+      "pass_count": 10,
+      "run_cost_usd": 0.001366,
+      "p95_latency_ms": 806,
+      "role": null,
+      "outcome": "eligible",
+      "eligible_rank": 4,
+      "measured_version": "6ebfa4f47deae9c97cc02efb947875ee33875d50"
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "pass_rate": 1,
+      "cases": 10,
+      "pass_count": 10,
+      "run_cost_usd": 0.000464,
+      "p95_latency_ms": 21522,
+      "role": null,
+      "outcome": "too_slow",
+      "eligible_rank": null,
+      "measured_version": "6ebfa4f47deae9c97cc02efb947875ee33875d50"
+    },
+    {
+      "model": "openai/gpt-5.6-luna",
+      "pass_rate": 1,
+      "cases": 10,
+      "pass_count": 10,
+      "run_cost_usd": 0.001404,
+      "p95_latency_ms": 3424,
+      "role": "baseline",
+      "outcome": "baseline",
+      "eligible_rank": null,
+      "measured_version": "6ebfa4f47deae9c97cc02efb947875ee33875d50"
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash",
+      "pass_rate": 1,
+      "cases": 10,
+      "pass_count": 10,
+      "run_cost_usd": 0.002942,
+      "p95_latency_ms": 4485,
+      "role": "best",
+      "outcome": "too_slow",
+      "eligible_rank": null,
+      "measured_version": "6ebfa4f47deae9c97cc02efb947875ee33875d50"
+    },
+    {
+      "model": "anthropic/claude-haiku-4.5",
+      "pass_rate": 1,
+      "cases": 10,
+      "pass_count": 10,
+      "run_cost_usd": 0.020903,
+      "p95_latency_ms": 3144,
+      "role": "original",
+      "outcome": "too_expensive",
+      "eligible_rank": null,
+      "measured_version": "6ebfa4f47deae9c97cc02efb947875ee33875d50"
+    },
+    {
+      "model": "allenai/olmo-3-32b-think",
+      "pass_rate": null,
+      "cases": 0,
+      "pass_count": null,
+      "run_cost_usd": null,
+      "p95_latency_ms": null,
+      "role": null,
+      "outcome": "untested",
+      "eligible_rank": null,
+      "measured_version": null
+    }
+  ],
+  "search_status": {
+    "state": "done_target_met",
+    "eligible": {
+      "count": 5,
+      "target": 4
+    },
+    "waiting": null,
+    "result_set": {
+      "id": "erset_2b2861d6bf7d48ada4480e199eaad99e",
+      "decided_result_set_id": "erset_2b2861d6bf7d48ada4480e199eaad99e",
+      "stop_reason": null,
+      "held_models": 0,
+      "reused_models": 51,
+      "measured_models": 99
+    },
+    "models": [
+      {
+        "model": "deepseek/deepseek-v4-flash",
+        "roles": [
+          "serving"
+        ],
+        "score": 1,
+        "pass_rate": 1,
+        "cost_usd": 0.002942,
+        "p95_ms": 4485,
+        "verdict": "too_slow",
+        "reason": "too_slow",
+        "reused": true,
+        "breaker_open_until": null
+      },
+      {
+        "model": "openai/gpt-5.6-luna",
+        "roles": [
+          "baseline"
+        ],
+        "score": 1,
+        "pass_rate": 1,
+        "cost_usd": 0.001404,
+        "p95_ms": 3424,
+        "verdict": "baseline",
+        "reason": "baseline",
+        "reused": true,
+        "breaker_open_until": null
+      },
+      {
+        "model": "sao10k/l3-lunaris-8b",
+        "roles": [],
+        "score": 1,
+        "pass_rate": 1,
+        "cost_usd": 0.000608,
+        "p95_ms": 1333,
+        "verdict": "eligible",
+        "reason": "eligible",
+        "reused": true,
+        "breaker_open_until": null
+      },
+      {
+        "model": "mistralai/voxtral-small-24b-2507",
+        "roles": [],
+        "score": 1,
+        "pass_rate": 1,
+        "cost_usd": 0.00079,
+        "p95_ms": 1262,
+        "verdict": "eligible",
+        "reason": "eligible",
+        "reused": true,
+        "breaker_open_until": null
+      },
+      {
+        "model": "microsoft/phi-4",
+        "roles": [],
+        "score": 1,
+        "pass_rate": 1,
+        "cost_usd": 0.001097,
+        "p95_ms": 1851,
+        "verdict": "eligible",
+        "reason": "eligible",
+        "reused": true,
+        "breaker_open_until": null
+      },
+      {
+        "model": "meta-llama/llama-3.1-8b-instruct",
+        "roles": [],
+        "score": 1,
+        "pass_rate": 1,
+        "cost_usd": 0.001366,
+        "p95_ms": 806,
+        "verdict": "eligible",
+        "reason": "eligible",
+        "reused": true,
+        "breaker_open_until": null
+      },
+      {
+        "model": "allenai/olmo-3-32b-think",
+        "roles": [],
+        "score": null,
+        "pass_rate": null,
+        "cost_usd": null,
+        "p95_ms": null,
+        "verdict": "not_comparable",
+        "reason": "untested",
+        "reused": false,
+        "breaker_open_until": null
+      },
+      {
+        "model": "anthropic/claude-haiku-4.5",
+        "roles": [],
+        "score": 1,
+        "pass_rate": 1,
+        "cost_usd": 0.020903,
+        "p95_ms": 3144,
+        "verdict": "too_costly",
+        "reason": "too_expensive",
+        "reused": true,
+        "breaker_open_until": null
+      },
+      {
+        "model": "openai/gpt-6-luna",
+        "roles": [],
+        "score": 1,
+        "pass_rate": 1,
+        "cost_usd": 0.000464,
+        "p95_ms": 21522,
+        "verdict": "too_slow",
+        "reason": "too_slow",
+        "reused": true,
+        "breaker_open_until": null
+      }
+    ],
+    "next": [
+      {
+        "action": "background_coverage",
+        "at": "2026-10-28T18:17:00.000Z",
+        "text": "Background coverage checks one more challenger at the next batch."
+      }
+    ],
+    "summary": "Done: 5 of 4 eligible"
+  },
+  "spend_usd": 0.710789,
+  "polling": false
+}

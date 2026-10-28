@@ -55,7 +55,9 @@ export async function apiRequest({
   signal
 }) {
   const headers = {
-    accept: "application/json"
+    accept: "application/json",
+    // EVAL-016: a hosted-eval approval records `cli` as its client for this header.
+    "x-benchrouter-client": "cli"
   };
   if (token) headers.authorization = `Bearer ${token}`;
   let payload;
