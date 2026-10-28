@@ -21,6 +21,11 @@ export function accountRequest(ctx, spec) {
   return apiRequest({ ...accountClient(ctx), ...spec });
 }
 
+/** Send a public spec with no credential. */
+export function publicRequest(ctx, spec) {
+  return apiRequest({ apiUrl: defaultApiUrl(ctx.stringArg("api-url")), ...spec });
+}
+
 /** Send an admin spec with the bradm_ admin token. Never falls back to another scope. */
 export function adminRequest(ctx, spec) {
   return apiRequest({ ...adminClient(ctx), ...spec });

@@ -9,6 +9,14 @@ import { encodePathSegment, encodeRouteKey } from "./http.mjs";
  * (server auth mode `github_or_control`), except `accountSelf`, which is
  * control-token only (`account_control_token`).
  */
+/** Public reads: no credential (the website's status and frontier pages). */
+export const publicPaths = {
+  /** GET /v1/status — service status, uptime by component, incidents. */
+  status: () => ({ method: "GET", path: "/v1/status", label: "public status" }),
+  /** GET /v1/frontier — the public Pareto frontier of catalog models. */
+  frontier: () => ({ method: "GET", path: "/v1/frontier", label: "public frontier" })
+};
+
 export const customerPaths = {
   /** GET /v1/account/control/me */
   accountSelf: () => ({ method: "GET", path: "/v1/account/control/me", label: "account show" }),
@@ -34,6 +42,21 @@ export const customerPaths = {
     label: "billing charge",
     body: { amount_usd: amountUsd, idempotency_key: idempotencyKey }
   }),
+
+  /**
+   * GET /v1/billing/activity[?from=&to=&view=payments&cursor=] — the ledger, newest first; with
+   * section=summary, the period's opening and closing balance and spend by route (BILL-001). Owner only.
+   */
+  billingActivity: ({ from, to, payments, cursor, summary }, label) => {
+    const query = new URLSearchParams();
+    if (from) query.set("from", from);
+    if (to) query.set("to", to);
+    if (payments) query.set("view", "payments");
+    if (cursor) query.set("cursor", cursor);
+    if (summary) query.set("section", "summary");
+    const suffix = query.toString();
+    return { method: "GET", path: `/v1/billing/activity${suffix ? `?${suffix}` : ""}`, label };
+  },
 
   billingTopUpCheckout: (amountUsd) => ({
     method: "POST",
@@ -121,6 +144,20 @@ export const customerPaths = {
     path: `/v1/control/routes/${encodePathSegment(routeKey)}/pin`,
     label: "routes pin",
     body: { model, expected_route_id: expectedRouteId }
+  }),
+
+  /** GET /v1/dashboard/routes/:routeKey/activity — the route's background eval activity (ROUTE-006). */
+  routeActivity: (routeKey) => ({
+    method: "GET",
+    path: `/v1/dashboard/routes/${encodeRouteKey(routeKey)}/activity`,
+    label: "routes activity"
+  }),
+
+  /** GET /v1/dashboard/routes/:routeKey/startup-details?blocked_event_id= — GitHub's annotations of one blocked runner startup (RUN-001 R5). */
+  routeStartupDetails: (routeKey, blockedEventId) => ({
+    method: "GET",
+    path: `/v1/dashboard/routes/${encodeRouteKey(routeKey)}/startup-details?${new URLSearchParams({ blocked_event_id: blockedEventId })}`,
+    label: "routes startup-failures"
   }),
 
   /** POST /v1/dashboard/routes/:routeKey/archive */

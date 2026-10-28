@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { normalizeRepoFullName, saveAccountToken, saveAdminToken } from "./config.mjs";
-import { adminPaths, adminKeysMintBrowserSessionRequired, customerPaths } from "./control-api.mjs";
+import { adminPaths, adminKeysMintBrowserSessionRequired, customerPaths, publicPaths } from "./control-api.mjs";
 import {
   accountRequest,
   adminRequest,
   emit,
+  publicRequest,
   requireMutationConfirmation,
   subcommand,
   unknown
@@ -25,7 +26,8 @@ export const CUSTOMER_ROOT_COMMANDS = new Set([
   "routes",
   "evals",
   "baseline",
-  "blocks"
+  "blocks",
+  "public"
 ]);
 
 export const ADMIN_ROOT_COMMANDS = new Set(["proposals", "admin"]);
@@ -63,6 +65,7 @@ export async function runControlCommand(ctx) {
     if (command === "evals") return await runEvals(ctx);
     if (command === "baseline") return await runBaseline(ctx);
     if (command === "blocks") return await runBlocks(ctx);
+    if (command === "public") return await runPublic(ctx);
     if (command === "proposals") return await runProposals(ctx);
     if (command === "admin") return await runAdmin(ctx);
     ctx.usage(1, "all", `Unknown command: ${command}`);
@@ -105,7 +108,7 @@ async function runAccount(ctx) {
 
 async function runBilling(ctx) {
   const sub = subcommand(ctx);
-  if (!sub) return ctx.usage(1, "billing", "Missing subcommand. Try: billing show | billing charge | billing top-up");
+  if (!sub) return ctx.usage(1, "billing", "Missing subcommand. Try: billing show | activity | statement | charge | top-up");
   if (sub === "show") {
     const summary = await accountRequest(ctx, customerPaths.dashboardSummary("billing show"));
     const payload = {
@@ -116,6 +119,20 @@ async function runBilling(ctx) {
       top_up: summary.top_up ?? null
     };
     return emit(ctx, payload, () => render.renderBillingShow(summary));
+  }
+  if (sub === "activity" || sub === "statement") {
+    // BILL-001: the account page's billing history (activity) and period summary (statement).
+    const usageName = `billing ${sub}`;
+    const from = optionValue(ctx, "from", usageName);
+    const to = optionValue(ctx, "to", usageName);
+    if (sub === "statement") {
+      const body = await accountRequest(ctx, customerPaths.billingActivity({ from, to, summary: true }, usageName));
+      return emit(ctx, body, () => render.renderBillingStatement(body));
+    }
+    const payments = flagOnly(ctx, "payments", usageName);
+    const cursor = optionValue(ctx, "cursor", usageName);
+    const body = await accountRequest(ctx, customerPaths.billingActivity({ from, to, payments, cursor }, usageName));
+    return emit(ctx, body, () => render.renderBillingActivity(body, { payments }));
   }
   if (sub === "charge") {
     // BILL-006: one purchase, one idempotency key. A retry with the same key never charges twice.
@@ -300,7 +317,7 @@ function requireRepoFullName(ctx, usageName) {
 async function runRoutes(ctx) {
   const sub = subcommand(ctx);
   if (!sub) {
-    return ctx.usage(1, "routes", "Missing subcommand. Try: routes list | show | catalog | create | pin | archive | unarchive");
+    return ctx.usage(1, "routes", "Missing subcommand. Try: routes list | show | catalog | activity | startup-failures | create | pin | archive | unarchive");
   }
   if (sub === "list") {
     const summary = await accountRequest(ctx, customerPaths.dashboardSummary("routes list"));
@@ -323,6 +340,30 @@ async function runRoutes(ctx) {
     if (!routeKey) return ctx.usage(1, "routes catalog", "Missing route key.");
     const body = await accountRequest(ctx, customerPaths.routeCatalog(routeKey));
     return emit(ctx, body, () => render.renderRouteCatalog(body));
+  }
+  if (sub === "activity") {
+    const routeKey = ctx.args._[2];
+    if (!routeKey) return ctx.usage(1, "routes activity", "Missing route key.");
+    const body = await accountRequest(ctx, customerPaths.routeActivity(routeKey));
+    return emit(ctx, body, () => render.renderRouteActivity(body));
+  }
+  if (sub === "startup-failures") {
+    // RUN-001 R5: the route page's blocked runner startups, each with GitHub's annotations.
+    const routeKey = ctx.args._[2];
+    if (!routeKey) return ctx.usage(1, "routes startup-failures", "Missing route key.");
+    const catalog = await accountRequest(ctx, customerPaths.routeCatalog(routeKey, "routes startup-failures"));
+    const failures = [];
+    for (const failure of Array.isArray(catalog.startup_failures) ? catalog.startup_failures : []) {
+      try {
+        failures.push({ ...failure, details: await accountRequest(ctx, customerPaths.routeStartupDetails(routeKey, failure.blocked_event_id)) });
+      } catch (error) {
+        // A block cleared between the two reads is no longer current; its details are gone.
+        if (!(error instanceof ApiError && error.code === "startup_failure_stale")) throw error;
+        failures.push({ ...failure, details: null });
+      }
+    }
+    const payload = { ok: true, route_key: catalog.route_key, startup_failures: failures };
+    return emit(ctx, payload, () => render.renderStartupFailures(payload));
   }
   if (sub === "create") {
     // SERVE-001: a pinned route (no eval) in a new hosted product or an existing one with no repository.
@@ -614,6 +655,21 @@ function flagOnly(ctx, name, usageName) {
   const value = ctx.args[name];
   if (value !== undefined && value !== true) return ctx.usage(1, usageName, `--${name} takes no value.`);
   return value === true;
+}
+
+/** The website's public pages: service status and the public frontier. No credential. */
+async function runPublic(ctx) {
+  const sub = subcommand(ctx);
+  if (sub === "status") {
+    const body = await publicRequest(ctx, publicPaths.status());
+    return emit(ctx, body, () => render.renderPublicStatus(body));
+  }
+  if (sub === "frontier") {
+    const body = await publicRequest(ctx, publicPaths.frontier());
+    return emit(ctx, body, () => render.renderPublicFrontier(body));
+  }
+  if (!sub) return ctx.usage(1, "public", "Missing subcommand. Try: public status | public frontier");
+  return unknown(ctx, "public", sub);
 }
 
 /** RUN-001 R5: list blocks, and Unblock. Unblock clears blocks only; it creates no evaluation. */

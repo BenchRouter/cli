@@ -109,6 +109,66 @@ export function renderCardCharge(body, retry) {
   }
 }
 
+/** BILL-001: `benchrouter billing activity`, the ledger newest first. */
+export function renderBillingActivity(body, { payments }) {
+  const entries = Array.isArray(body.entries) ? body.entries : [];
+  const out = [`${payments ? "Payments" : "Billing activity"} ${utcMinute(body.from)} to ${utcMinute(body.to)}:`];
+  if (entries.length === 0) out.push("  none");
+  for (const entry of entries) {
+    out.push(`  ${utcMinute(entry.created_at)}  ${entry.kind.padEnd(8)}  ${formatSignedUsd(entry.amount_usd).padStart(11)}  ${entry.description}${entry.route_key ? `  ${entry.route_key}` : ""}`);
+  }
+  if (body.next_cursor) {
+    out.push(`More: benchrouter billing activity --cursor '${body.next_cursor}' --from ${body.from} --to ${body.to}${payments ? " --payments" : ""}`);
+  }
+  printLines(out);
+}
+
+/** BILL-001: `benchrouter billing statement`, a period's balances and spend by route. */
+export function renderBillingStatement(body) {
+  const routes = Array.isArray(body.routes) ? body.routes : [];
+  printLines([
+    `Statement ${utcMinute(body.from)} to ${utcMinute(body.to)}`,
+    `Opening balance $${formatUsd(body.opening_balance_usd)}; credits $${formatUsd(body.credits_usd)}; debits $${formatUsd(body.debits_usd)}; closing balance $${formatUsd(body.closing_balance_usd)}`,
+    `Balance now: $${formatUsd(body.balance_usd)}`,
+    ...(routes.length > 0 ? ["Spend by route:"] : []),
+    ...routes.map((route) =>
+      `  ${route.route_key ?? route.route_id ?? "-"}${route.archived ? " (archived)" : ""}  $${formatUsd(route.total_usd)} ($${formatUsd(route.runtime_usd)} runtime, $${formatUsd(route.eval_usd)} evals)`)
+  ]);
+}
+
+/** "-$0.0035", "+$25.00": ledger amounts keep sub-cent precision. */
+function formatSignedUsd(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value ?? "n/a");
+  const digits = Math.abs(number) < 0.01 && number !== 0 ? 4 : 2;
+  return `${number < 0 ? "-" : "+"}$${Math.abs(number).toFixed(digits)}`;
+}
+
+/** `benchrouter public status`, the website's status page. */
+export function renderPublicStatus(body) {
+  const components = Array.isArray(body.components) ? body.components : [];
+  const incidents = Array.isArray(body.incidents) ? body.incidents : [];
+  const width = Math.max(0, ...components.map((component) => component.name.length));
+  printLines([
+    `${body.overall}: ${body.description} (updated ${utcMinute(body.updated_at)})`,
+    ...components.map((component) => `  ${component.name.padEnd(width)}  ${component.status}  uptime ${metric(component.uptime, (v) => `${(v * 100).toFixed(2)}%`)}`),
+    incidents.length === 0 ? "No incidents." : `Incidents: ${incidents.length} (--json lists them)`
+  ]);
+}
+
+/** `benchrouter public frontier`: the Pareto members; --json lists the near-frontier ones too. */
+export function renderPublicFrontier(body) {
+  const members = Array.isArray(body.members) ? body.members : [];
+  const pareto = members.filter((member) => member.candidate_kind === "pareto");
+  const width = Math.max(0, ...pareto.map((member) => member.canonical_id.length));
+  printLines([
+    `Public frontier, generated ${utcMinute(body.generated_at)}: ${pareto.length} Pareto models, ${members.length - pareto.length} near the frontier.`,
+    ...pareto.map((member) =>
+      `  ${member.canonical_id.padEnd(width)}  ${String(member.tier).padEnd(12)}  score ${metric(member.score_overall, (v) => v.toFixed(1))}` +
+      `  cost ${metric(member.benchmark_cost, (v) => `$${v.toFixed(2)}`)}`)
+  ]);
+}
+
 export function renderBillingTopUp(body) {
   printLines([
     `Checkout total: $${formatUsd(body.checkout_total_usd)} (credit $${formatUsd(body.credit_usd ?? body.amount_usd)}; fee $${formatUsd(body.service_fee_usd)})`,
@@ -565,6 +625,57 @@ export function renderRouteCreated(body) {
 
 export function renderRouteRepinned(body) {
   printLines([`${body.route_key} now serves ${body.model} (was ${body.previous_model}); generation ${body.route_id}.`]);
+}
+
+/** ROUTE-006: `benchrouter routes activity`, the route's background eval activity. */
+export function renderRouteActivity(body) {
+  const a = body.eval_activity;
+  if (!a) {
+    printLines([`${body.route_key}: no eval activity.`]);
+    return;
+  }
+  const out = [
+    `${body.route_key}: ${a.state} (${a.trigger ?? "no trigger"}); coverage ${a.coverage_status ?? "-"}`,
+    `Models: ${a.total_models} total; ${a.terminal_models} done (${a.uploaded_models} measured, ${a.reused_models} reused), ` +
+      `${a.failed_models} failed, ${a.running_models} running, ${a.queued_models} queued, ${a.pending_models} pending, ${a.skipped_models} skipped`,
+    `Result set: ${a.result_set_id ?? "none"}; requested ${utcMinute(a.requested_at)}, started ${utcMinute(a.started_at)}, completed ${utcMinute(a.completed_at)}`
+  ];
+  if (a.github_run_url) out.push(`GitHub run: ${a.github_run_url}`);
+  if (a.failure_display) {
+    out.push(`${a.failure_display.title}${a.failure_display.runs ? ` (${a.failure_display.runs})` : ""}: ${a.failure_display.summary}`);
+  }
+  const recovery = a.failure_summary?.recovery;
+  if (recovery && recovery.state !== "none") {
+    out.push(`Recovery: ${recovery.state}, attempt ${recovery.attempt}${recovery.next_at ? `, next ${utcMinute(recovery.next_at)}` : ""}`);
+  }
+  printLines(out);
+}
+
+/** RUN-001 R5: `benchrouter routes startup-failures`. */
+export function renderStartupFailures(body) {
+  const failures = Array.isArray(body.startup_failures) ? body.startup_failures : [];
+  if (failures.length === 0) {
+    printLines([`${body.route_key}: no blocked runner startup.`]);
+    return;
+  }
+  const out = [];
+  for (const failure of failures) {
+    out.push(
+      `${failure.context_key} (${failure.purpose}${failure.pr_number ? `, PR #${failure.pr_number}` : ""}): blocked ${utcMinute(failure.blocked_at)}; ` +
+      `automatic retry ${utcMinute(failure.retry_at)}${failure.can_unblock ? "; benchrouter blocks unblock --route " + body.route_key + " clears it" : ""}`
+    );
+    out.push(`  ${failure.message}`);
+    const details = failure.details;
+    if (!details) {
+      out.push("  No longer current: read the route again.");
+      continue;
+    }
+    if (details.github_run_url) out.push(`  GitHub run: ${details.github_run_url}`);
+    if (details.unavailable) out.push("  GitHub's annotations are not readable now.");
+    for (const line of details.annotations ?? []) out.push(`  | ${line}`);
+    if (details.truncated) out.push("  (annotations cut off)");
+  }
+  printLines(out);
 }
 
 export function renderArchive(body) {

@@ -56,6 +56,8 @@ Options:
 ${ACCOUNT_FLAGS}`,
   billing: `Usage:
   benchrouter billing show
+  benchrouter billing activity [--from <iso>] [--to <iso>] [--payments] [--cursor <cursor>]
+  benchrouter billing statement [--from <iso>] [--to <iso>]
   benchrouter billing charge --amount 25
   benchrouter billing top-up --amount 25
   benchrouter billing auto-reload setup --threshold <usd> --amount <usd>
@@ -72,6 +74,30 @@ ${ACCOUNT_FLAGS}  --yes, -y                    Skip confirmation for charge and 
 Reads billing from GET /v1/dashboard/summary (not /v1/billing/summary).
 
 Options:
+${ACCOUNT_FLAGS}`,
+  "billing activity": `Usage:
+  benchrouter billing activity [--from <iso>] [--to <iso>] [--payments] [--cursor <cursor>]
+
+Lists the billing history of the account page, newest first, 50 entries a page:
+model calls, eval calls, credit purchases and reloads. The period defaults to the
+last 30 days. --payments lists only payments. When there is a next page, the last
+line is the command that reads it. Owner only.
+
+Options:
+  --from <iso>
+  --to <iso>
+  --payments
+  --cursor <cursor>
+${ACCOUNT_FLAGS}`,
+  "billing statement": `Usage:
+  benchrouter billing statement [--from <iso>] [--to <iso>]
+
+Shows a period's opening and closing balance, credits, debits and the spend of each
+route (runtime and evals). The period defaults to the last 30 days. Owner only.
+
+Options:
+  --from <iso>
+  --to <iso>
 ${ACCOUNT_FLAGS}`,
   "billing charge": `Usage:
   benchrouter billing charge --amount <usd> [--idempotency-key <key>] [--yes]
@@ -292,6 +318,8 @@ ${ACCOUNT_FLAGS}`,
   benchrouter routes list
   benchrouter routes show <route-key>
   benchrouter routes catalog <route-key>
+  benchrouter routes activity <route-key>
+  benchrouter routes startup-failures <route-key>
   benchrouter routes create --name <text> --model <model-id> --product <name> | --product-id <id> [--route-slug <slug>]
   benchrouter routes pin <route-key> [--model <model-id>]
   benchrouter routes archive <route-key>
@@ -315,6 +343,49 @@ ${ACCOUNT_FLAGS}`,
 
 Options:
 ${ACCOUNT_FLAGS}`,
+  "routes activity": `Usage:
+  benchrouter routes activity <route-key>
+
+Shows the route's background eval activity: its state and trigger, how many models
+are done, failed, running or queued, the times, the GitHub run, and a failure with
+its automatic recovery.
+
+Options:
+${ACCOUNT_FLAGS}`,
+  "routes startup-failures": `Usage:
+  benchrouter routes startup-failures <route-key>
+
+Lists the route's blocked runner startups (the GitHub worker did not start), each
+with its message, its automatic retry time, and GitHub's annotations of the run.
+
+Options:
+${ACCOUNT_FLAGS}`,
+  public: `Usage:
+  benchrouter public status
+  benchrouter public frontier
+
+The website's public pages. They need no credential.
+`,
+  "public status": `Usage:
+  benchrouter public status
+
+Shows BenchRouter's service status: each component's status and uptime, and any
+incident. Needs no credential.
+
+Options:
+  --api-url <url>
+  --json
+`,
+  "public frontier": `Usage:
+  benchrouter public frontier
+
+Lists the public Pareto frontier of catalog models with each one's tier, benchmark
+score and cost. --json also lists the models near the frontier. Needs no credential.
+
+Options:
+  --api-url <url>
+  --json
+`,
   "routes create": `Usage:
   benchrouter routes create --name <text> --model <model-id> --product <name> [--product-slug <slug>] [--route-slug <slug>]
   benchrouter routes create --name <text> --model <model-id> --product-id <id> [--route-slug <slug>]
@@ -695,16 +766,17 @@ export function resolveControlUsageName(positional) {
 export function topLevelControlUsageLines() {
   return `  benchrouter login [--name text] [--expires-in-days 90]
   benchrouter account show|token save [--json]
-  benchrouter billing show [--json]
+  benchrouter billing show|activity|statement [--json]
   benchrouter billing charge --amount <usd> [--idempotency-key <key>] [--yes]
   benchrouter billing top-up --amount <usd> [--yes]
   benchrouter billing auto-reload setup|disable [--yes]
   benchrouter keys list|create|disable|enable|revoke [--json]
   benchrouter repos list [--json]
   benchrouter setup status|create|session show|upgrade-token [--json]
-  benchrouter routes list|show|catalog|create|pin|archive|unarchive [--json]
+  benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive [--json]
   benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]
   benchrouter blocks list|unblock [--json]
+  benchrouter public status|frontier [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
   benchrouter proposals list|approve|reject [--json]
   benchrouter admin providers|catalog|keys|token [--json]`;
