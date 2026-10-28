@@ -275,6 +275,8 @@ ${ACCOUNT_FLAGS}`,
   benchrouter routes list
   benchrouter routes show <route-key>
   benchrouter routes catalog <route-key>
+  benchrouter routes create --name <text> --model <model-id> --product <name> | --product-id <id> [--route-slug <slug>]
+  benchrouter routes pin <route-key> [--model <model-id>]
   benchrouter routes archive <route-key>
   benchrouter routes unarchive <route-id>
 
@@ -295,6 +297,37 @@ ${ACCOUNT_FLAGS}`,
   benchrouter routes catalog <route-key>
 
 Options:
+${ACCOUNT_FLAGS}`,
+  "routes create": `Usage:
+  benchrouter routes create --name <text> --model <model-id> --product <name> [--product-slug <slug>] [--route-slug <slug>]
+  benchrouter routes create --name <text> --model <model-id> --product-id <id> [--route-slug <slug>]
+
+Creates a pinned route: it serves one catalog model and has no eval. --product puts
+it in a new hosted product (creating one needs the account owner); --product-id puts
+it in an existing product with no repository. Slugs default to the names. A route
+key that exists already is refused (route_key_taken). It spends nothing.
+
+Options:
+  --name <text>
+  --model <model-id>
+  --product <name>
+  --product-slug <slug>
+  --product-id <id>
+  --route-slug <slug>
+  --yes, -y
+${ACCOUNT_FLAGS}`,
+  "routes pin": `Usage:
+  benchrouter routes pin <route-key>
+  benchrouter routes pin <route-key> --model <model-id> [--yes]
+
+Without --model, shows the model the route serves, its earlier models, and whether it
+can be re-pinned. With --model, re-pins it to that catalog model. Only a route with no
+repository and no eval can be re-pinned, by an owner or admin. The re-pin is refused
+when the route changed after this command read it (route_changed).
+
+Options:
+  --model <model-id>
+  --yes, -y
 ${ACCOUNT_FLAGS}`,
   "routes archive": `Usage:
   benchrouter routes archive <route-key>
@@ -651,7 +684,7 @@ export function topLevelControlUsageLines() {
   benchrouter keys list|create|disable|enable|revoke [--json]
   benchrouter repos list [--json]
   benchrouter setup status|create|session show|upgrade-token [--json]
-  benchrouter routes list|show|catalog|archive|unarchive [--json]
+  benchrouter routes list|show|catalog|create|pin|archive|unarchive [--json]
   benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]
   benchrouter blocks list|unblock [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]

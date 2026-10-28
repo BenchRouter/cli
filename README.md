@@ -160,7 +160,7 @@ benchrouter setup status [--repo owner/repo]
 benchrouter setup create --repository-id <id> --installation-id <id> [--intent initial|new_route]
 benchrouter setup session show <session-id>
 benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
-benchrouter routes list|show|catalog|archive|unarchive
+benchrouter routes list|show|catalog|create|pin|archive|unarchive
 benchrouter evals list|run
 benchrouter evals status <route-key> [--pr <number>]
 benchrouter evals results <route-key>

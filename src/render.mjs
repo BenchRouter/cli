@@ -525,6 +525,28 @@ export function renderBaselineSet(body) {
   );
 }
 
+/** ROUTE-004: the model a route serves and its generations. */
+export function renderRoutePin(body) {
+  const history = Array.isArray(body.history) ? body.history : [];
+  printLines([
+    `${body.route_key} serves ${body.model}${body.model_available === false ? " (unavailable: re-pin it)" : ""} (${body.route_id})`,
+    `Re-pin: ${body.repin_blocked_reason ? `blocked (${body.repin_blocked_reason})` : "allowed"}`,
+    ...(history.length > 0 ? ["History:"] : []),
+    ...history.map((entry) => `  ${utcMinute(entry.pinned_at)} to ${entry.ended_at ? utcMinute(entry.ended_at) : "now"}  ${entry.model}`)
+  ]);
+}
+
+export function renderRouteCreated(body) {
+  printLines([
+    `Created ${body.route_key} serving ${body.model} (${body.route_id})${body.product_created ? "; created its product" : ""}.`,
+    `Point the app at it with a key: benchrouter keys create --product-id ${body.product?.productId ?? "<product-id>"}`
+  ]);
+}
+
+export function renderRouteRepinned(body) {
+  printLines([`${body.route_key} now serves ${body.model} (was ${body.previous_model}); generation ${body.route_id}.`]);
+}
+
 export function renderArchive(body) {
   process.stdout.write(`Archived ${body.route_key} at ${body.archived_at}.\n`);
 }
