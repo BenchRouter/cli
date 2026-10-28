@@ -152,6 +152,7 @@ benchrouter login [--name text] [--expires-in-days 90]
 benchrouter account show [--json]
 benchrouter account token save --account-token br_ctrl_...
 benchrouter billing show [--json]
+benchrouter billing charge --amount 25 [--idempotency-key <key>] [--yes]
 benchrouter billing top-up --amount 25 [--yes]
 benchrouter billing auto-reload setup --threshold <usd> --amount <usd> | disable
 benchrouter keys list|create|disable|enable|revoke
