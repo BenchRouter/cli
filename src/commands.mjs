@@ -29,16 +29,8 @@ export const CUSTOMER_ROOT_COMMANDS = new Set([
 
 export const ADMIN_ROOT_COMMANDS = new Set(["proposals", "admin"]);
 
-export function isCustomerModelsShow(command, positional) {
-  return command === "models" && positional[1] === "show";
-}
-
-export function isControlPlaneCommand(command, positional) {
-  return (
-    CUSTOMER_ROOT_COMMANDS.has(command) ||
-    ADMIN_ROOT_COMMANDS.has(command) ||
-    isCustomerModelsShow(command, positional)
-  );
+export function isControlPlaneCommand(command) {
+  return CUSTOMER_ROOT_COMMANDS.has(command) || ADMIN_ROOT_COMMANDS.has(command);
 }
 
 /**
@@ -67,7 +59,6 @@ export async function runControlCommand(ctx) {
     if (command === "repos") return await runRepos(ctx);
     if (command === "setup") return await runSetup(ctx);
     if (command === "routes") return await runRoutes(ctx);
-    if (command === "models") return await runModelsShow(ctx);
     if (command === "evals") return await runEvals(ctx);
     if (command === "baseline") return await runBaseline(ctx);
     if (command === "blocks") return await runBlocks(ctx);
@@ -327,18 +318,10 @@ async function runRoutes(ctx) {
   return unknown(ctx, "routes", sub);
 }
 
-async function runModelsShow(ctx) {
-  const routeKey = ctx.args._[2];
-  const modelId = ctx.args._[3];
-  if (!routeKey || !modelId) return ctx.usage(1, "models show", "Missing route key or model id.");
-  const body = await accountRequest(ctx, customerPaths.routeModel(routeKey, modelId));
-  return emit(ctx, body, () => render.renderRouteModel(body));
-}
-
 async function runEvals(ctx) {
   const sub = subcommand(ctx);
   if (!sub) {
-    return ctx.usage(1, "evals", "Missing subcommand. Try: evals list | status | results | overview | draft | approve | run | failures | refresh-preview");
+    return ctx.usage(1, "evals", "Missing subcommand. Try: evals list | status | results | model | case-output | overview | draft | approve | run | refresh-preview");
   }
   if (sub === "list") {
     const routeKey = ctx.args._[2];
@@ -362,12 +345,7 @@ async function runEvals(ctx) {
   if (sub === "status") {
     const routeKey = ctx.args._[2];
     if (!routeKey) return ctx.usage(1, "evals status", "Missing route key.");
-    const prArg = optionValue(ctx, "pr", "evals status");
-    const prNumber = prArg === undefined ? null : Number.parseInt(prArg, 10);
-    // A decimal PR number only: `0x4c` or `7.6e1` is not PR 76.
-    if (prNumber !== null && (String(prNumber) !== prArg || !Number.isSafeInteger(prNumber) || prNumber < 1)) {
-      return ctx.usage(1, "evals status", "--pr must be a pull request number.");
-    }
+    const prNumber = prOption(ctx, "evals status");
     if (prNumber === null) {
       // ROUTE-005: production reads the hosted-eval status, which adds the route's eval spend and polling.
       const body = await accountRequest(ctx, customerPaths.evalsStatus(routeKey));
@@ -463,28 +441,6 @@ async function runEvals(ctx) {
     const body = await accountRequest(ctx, customerPaths.routeHarnessRetry(routeKey, model, block));
     return emit(ctx, body, () => render.renderEvalsRun(body));
   }
-  if (sub === "failures") {
-    const routeKey = ctx.args._[2];
-    const modelId = ctx.stringArg("model") ?? ctx.args._[3];
-    if (!routeKey) return ctx.usage(1, "evals failures", "Missing route key.");
-    if (!modelId) {
-      return ctx.usage(
-        1,
-        "evals failures",
-        "Missing model id. Pass the model, or use repo-read `benchrouter failures <route-key> [model]`."
-      );
-    }
-    const body = await accountRequest(ctx, customerPaths.routeModel(routeKey, modelId, "evals failures"));
-    const results = Array.isArray(body.latest_eval?.results) ? body.latest_eval.results : [];
-    const payload = {
-      ok: true,
-      route_key: body.route_key,
-      model: modelId,
-      model_run_id: body.latest_eval?.model_run_id ?? null,
-      failures: results.filter((row) => row && row.outcome && row.outcome !== "pass")
-    };
-    return emit(ctx, payload, () => render.renderEvalsFailures(body, modelId));
-  }
   if (sub === "results") {
     const routeKey = ctx.args._[2];
     if (!routeKey) return ctx.usage(1, "evals results", "Missing route key.");
@@ -494,6 +450,24 @@ async function runEvals(ctx) {
   if (sub === "overview") {
     const body = await accountRequest(ctx, customerPaths.evalsOverview());
     return emit(ctx, body, () => render.renderEvalsOverview(body));
+  }
+  if (sub === "model") {
+    const routeKey = ctx.args._[2];
+    const modelId = ctx.args._[3];
+    if (!routeKey || !modelId) return ctx.usage(1, "evals model", "Missing route key or model id.");
+    const prNumber = prOption(ctx, "evals model");
+    const body = await accountRequest(ctx, customerPaths.evalsModel(routeKey, modelId, prNumber === null ? null : `pr-${prNumber}`));
+    return emit(ctx, body, () => render.renderEvalsModel(body));
+  }
+  if (sub === "case-output") {
+    const routeKey = ctx.args._[2];
+    const modelRunId = optionValue(ctx, "run", "evals case-output");
+    const caseId = optionValue(ctx, "case", "evals case-output");
+    if (!routeKey || !modelRunId || !caseId) {
+      return ctx.usage(1, "evals case-output", "Pass the route key, --run <model-run-id> and --case <case-id>.");
+    }
+    const body = await accountRequest(ctx, customerPaths.evalsCaseOutput(routeKey, modelRunId, caseId));
+    return emit(ctx, body, () => render.renderCaseOutput(body));
   }
   if (sub === "draft") {
     // EVAL-016: cases and a built-in scorer go to the server, which returns the card to show before approval.
@@ -563,6 +537,17 @@ function optionValue(ctx, name, usageName) {
     return ctx.usage(1, usageName, `--${name} needs a value.`);
   }
   return ctx.stringArg(name);
+}
+
+/** `--pr <number>`: null when absent. A decimal PR number only: `0x4c` or `7.6e1` is not PR 76. */
+function prOption(ctx, usageName) {
+  const prArg = optionValue(ctx, "pr", usageName);
+  if (prArg === undefined) return null;
+  const prNumber = Number.parseInt(prArg, 10);
+  if (String(prNumber) !== prArg || !Number.isSafeInteger(prNumber) || prNumber < 1) {
+    return ctx.usage(1, usageName, "--pr must be a pull request number.");
+  }
+  return prNumber;
 }
 
 function flagOnly(ctx, name, usageName) {

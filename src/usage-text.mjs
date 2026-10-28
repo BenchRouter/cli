@@ -308,15 +308,12 @@ ${ACCOUNT_FLAGS}`,
 Options:
   --yes, -y
 ${ACCOUNT_FLAGS}`,
-  "models show": `Usage:
-  benchrouter models show <route-key> <model-id>
-
-Options:
-${ACCOUNT_FLAGS}`,
   evals: `Usage:
   benchrouter evals list <route-key>
   benchrouter evals status <route-key> [--pr <number>]
   benchrouter evals results <route-key>
+  benchrouter evals model <route-key> <model-id> [--pr <number>]
+  benchrouter evals case-output <route-key> --run <model-run-id> --case <case-id>
   benchrouter evals overview
   benchrouter evals draft --name <text> --cases <cases.jsonl> --scorer <scorer.json> [--judge-model <id>] [--incumbent <id>]
   benchrouter evals draft ... --route <route-key> --parent-version <version>
@@ -325,7 +322,6 @@ ${ACCOUNT_FLAGS}`,
   benchrouter evals run <route-key> --full-refresh
   benchrouter evals retry --result-set <id> | --route <route-key>
   benchrouter evals harness-retry <route-key> [--model <model-id>]
-  benchrouter evals failures <route-key> <model-id>
   benchrouter evals refresh-preview <route-key> <result-set-id> [--model <model-id>]
 
 Options:
@@ -367,6 +363,27 @@ best-available chain down to the incumbent, and each measured model's pass rate,
 run cost, p95 latency and verdict. --json returns every model.
 
 Options:
+${ACCOUNT_FLAGS}`,
+  "evals model": `Usage:
+  benchrouter evals model <route-key> <model-id> [--pr <number>]
+
+Shows one model on a route, as the route's model page does: its result (pass rate,
+cost, p95 latency), its latest run and that run's failing cases with the scorer's
+reason. --pr reads an open PR's preview context. --json returns every run and
+every case result.
+
+Options:
+  --pr <number>
+${ACCOUNT_FLAGS}`,
+  "evals case-output": `Usage:
+  benchrouter evals case-output <route-key> --run <model-run-id> --case <case-id>
+
+Prints one case's full model output as it is. An output older than 30 days is
+archived and still readable here until 90 days after it was made.
+
+Options:
+  --run <model-run-id>
+  --case <case-id>
 ${ACCOUNT_FLAGS}`,
   "evals overview": `Usage:
   benchrouter evals overview
@@ -451,12 +468,6 @@ route's best, then its baseline. It spends eval credits. Account owners only.
 Options:
   --model <id>
   --yes, -y
-${ACCOUNT_FLAGS}`,
-  "evals failures": `Usage:
-  benchrouter evals failures <route-key> <model-id>
-
-Options:
-  --model <id>
 ${ACCOUNT_FLAGS}`,
   baseline: `Usage:
   benchrouter baseline set <route-key> --result-set <id> --model <model-id>
@@ -641,8 +652,7 @@ export function topLevelControlUsageLines() {
   benchrouter repos list [--json]
   benchrouter setup status|create|session show|upgrade-token [--json]
   benchrouter routes list|show|catalog|archive|unarchive [--json]
-  benchrouter models show <route-key> <model-id> [--json]
-  benchrouter evals list|status|results|overview|draft|approve|run|retry|harness-retry|failures|refresh-preview [--json]
+  benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]
   benchrouter blocks list|unblock [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
   benchrouter proposals list|approve|reject [--json]
