@@ -233,7 +233,7 @@ async function runRepos(ctx) {
 async function runSetup(ctx) {
   const sub = subcommand(ctx);
   if (!sub) {
-    return ctx.usage(1, "setup", "Missing subcommand. Try: setup status | create | session show | upgrade-token");
+    return ctx.usage(1, "setup", "Missing subcommand. Try: setup status | create | session show | approve | upgrade-token");
   }
   if (sub === "status") {
     const repoFullName = requireRepoFullName(ctx, "setup status");
@@ -270,6 +270,21 @@ async function runSetup(ctx) {
     if (!sessionId) return ctx.usage(1, "setup session show", "Missing setup session id.");
     const body = await accountRequest(ctx, customerPaths.setupSessionGet(sessionId));
     return emit(ctx, body, () => render.renderSetupSessionShow(body));
+  }
+  if (sub === "approve") {
+    // SETUP-001: the setup page's approval of a replacement model, by its id or the setup agent's link.
+    const approvalId = approvalIdOf(ctx.args._[2]);
+    if (!approvalId) return ctx.usage(1, "setup approve", "Pass the approval id or the approval link the setup agent gave.");
+    const model = optionValue(ctx, "model", "setup approve");
+    const current = await accountRequest(ctx, customerPaths.setupApproval(approvalId));
+    if (!model) return emit(ctx, current, () => render.renderSetupApproval(current));
+    const approval = current.approval ?? {};
+    await requireMutationConfirmation(ctx, render.mutationSummary(
+      "Approve setup baseline",
+      `${approval.repo_full_name} ${approval.route_key}: ${approval.observed_model} -> ${model}`
+    ));
+    const body = await accountRequest(ctx, customerPaths.setupApprovalApprove(approvalId, model));
+    return emit(ctx, body, () => render.renderSetupApproval(body));
   }
   if (sub === "upgrade-token") {
     const repoFullName = requireRepoFullName(ctx, "setup upgrade-token");
@@ -624,6 +639,18 @@ function optionValue(ctx, name, usageName) {
     return ctx.usage(1, usageName, `--${name} needs a value.`);
   }
   return ctx.stringArg(name);
+}
+
+/** The approval id: the argument itself, or the `approval` query value of the setup agent's link. */
+function approvalIdOf(value) {
+  if (!value) return null;
+  let link;
+  try {
+    link = new URL(value);
+  } catch {
+    return value;
+  }
+  return link.searchParams.get("approval");
 }
 
 /** `--pr <number>`: null when absent. A decimal PR number only: `0x4c` or `7.6e1` is not PR 76. */

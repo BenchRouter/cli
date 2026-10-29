@@ -75,6 +75,21 @@ export const customerPaths = {
   /** POST /v1/setup/repos/refresh — re-read the person's GitHub repository access with the stored GitHub sign-in (AUTH-003). */
   setupReposRefresh: () => ({ method: "POST", path: "/v1/setup/repos/refresh", label: "repos refresh" }),
 
+  /** GET /v1/setup/approvals/:approvalId — a setup agent's model replacement waiting for approval (SETUP-001). */
+  setupApproval: (approvalId) => ({
+    method: "GET",
+    path: `/v1/setup/approvals/${encodePathSegment(approvalId)}`,
+    label: "setup approve"
+  }),
+
+  /** POST /v1/setup/approvals/:approvalId/approve — body { approved_baseline_model }; needs a GitHub write grant on the repo (SETUP-001). */
+  setupApprovalApprove: (approvalId, model) => ({
+    method: "POST",
+    path: `/v1/setup/approvals/${encodePathSegment(approvalId)}/approve`,
+    label: "setup approve",
+    body: { approved_baseline_model: model }
+  }),
+
   /** GET /v1/setup/diagnostic?repo=owner/repo */
   setupDiagnostic: (repoFullName) => ({
     method: "GET",

@@ -658,6 +658,24 @@ export function renderStartupFailures(body) {
   printLines(out);
 }
 
+/** SETUP-001: a setup agent's replacement model and the baselines the person may approve. */
+export function renderSetupApproval(body) {
+  const a = body.approval ?? {};
+  const alternatives = Array.isArray(a.alternatives) ? a.alternatives : [];
+  const width = Math.max(0, ...alternatives.map((alt) => alt.canonical_id.length));
+  printLines([
+    `${a.repo_full_name} ${a.route_key}: ${a.status}${a.status === "pending" ? `, expires ${utcMinute(a.approval_expires_at)}` : ""}`,
+    `Observed model: ${a.observed_model}${a.provider_ref && a.provider_ref !== a.observed_model ? ` (${a.provider_ref})` : ""}; catalog model ${a.canonical_original_model}`,
+    `Recommended baseline: ${a.recommended_baseline_model}`,
+    ...(a.selected_baseline_model ? [`Approved baseline: ${a.selected_baseline_model}`] : []),
+    ...(alternatives.length > 0 ? ["Alternatives:"] : []),
+    ...alternatives.map((alt) =>
+      `  ${alt.canonical_id.padEnd(width)}  ${alt.relation_type}  ${alt.tier}` +
+      `${typeof alt.price_multiple === "number" ? `  ${alt.price_multiple.toFixed(2)}x price` : ""}  ${alt.reason}`),
+    ...(a.status === "pending" ? [`Approve with: benchrouter setup approve ${a.context_id} --model <model-id>`] : [])
+  ]);
+}
+
 export function renderArchive(body) {
   process.stdout.write(`Archived ${body.route_key} at ${body.archived_at}.\n`);
 }

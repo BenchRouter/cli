@@ -253,6 +253,7 @@ ${ACCOUNT_FLAGS}`,
   benchrouter setup status [--repo owner/repo]
   benchrouter setup create --repository-id <id> --installation-id <id> [--repo owner/repo] [--intent initial|new_route]
   benchrouter setup session show <session-id>
+  benchrouter setup approve <approval-id|approval-link> [--model <model-id>] [--yes]
   benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
 
 create and upgrade-token each return a one-time secret. The CLI prints it once
@@ -295,6 +296,20 @@ Reads GET /v1/setup/sessions/:id. Never returns the setup code.
 
 Options:
   --session-id <id>
+${ACCOUNT_FLAGS}`,
+  "setup approve": `Usage:
+  benchrouter setup approve <approval-id|approval-link>
+  benchrouter setup approve <approval-id|approval-link> --model <model-id> [--yes]
+
+When the setup agent finds that a call site's model is not one BenchRouter can
+serve, it gives an approval link (.../setup/authorize?approval=...). Without
+--model, this shows that approval: the observed model, the recommended baseline
+and the alternatives. With --model, it approves that baseline, as the setup page
+does. It needs your linked GitHub account to have write access to the repository.
+
+Options:
+  --model <model-id>
+  --yes, -y
 ${ACCOUNT_FLAGS}`,
   "setup upgrade-token": `Usage:
   benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
@@ -765,7 +780,7 @@ export function topLevelControlUsageLines() {
   benchrouter billing auto-reload setup|disable [--yes]
   benchrouter keys list|create|disable|enable|revoke [--json]
   benchrouter repos list|refresh [--json]
-  benchrouter setup status|create|session show|upgrade-token [--json]
+  benchrouter setup status|create|session show|approve|upgrade-token [--json]
   benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive [--json]
   benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]
   benchrouter blocks list|unblock [--json]
