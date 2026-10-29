@@ -230,6 +230,17 @@ Options:
 ${ACCOUNT_FLAGS}`,
   repos: `Usage:
   benchrouter repos list
+  benchrouter repos refresh
+
+Options:
+${ACCOUNT_FLAGS}`,
+  "repos refresh": `Usage:
+  benchrouter repos refresh
+
+Re-reads your GitHub repository access with the GitHub sign-in BenchRouter holds, as
+the Setup page's Refresh does, then lists the repositories. Run it after you install
+the GitHub App on more repositories. When GitHub needs a fresh sign-in, it fails with
+github_reauth_required: reconnect GitHub on the BenchRouter website, then run it again.
 
 Options:
 ${ACCOUNT_FLAGS}`,
@@ -753,7 +764,7 @@ export function topLevelControlUsageLines() {
   benchrouter billing top-up --amount <usd> [--yes]
   benchrouter billing auto-reload setup|disable [--yes]
   benchrouter keys list|create|disable|enable|revoke [--json]
-  benchrouter repos list [--json]
+  benchrouter repos list|refresh [--json]
   benchrouter setup status|create|session show|upgrade-token [--json]
   benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive [--json]
   benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]

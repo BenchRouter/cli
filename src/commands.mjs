@@ -215,7 +215,16 @@ async function runKeys(ctx) {
 
 async function runRepos(ctx) {
   const sub = subcommand(ctx);
-  if (!sub) return ctx.usage(1, "repos", "Missing subcommand. Try: repos list");
+  if (!sub) return ctx.usage(1, "repos", "Missing subcommand. Try: repos list | repos refresh");
+  if (sub === "refresh") {
+    // AUTH-003: the Setup page's Refresh, then the list it shows.
+    await accountRequest(ctx, customerPaths.setupReposRefresh());
+    const body = await accountRequest(ctx, customerPaths.setupRepos("repos refresh"));
+    return emit(ctx, body, () => {
+      process.stdout.write("Refreshed GitHub repository access.\n");
+      render.renderReposList(body);
+    });
+  }
   if (sub !== "list") return unknown(ctx, "repos", sub);
   const body = await accountRequest(ctx, customerPaths.setupRepos());
   return emit(ctx, body, () => render.renderReposList(body));
