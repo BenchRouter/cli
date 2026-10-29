@@ -155,7 +155,7 @@ benchrouter billing show|activity|statement [--json]
 benchrouter billing top-up --amount 25 [--yes]
 benchrouter billing auto-reload setup --threshold <usd> --amount <usd> | disable
 benchrouter keys list|create|disable|enable|revoke
-benchrouter repos list
+benchrouter repos list|refresh
 benchrouter setup status [--repo owner/repo]
 benchrouter setup create --repository-id <id> --installation-id <id> [--intent initial|new_route]
 benchrouter setup session show <session-id>

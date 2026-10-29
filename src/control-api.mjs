@@ -70,7 +70,10 @@ export const customerPaths = {
   }),
 
   /** GET /v1/setup/repos */
-  setupRepos: () => ({ method: "GET", path: "/v1/setup/repos", label: "repos list" }),
+  setupRepos: (label = "repos list") => ({ method: "GET", path: "/v1/setup/repos", label }),
+
+  /** POST /v1/setup/repos/refresh — re-read the person's GitHub repository access with the stored GitHub sign-in (AUTH-003). */
+  setupReposRefresh: () => ({ method: "POST", path: "/v1/setup/repos/refresh", label: "repos refresh" }),
 
   /** GET /v1/setup/diagnostic?repo=owner/repo */
   setupDiagnostic: (repoFullName) => ({
