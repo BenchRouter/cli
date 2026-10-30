@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { parseDatabricksSetupItems } from '../src/databricks-contract.mjs';
+import { parseDatabricksConnectResponse, parseDatabricksSetupItems } from '../src/databricks-contract.mjs';
 import { replay as sharedReplay, runDatabricksCli, noSecrets } from './helpers/databricks-replay.mjs';
 
 const fixtureDir = new URL('./fixtures/databricks/', import.meta.url);
@@ -10,6 +10,7 @@ const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureD
 const [me, sp, sp2, ruleset, run, settings, responseTemplate, metadata] = await Promise.all(['me.json', 'p1-create.json', 'p5-sp3.json', 'p1-ruleset-put.json', 'p2-run.json', 'settings.json', 'connect.json', 'databricks-config.json'].map(fixture));
 const setupTemplate = await fixture('binding-read.json');
 const deletedJob = await fixture('job-deleted.json');
+const manifest = await readFile(new URL('eval-manifest.yml', fixtureDir), 'utf8');
 const host = 'https://fixture.cloud.databricks.com';
 const account = '00000000-0000-4000-8000-000000000001';
 const scim = '/api/2.0/preview/scim/v2';
@@ -449,7 +450,7 @@ test('SP change revokes every inventory object, skips missing objects, and remov
   const changes = [
     { ...step('revoke', 'catalog', 'workspace', ['USE_CATALOG'], 'exists', old), object: 'catalog' },
     { ...step('revoke', 'schema', 'workspace.br_design', ['USE_SCHEMA'], 'exists', old), object: 'schema' },
-    ...['results_table', 'cases_table'].map((object) => ({ ...step('revoke', 'table', `workspace.br_design.${object}`, ['SELECT'], 'exists', old), object })),
+    { ...step('revoke', 'table', 'workspace.br_design.results_table', ['SELECT'], 'exists', old), object: 'results_table' },
     { ...step('revoke', 'model_provider_service', 'workspace.br_design.provider', ['MANAGE'], 'exists', old), object: 'provider_service' },
     { object: 'secret_scope', action: 'secret_acl_delete', scope: 'old-scope', principal: principal(old), only_if: 'exists' },
     ...['agent_job', 'eval_job'].map((object, i) => ({ object, action: 'job_acl_remove', job_id: String(i+70), principal: principal(old), only_if: 'exists' })),
@@ -460,7 +461,7 @@ test('SP change revokes every inventory object, skips missing objects, and remov
   const add = (method, path, body = {}, status = 200, check) => calls.push({ method, path, body, status, check });
   for (const change of changes.filter((s) => s.action === 'revoke')) {
     const path = `${uc}/${({ catalog: 'catalogs', schema: 'schemas', table: 'tables', model_provider_service: 'model-provider-services' })[change.securable]}/${change.full_name}`;
-    const missing = change.object === 'cases_table';
+    const missing = change.object === 'provider_service';
     add('GET', path, missing ? { error_code: 'RESOURCE_DOES_NOT_EXIST' } : { owner: old }, missing ? 404 : 200);
     if (!missing) add('PATCH', `${uc}/permissions/${change.securable}/${change.full_name}`, {}, 200, (r) => assert.deepEqual(r.body, { changes: [{ principal: old, remove: change.privileges }] }));
   }
@@ -481,4 +482,104 @@ test('SP change revokes every inventory object, skips missing objects, and remov
   assert.equal(result.status, 0, result.stderr);
   noSecrets(result);
   server.assertDone();
+});
+
+const manifestRevoke = (fields = {}) => ({ object: 'cases_table', action: 'manifest_table_revoke', route_key: 'support/triage', eval_folder: '/Shared/eval', principal: principal(), privileges: ['SELECT'], only_if: 'exists', ...fields });
+function manifestRevokeCalls(change, { content = manifest, folderMissing = false, manifestMissing = false, exported, table = 'main.evals.cases', status = 200, code = 'RESOURCE_DOES_NOT_EXIST' } = {}) {
+  const calls = [{ method: 'GET', path: '/api/2.0/workspace/get-status', status: folderMissing ? 404 : 200,
+    body: folderMissing ? { error_code: code } : { object_id: 999, object_type: 'DIRECTORY' },
+    check: (r) => assert.deepEqual([...r.query], [['path', change.eval_folder]]) }];
+  if (folderMissing) return calls;
+  calls.push({ method: 'GET', path: '/api/2.0/workspace/export', status: manifestMissing ? 404 : 200,
+    body: manifestMissing ? { error_code: code } : exported ?? { content: Buffer.from(content).toString('base64') },
+    check: (r) => assert.deepEqual([...r.query], [['path', `${change.eval_folder}/.benchrouter/benchrouter.yml`], ['format', 'AUTO']]) });
+  if (manifestMissing || table === null) return calls;
+  calls.push({ method: 'PATCH', path: `${uc}/permissions/table/${table}`, status,
+    body: status === 200 ? {} : { error_code: code, message: `${loginMarker} ${pollMarker}` },
+    check: (r) => assert.deepEqual(r.body, { changes: [{ principal: sp.applicationId, remove: ['SELECT'] }] }) });
+  return calls;
+}
+
+test('SP change revokes only SELECT for the old SP on each route\'s declared cases table', { timeout: 4900 }, async (t) => {
+  const changes = [manifestRevoke(), manifestRevoke({ route_key: 'other/route', eval_folder: '/Shared/other' })];
+  const content = manifest + manifest.slice(manifest.indexOf('  - route_id:')).replace('support/triage', 'other/route').replace('main.evals.cases', 'other.data.cases');
+  const changeCalls = changes.flatMap((change, i) => manifestRevokeCalls(change, { content, table: i ? 'other.data.cases' : 'main.evals.cases' }));
+  const server = await sharedReplay(t, plan({ existing: binding(), spMissing: true, newSp: true, change: changes, changeCalls }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).skipped, []);
+  noSecrets(result);
+  server.assertDone();
+});
+
+for (const [name, options, reason] of [
+  ['missing folder', { folderMissing: true }, 'eval folder is missing'],
+  ['missing manifest', { manifestMissing: true }, 'eval manifest is missing'],
+  ['route no longer declared', { content: manifest.replace('support/triage', 'other/route'), table: null }, 'route_key is no longer declared exactly once in the eval manifest'],
+  ['invalid manifest', { content: 'routes: [', table: null }, 'eval manifest is invalid'],
+  ['invalid manifest export', { exported: {}, table: null }, 'eval manifest is invalid'],
+  ['reserved manifest secret scope', { content: manifest.replace('support-evals', 'benchrouter-private'), table: null }, 'eval manifest is invalid'],
+  ['404 table', { status: 404 }, 'cases table is missing'],
+  ['table missing by code', { status: 400, code: 'NOT_FOUND' }, 'cases table is missing']
+]) for (const json of [false, true]) test(`SP change skips ${name} and Connect succeeds (${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
+  const change = manifestRevoke();
+  const changeCalls = manifestRevokeCalls(change, options);
+  const server = await replay(t, plan({ existing: binding(), spMissing: true, newSp: true, change: [change], changeCalls }).calls);
+  const result = await runCli(server, json ? ['--json'] : []);
+  assert.equal(result.status, 0, result.stderr);
+  if (json) {
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.state, 'verified');
+    assert.deepEqual(output.skipped, [{ object: change.object, action: change.action, route_key: change.route_key, eval_folder: change.eval_folder, reason }]);
+  } else {
+    assert.deepEqual(result.stdout.split('\n').filter((line) => line.startsWith('Skipped ')), [`Skipped cases table revoke for support/triage: ${reason}.`]);
+  }
+  noSecrets(result);
+  server.assertDone();
+});
+
+for (const status of [400, 403]) test(`SP change cases table revoke PERMISSION_DENIED (${status}) names owners and exits 3`, { timeout: 4900 }, async (t) => {
+  const change = manifestRevoke();
+  const changeCalls = [...manifestRevokeCalls(change, { status, code: 'PERMISSION_DENIED' }),
+    { method: 'GET', path: `${uc}/catalogs/main`, status: 200, body: { owner: 'cases-catalog-owner' } },
+    { method: 'GET', path: `${uc}/schemas/main.evals`, status: 200, body: { owner: 'cases-schema-owner' } }];
+  const p = plan({ existing: binding(), spMissing: true, newSp: true, change: [change], changeCalls });
+  p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.2/jobs/reset'));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 3, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(JSON.parse(result.stderr).error.code, 'grant_refused');
+  assert.match(result.stderr, /refused revoke on main.evals.cases/);
+  assert.match(result.stderr, /Catalog owner: cases-catalog-owner/);
+  assert.match(result.stderr, /Schema owner: cases-schema-owner/);
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('SP change rejects the former UC cases_table revoke before the scope or key write', { timeout: 4900 }, async (t) => {
+  const change = { ...step('revoke', 'table', 'main.evals.cases', ['SELECT'], 'exists'), object: 'cases_table' };
+  const p = plan({ existing: binding(), spMissing: true, newSp: true, change: [change] });
+  p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.0/secrets/scopes/create'));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /invalid Databricks Connect response/);
+  assert.equal(result.stdout, '');
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('SP change manifest revoke parser validates the route, folder, previous SP, SELECT and exists condition', { timeout: 4900 }, () => {
+  const change = manifestRevoke();
+  const response = { ...structuredClone(responseTemplate), sp_change: { previous_agent_sp_application_id: sp.applicationId, revoke: [change] } };
+  assert.deepEqual(parseDatabricksConnectResponse(response), response);
+  for (const fields of [
+    { object: 'results_table' }, { action: 'grant' }, { route_key: '' }, { route_key: ' ' }, { route_key: null },
+    ...[undefined, '', 'Shared/eval', '/', '/Shared/eval/', '/Shared//eval', '/Shared/./eval', '/Shared/../eval', '/Shared/ev\0al', '/Shared/ev\\al'].map((eval_folder) => ({ eval_folder })),
+    { principal: principal(sp2.applicationId) }, { principal: { type: 'user', name: sp.applicationId } }, { principal: null },
+    ...[undefined, [], ['MODIFY'], ['SELECT', 'MODIFY'], ['SELECT', 'SELECT']].map((privileges) => ({ privileges })),
+    { only_if: 'always' }, { only_if: 'exists_not_agent_owned' }, { only_if: undefined }
+  ]) assert.throws(() => parseDatabricksConnectResponse({ ...response, sp_change: { ...response.sp_change, revoke: [{ ...change, ...fields }] } }), /invalid Databricks Connect response/);
 });

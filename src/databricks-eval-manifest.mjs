@@ -1,5 +1,6 @@
 import { parseDocument } from 'yaml';
 import { refusal } from './databricks-helpers.mjs';
+import { DatabricksError, isMissing } from './databricks.mjs';
 
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const text = (v, max = 256) => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -7,6 +8,31 @@ const envName = (v, max = 64) => text(v, max) && v[0] >= 'A' && v[0] <= 'Z'
   && [...v].every((c) => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_')
   && !v.startsWith('BENCHROUTER_') && !v.startsWith('DATABRICKS_');
 const invalid = () => refusal('The eval manifest is invalid. Check .benchrouter/benchrouter.yml against the Databricks runner manifest schema.', 'manifest_invalid');
+
+export async function readWorkspaceEvalGrants(workspace, folder, routeKey, { skipUnavailable = false } = {}) {
+  let directory;
+  try { directory = await workspace.call('GET', `/api/2.0/workspace/get-status?${new URLSearchParams({ path: folder })}`); }
+  catch (error) {
+    if (skipUnavailable && isMissing(error)) return { reason: 'eval folder is missing' };
+    throw error;
+  }
+  let exported;
+  try { exported = await workspace.call('GET', `/api/2.0/workspace/export?${new URLSearchParams({ path: `${folder}/.benchrouter/benchrouter.yml`, format: 'AUTO' })}`); }
+  catch (error) {
+    if (skipUnavailable && isMissing(error)) return { reason: 'eval manifest is missing' };
+    throw error;
+  }
+  try {
+    if (typeof exported?.content !== 'string') throw refusal('Databricks did not export the manifest.', 'manifest_invalid');
+    return { directory, grants: readEvalGrants(Buffer.from(exported.content, 'base64').toString('utf8'), routeKey) };
+  } catch (error) {
+    if (skipUnavailable && error instanceof DatabricksError) {
+      if (error.code === 'route_not_declared') return { reason: 'route_key is no longer declared exactly once in the eval manifest' };
+      if (['manifest_invalid', 'secret_scope_reserved'].includes(error.code)) return { reason: 'eval manifest is invalid' };
+    }
+    throw error;
+  }
+}
 
 // Match manifest.py for the fields this command consumes. Parse YAML as data, never as shell text.
 export function readEvalGrants(content, routeKey) {

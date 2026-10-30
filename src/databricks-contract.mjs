@@ -8,7 +8,9 @@
  *   principal: DatabricksPrincipal, privileges: string[], only_if: DatabricksStepCondition} |
  *   {action: 'set_owner', securable: 'volume'|'table', full_name: string,
  *   principal: DatabricksPrincipal, only_if: DatabricksStepCondition}} DatabricksUcStep
- * @typedef {(DatabricksUcStep & {object: 'catalog'|'schema'|'results_table'|'cases_table'|'provider_service'}) |
+ * @typedef {(DatabricksUcStep & {action: 'revoke', object: 'catalog'|'schema'|'results_table'|'provider_service'}) |
+ *   {object: 'cases_table', action: 'manifest_table_revoke', route_key: string, eval_folder: string,
+ *   principal: DatabricksPrincipal, privileges: ['SELECT'], only_if: 'exists'} |
  *   {object: 'secret_scope', action: 'secret_acl_delete', scope: string, principal: DatabricksPrincipal, only_if: 'exists'} |
  *   {object: 'agent_job'|'eval_job', action: 'job_acl_remove', job_id: string, principal: DatabricksPrincipal, only_if: 'exists'} |
  *   {object: 'serving_endpoint', action: 'endpoint_acl_remove', endpoint_name: string, principal: DatabricksPrincipal, only_if: 'exists'} |
@@ -37,7 +39,11 @@ function ucStep(s) {
 }
 function revokeStep(s, oldSp) {
   if (!object(s) || s.only_if !== 'exists' || !principal(s.principal) || s.principal.type !== 'service_principal' || s.principal.name !== oldSp) return false;
-  if (s.action === 'revoke') return ucStep(s) && ({ catalog: 'catalog', schema: 'schema', results_table: 'table', cases_table: 'table', provider_service: 'model_provider_service' })[s.object] === s.securable;
+  if (s.action === 'revoke') return ucStep(s) && ({ catalog: 'catalog', schema: 'schema', results_table: 'table', provider_service: 'model_provider_service' })[s.object] === s.securable;
+  if (s.action === 'manifest_table_revoke') return s.object === 'cases_table' && string(s.route_key) && s.route_key.trim().length > 0
+    && string(s.eval_folder) && s.eval_folder.startsWith('/') && !s.eval_folder.includes('\\') && !s.eval_folder.includes('\0')
+    && !s.eval_folder.split('/').slice(1).some((p) => !p || p === '.' || p === '..')
+    && Array.isArray(s.privileges) && s.privileges.length === 1 && s.privileges[0] === 'SELECT';
   if (s.action === 'secret_acl_delete') return s.object === 'secret_scope' && string(s.scope);
   if (s.action === 'job_acl_remove') return ['agent_job', 'eval_job'].includes(s.object) && string(s.job_id);
   if (s.action === 'endpoint_acl_remove') return s.object === 'serving_endpoint' && string(s.endpoint_name);
