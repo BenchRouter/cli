@@ -11,6 +11,7 @@ const cliPath = path.resolve(testDir, "../bin/benchrouter.mjs");
 const token = ["--account-token", "br_ctrl_recorded_fixture"];
 // A real pin read (see fixtures/routes/README.md); the pinned route below is that body for a hosted product.
 const repoRoutePin = JSON.parse(await readFile(path.join(testDir, "fixtures/routes/pin-repo-route.json"), "utf8"));
+const groupRequired = JSON.parse(await readFile(path.join(testDir, "fixtures/routes/group-required.json"), "utf8"));
 const pinnedRoute = {
   ...repoRoutePin,
   route_key: "support/triage",
@@ -60,34 +61,77 @@ test("routes pin shows the pin, and a re-pin sends the read generation as expect
   }]);
 });
 
-test("routes create sends a new product or a product id, and needs exactly one (SERVE-001)", async (t) => {
-  const created = { ...pinnedRoute, route_key: "support/triage", route_id: "route_support_triage_g1", history: pinnedRoute.history.slice(0, 1), product_created: true };
+test("routes create sends a new group, optional slugs, or a group id (SERVE-001)", { timeout: 4900 }, async (t) => {
+  const created = { ...pinnedRoute, route_id: "route_support_triage_g1", history: pinnedRoute.history.slice(0, 1), group_created: true };
   const replay = await startServer(t, { "POST /v1/control/routes": created });
   const base = ["routes", "create", "--name", "Triage", "--model", "openai/gpt-5.4-mini", "--yes", "--api-url", replay.url, ...token];
 
-  const human = await runCli([...base, "--product", "Support", "--route-slug", "triage"]);
+  const human = await runCli([...base, "--group", "Support", "--route-slug", "triage"]);
   assert.equal(human.status, 0, human.stderr);
   assert.equal(human.stdout, [
-    "Created support/triage serving openai/gpt-5.4-mini (route_support_triage_g1); created its product.",
+    "Created support/triage serving openai/gpt-5.4-mini (route_support_triage_g1); created its group.",
     "Point the app at it with a key: benchrouter keys create --product-id prod_support",
     ""
   ].join("\n"));
-  const json = await runCli([...base, "--product-id", "prod_support", "--json"]);
-  assert.deepEqual(JSON.parse(json.stdout), created);
-  assert.deepEqual(replay.requests.map((request) => request.body), [
-    { name: "Triage", model: "openai/gpt-5.4-mini", route_slug: "triage", product: { name: "Support" } },
-    { name: "Triage", model: "openai/gpt-5.4-mini", product_id: "prod_support" }
+  const slug = await runCli([...base, "--group", "Support", "--group-slug", "support", "--route-slug", "triage", "--json"]);
+  assert.equal(slug.status, 0, slug.stderr);
+  assert.deepEqual(JSON.parse(slug.stdout), created);
+  // Existing groups do not print the group-created message; product remains the response's internal name.
+  replay.responses["POST /v1/control/routes"] = { ...created, group_created: false };
+  const existing = await runCli([...base, "--group-id", "prod_support"]);
+  assert.equal(existing.status, 0, existing.stderr);
+  assert.doesNotMatch(existing.stdout, /created its group/);
+  assert.match(existing.stdout, /keys create --product-id prod_support/);
+  assert.deepEqual(replay.requests, [
+    { method: "POST", url: "/v1/control/routes", body: { name: "Triage", model: "openai/gpt-5.4-mini", route_slug: "triage", group: { name: "Support" } } },
+    { method: "POST", url: "/v1/control/routes", body: { name: "Triage", model: "openai/gpt-5.4-mini", route_slug: "triage", group: { name: "Support", slug: "support" } } },
+    { method: "POST", url: "/v1/control/routes", body: { name: "Triage", model: "openai/gpt-5.4-mini", group_id: "prod_support" } }
   ]);
-
-  for (const extra of [[], ["--product", "Support", "--product-id", "prod_support"]]) {
-    const bad = await runCli([...base, ...extra]);
-    assert.notEqual(bad.status, 0);
-    assert.match(bad.stderr, /one of --product <name> or --product-id <id>/);
-  }
-  assert.equal(replay.requests.length, 2);
 });
 
-async function startServer(t, responses) {
+test("routes create requires exactly one group choice and rejects removed product flags before HTTP", { timeout: 4900 }, async (t) => {
+  const replay = await startServer(t, {});
+  const base = ["routes", "create", "--name", "Triage", "--model", "openai/gpt-5.4-mini", "--yes", "--api-url", replay.url, ...token];
+  for (const [extra, message] of [
+    [[], /exactly one of --group <name> or --group-id <id>/],
+    [["--group", "Support", "--group-id", "prod_support"], /exactly one of --group <name> or --group-id <id>/],
+    [["--group-id", "prod_support", "--group-slug", "support"], /--group-slug goes with --group/],
+    [["--group"], /--group needs a value/],
+    [["--group-id="], /--group-id needs a value/],
+    [["--group", "Support", "--group-slug"], /--group-slug needs a value/],
+    ...["product", "product-slug", "product-id"].flatMap((flag) => [
+      [[`--${flag}`, "old"], new RegExp(`Unknown option --${flag}`)],
+      [["--group", "Support", `--${flag}`, "old"], new RegExp(`Unknown option --${flag}`)]
+    ])
+  ]) {
+    const bad = await runCli([...base, ...extra]);
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, message);
+  }
+  assert.deepEqual(replay.requests, []);
+});
+
+for (const json of [false, true]) test(`routes create renders the recorded H8 group_required refusal (${json ? "JSON" : "text"})`, { timeout: 4900 }, async (t) => {
+  const replay = await startServer(t, { "POST /v1/control/routes": groupRequired }, 400);
+  const result = await runCli(["routes", "create", "--name", "br-h8-new", "--model", "anthropic/claude-haiku-4.5", "--group", "br-h8", "--yes", "--api-url", replay.url, ...token, ...(json ? ["--json"] : [])]);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  const message = `BenchRouter routes create failed (400): ${groupRequired.error.message}`;
+  if (json) assert.deepEqual(JSON.parse(result.stderr), { ok: false, error: { code: "group_required", message } });
+  else assert.ok(result.stderr.includes(message), result.stderr);
+  assert.deepEqual(replay.requests, [{ method: "POST", url: "/v1/control/routes", body: { name: "br-h8-new", model: "anthropic/claude-haiku-4.5", group: { name: "br-h8" } } }]);
+});
+
+test("route create help uses group flags and has no product aliases", { timeout: 4900 }, async () => {
+  for (const args of [["routes", "--help"], ["routes", "create", "--help"]]) {
+    const result = await runCli(args);
+    assert.equal(result.status, 0, result.stderr);
+    for (const flag of ["--group", "--group-slug", "--group-id"]) assert.ok(result.stdout.includes(flag));
+    assert.doesNotMatch(result.stdout, /--product/);
+  }
+});
+
+async function startServer(t, responses, status = 200) {
   const requests = [];
   const server = createServer((request, response) => {
     let text = "";
@@ -95,24 +139,26 @@ async function startServer(t, responses) {
     request.on("end", () => {
       requests.push({ method: request.method, url: request.url, body: text ? JSON.parse(text) : null });
       const body = responses[`${request.method} ${request.url}`];
-      response.writeHead(body ? 200 : 404, { "content-type": "application/json" });
+      response.writeHead(body ? status : 404, { "content-type": "application/json" });
       response.end(JSON.stringify(body ?? { error: { message: `no fixture for ${request.method} ${request.url}`, code: "not_found" } }));
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  return { url: `http://127.0.0.1:${address.port}`, requests };
+  return { url: `http://127.0.0.1:${address.port}`, requests, responses };
 }
 
 function runCli(argv) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...argv], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const timeout = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("CLI exceeded 4 s")); }, 4000);
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("close", (status) => resolve({ status, stdout, stderr }));
+    child.on("error", (error) => { clearTimeout(timeout); reject(error); });
+    child.on("close", (status) => { clearTimeout(timeout); resolve({ status, stdout, stderr }); });
   });
 }

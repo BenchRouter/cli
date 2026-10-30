@@ -1,0 +1,7 @@
+{
+  "error": {
+    "message": "group or group_id is required. Name the route's group: an existing group by group_id (list_groups), or a new one as group.name, at most 80 characters",
+    "type": "benchrouter_error",
+    "code": "group_required"
+  }
+}

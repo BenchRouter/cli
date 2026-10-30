@@ -23,14 +23,14 @@
     },
     {
       "kind": "experiment",
-      "target": "/Shared/BenchRouter/evals",
+      "target": "/Shared/benchrouter/dbxb_recorded",
       "state": "done",
       "queued_at": "2026-10-30T12:00:00.000Z",
       "failure": null
     },
     {
       "kind": "eval_job",
-      "target": "BenchRouter eval",
+      "target": "benchrouter-eval-dbxb_recorded",
       "state": "done",
       "queued_at": "2026-10-30T12:00:00.000Z",
       "failure": null

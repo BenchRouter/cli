@@ -375,24 +375,27 @@ async function runRoutes(ctx) {
     return emit(ctx, payload, () => render.renderStartupFailures(payload));
   }
   if (sub === "create") {
-    // SERVE-001: a pinned route (no eval) in a new hosted product or an existing one with no repository.
+    // SERVE-001: a pinned route (no eval) in a new group or an existing one with no repository.
+    for (const flag of ["product", "product-slug", "product-id"]) {
+      if (ctx.args[flag] !== undefined) return ctx.usage(1, "routes create", `Unknown option --${flag}. Use --group, --group-slug, or --group-id.`);
+    }
     const name = optionValue(ctx, "name", "routes create");
     const model = optionValue(ctx, "model", "routes create");
-    const productName = optionValue(ctx, "product", "routes create");
-    const productId = optionValue(ctx, "product-id", "routes create");
-    if (!name || !model || Boolean(productName) === Boolean(productId)) {
-      return ctx.usage(1, "routes create", "Pass --name, --model, and one of --product <name> or --product-id <id>.");
+    const groupName = optionValue(ctx, "group", "routes create");
+    const groupId = optionValue(ctx, "group-id", "routes create");
+    if (!name || !model || Boolean(groupName) === Boolean(groupId)) {
+      return ctx.usage(1, "routes create", "Pass --name, --model, and exactly one of --group <name> or --group-id <id>.");
     }
-    const productSlug = optionValue(ctx, "product-slug", "routes create");
-    if (productSlug && !productName) return ctx.usage(1, "routes create", "--product-slug goes with --product.");
+    const groupSlug = optionValue(ctx, "group-slug", "routes create");
+    if (groupSlug && !groupName) return ctx.usage(1, "routes create", "--group-slug goes with --group.");
     const body = { name, model };
     const routeSlug = optionValue(ctx, "route-slug", "routes create");
     if (routeSlug) body.route_slug = routeSlug;
-    if (productId) body.product_id = productId;
-    else body.product = productSlug ? { name: productName, slug: productSlug } : { name: productName };
+    if (groupId) body.group_id = groupId;
+    else body.group = groupSlug ? { name: groupName, slug: groupSlug } : { name: groupName };
     await requireMutationConfirmation(ctx, render.mutationSummary(
       "Create pinned route",
-      `name=${name}; model=${model}; ${productId ? `product_id=${productId}` : `product=${productName}`}`
+      `name=${name}; model=${model}; ${groupId ? `group_id=${groupId}` : `group=${groupName}`}`
     ));
     const created = await accountRequest(ctx, customerPaths.routeCreate(body));
     return emit(ctx, created, () => render.renderRouteCreated(created));

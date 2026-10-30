@@ -43,11 +43,19 @@ owns the job and the agent SP gets `CAN_MANAGE`. Removing that admin can stop th
 Exit codes: `3` means a refused grant or heal and names the owners, `4` means
 `workspace_admin_required`, and `5` means a PAT login. Use OAuth to replace a PAT.
 Other errors exit with `1`. Connect waits up to three minutes for a successful agent
-run, binding verification, and all non-serving setup items to finish. Each item
-must have been queued at or after this Connect started. Pending serving endpoints
-do not block completion. A failed item queued during this Connect stops the command
+run, binding verification, and five expected setup rows to exist and be done:
+volumes `<catalog>.<schema>.benchrouter_artifacts` and
+`<catalog>.<schema>.benchrouter_results`, results table
+`<catalog>.<schema>.benchrouter_eval_results`, experiment
+`/Shared/benchrouter/<binding_id>`, and eval job `benchrouter-eval-<binding_id>`.
+The catalog and schema are this Connect's `--catalog` and `--schema` values.
+Volume and results-table targets match without regard to case. Experiment and eval-job
+targets must match exactly.
+The binding read gives each object's current state. An older done row can satisfy
+completion. A re-queued row reads pending and keeps Connect waiting.
+Pending serving endpoints do not block completion. Any failed setup row stops the command
 and reports its title, message, and owner. A `customer` owner requires a workspace
-admin to fix it. A timeout names the items still waiting for completion.
+admin to fix it. A timeout names the expected rows that are missing or incomplete.
 The JSON result includes `setup_items`, with `kind`, `target`, and `state` for each
 item. Human output prints one line per item.
 
@@ -309,6 +317,20 @@ Mutations print an exact action summary and prompt unless `--yes`. JSON mode
 never prompts and requires `--yes`. Billing top-up prints a checkout URL; it
 does not open a browser. `billing show` reads billing fields from
 `GET /v1/dashboard/summary`.
+
+Create a pinned route in a new group or an existing group with no repository:
+
+```bash
+benchrouter routes create --name Triage --model anthropic/claude-haiku-4.5 --group Support --group-slug support --route-slug triage --yes
+benchrouter routes create --name Triage --model anthropic/claude-haiku-4.5 --group-id <id> --yes
+```
+
+Pass exactly one of `--group <name>` or `--group-id <id>`. `--group-slug <slug>`
+requires `--group`. Slugs default to the names. Creating a new group requires an
+account owner. The request sends `group: {name, slug?}` or `group_id`.
+The response keeps the internal `product` field and reports `group_created`.
+To create a runtime key for the group, use `benchrouter keys create --product-id <id>`.
+That endpoint still requires `product_id`.
 
 `status` shows each route, incumbent, current best model, production wiring state,
 latest eval state, and production result-set ID. Use `status --json` when an agent
