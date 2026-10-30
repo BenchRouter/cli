@@ -1,0 +1,7 @@
+{
+  "oidc_endpoint": "https://fixture.cloud.databricks.com/oidc",
+  "account_id": "00000000-0000-4000-8000-000000000001",
+  "workspace_id": "7474660687257254",
+  "cloud_provider": "aws",
+  "host_type": "workspace"
+}

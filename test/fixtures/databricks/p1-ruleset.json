@@ -1,0 +1,12 @@
+{
+  "name": "accounts/00000000-0000-4000-8000-000000000001/servicePrincipals/00000000-0000-4000-8000-000000000002/ruleSets/default",
+  "etag": "1793310537290000",
+  "grant_rules": [
+    {
+      "principals": [
+        "users/admin@example.com"
+      ],
+      "role": "roles/servicePrincipal.manager"
+    }
+  ]
+}

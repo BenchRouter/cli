@@ -1,0 +1,9 @@
+{
+  "active": true,
+  "applicationId": "00000000-0000-4000-8000-000000000003",
+  "displayName": "br-design-sp2",
+  "id": "71389619866210",
+  "schemas": [
+    "urn:ietf:params:scim:schemas:core:2.0:ServicePrincipal"
+  ]
+}

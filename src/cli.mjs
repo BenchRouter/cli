@@ -1574,13 +1574,13 @@ function stripUndefined(value) {
   return value;
 }
 
-function fail(message, code = "command_failed") {
+function fail(message, code = "command_failed", exitCode = 1) {
   if (args?.json) {
     process.stderr.write(`${JSON.stringify({ ok: false, error: { code, message } })}\n`);
   } else {
     process.stderr.write(`${message}\n`);
   }
-  process.exit(1);
+  process.exit(exitCode);
 }
 
 function usage(status, commandName = "all", message) {

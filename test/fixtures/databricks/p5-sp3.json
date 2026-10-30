@@ -1,0 +1,14 @@
+{
+  "active": true,
+  "applicationId": "00000000-0000-4000-8000-000000000004",
+  "displayName": "br-design-sp3",
+  "entitlements": [
+    {
+      "value": "workspace-access"
+    }
+  ],
+  "id": "76759962800965",
+  "schemas": [
+    "urn:ietf:params:scim:schemas:core:2.0:ServicePrincipal"
+  ]
+}

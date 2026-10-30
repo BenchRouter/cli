@@ -1,0 +1,8 @@
+{
+  "etag": "ACi1L_0ASAEAAA==",
+  "restrict_workspace_admins": {
+    "disable_gov_tag_creation": false,
+    "status": "ALLOW_ALL"
+  },
+  "setting_name": "default"
+}

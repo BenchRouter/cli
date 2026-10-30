@@ -1006,3 +1006,8 @@ export function renderAutoReloadSetup(body) {
 export function renderAutoReloadDisable(body) {
   process.stdout.write(`Automatic reload is ${body.auto_reload?.enabled ? "still on" : "off"} (${body.auto_reload?.state ?? "unknown"}).\n`);
 }
+
+export function renderDatabricksConnected(result) {
+  process.stdout.write(`Connected Databricks. Binding ${result.binding_id}; agent job ${result.agent_job_id}.\n`);
+  process.stdout.write("The agent run succeeded. The binding API does not expose full setup completion.\n");
+}

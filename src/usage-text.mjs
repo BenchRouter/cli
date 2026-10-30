@@ -8,7 +8,34 @@ const ADMIN_FLAGS = `  --admin-token bradm_...      Defaults to BENCHROUTER_ADMI
   --json                       Print machine-readable JSON.
 `;
 
+const DATABRICKS_CONNECT_USAGE = `Usage:
+  benchrouter databricks connect --host <url> --catalog <catalog> --schema <schema> [options]
+
+Uses your local Databricks OAuth login and BenchRouter control-token login.
+Supports user (U2M) and service principal (M2M) OAuth logins.
+The Databricks login token stays in memory on this machine. PAT logins are refused.
+Connect writes the poll key, applies REST grants and heal, and starts the agent job.
+
+Options:
+  --host <url>                 HTTPS Databricks workspace URL.
+  --catalog <catalog>          Existing Unity Catalog catalog.
+  --schema <schema>            Existing schema in the catalog.
+  --warehouse <id>             Warehouse for agent/eval work. Defaults to the only serverless warehouse.
+                              With several warehouses, select one on a TTY or pass this flag.
+  --results-group <group>      Account group that can read results.
+  --manage-group <group>       Account group that can manage serving objects.
+${ACCOUNT_FLAGS}
+Exit codes:
+  0  Agent run succeeded and binding verified (full setup status is not exposed).
+  1  Other error, unsupported Databricks auth type, invalid arguments, or verification timeout.
+  3  Grant or heal refused. The error names the catalog, schema, and known object owners.
+  4  workspace_admin_required. Log in as a Databricks workspace admin.
+  5  PAT login. Run databricks auth login --host <url>.
+`;
+
 const CONTROL_USAGE = {
+  databricks: DATABRICKS_CONNECT_USAGE,
+  "databricks connect": DATABRICKS_CONNECT_USAGE,
   login: `Usage:
   benchrouter login [--name text] [--expires-in-days 90]
 
@@ -774,6 +801,7 @@ export function resolveControlUsageName(positional) {
 
 export function topLevelControlUsageLines() {
   return `  benchrouter login [--name text] [--expires-in-days 90]
+  benchrouter databricks connect --host <url> --catalog <catalog> --schema <schema> [--json]
   benchrouter account show|token save [--json]
   benchrouter billing show|activity|statement [--json]
   benchrouter billing top-up --amount <usd> [--yes]
