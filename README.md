@@ -9,6 +9,50 @@ The package is `@benchrouter/cli`. It installs the `benchrouter` command.
 npx @benchrouter/cli --help
 ```
 
+## Connect Databricks
+
+Install the Databricks CLI and use an OAuth workspace-admin login:
+
+```bash
+benchrouter login
+databricks auth login --host https://<workspace>.cloud.databricks.com
+benchrouter databricks connect \
+  --host https://<workspace>.cloud.databricks.com \
+  --catalog workspace --schema <schema> --warehouse <warehouse-id>
+```
+
+Both a user OAuth login (U2M) and a service principal OAuth login (M2M) are
+supported. For M2M, configure the Databricks CLI with the admin service principal's
+client id and client secret. Connect reads the credentials into memory and obtains
+an access token from the workspace. It refreshes either login when fewer than
+five minutes remain. The client secret and login tokens never reach BenchRouter.
+
+Connect needs an owner or admin role in the BenchRouter account. The catalog and
+schema must exist. Omit `--warehouse` to use the only serverless warehouse.
+With several warehouses, choose one on a terminal or pass its id. Add
+`--results-group <group>` and `--manage-group <group>` to share results and management
+with account groups. Use `--json` for a secret-free machine result. Existing
+`--api-url`, `--account-token`, and saved login settings apply.
+
+The Databricks login token stays in process memory on your machine. BenchRouter
+receives only a fresh identity-only workspace proof. Connect writes the poll key
+to Databricks before grants. A repeated Connect reuses the recorded SP and job ids.
+It resets the job ACL. Under `restrict_workspace_admins`, the connecting admin
+owns the job and the agent SP gets `CAN_MANAGE`. Removing that admin can stop the job.
+
+Exit codes: `3` means a refused grant or heal and names the owners, `4` means
+`workspace_admin_required`, and `5` means a PAT login. Use OAuth to replace a PAT.
+Other errors exit with `1`. Connect waits up to three minutes for the agent run
+and binding verification. The current binding contract does not expose every
+setup item's completion. The result identifies that limit with
+`setup_confirmation: "not_exposed"`.
+
+This command requires the H1/H2 headless Connect server contract.
+For local replay tests only, `BENCHROUTER_DATABRICKS_API_BASE` redirects Databricks
+REST calls to a loopback HTTP server. Keep it unset for real workspace setup.
+If workspace discovery does not return the Databricks account id, set
+`DATABRICKS_ACCOUNT_ID` to that id and retry.
+
 ## Initialize a repository
 
 Run `init` from the repository that will use BenchRouter:

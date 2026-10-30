@@ -18,6 +18,11 @@ export const publicPaths = {
 };
 
 export const customerPaths = {
+  databricksBindings: () => ({ method: "GET", path: "/v1/databricks/bindings", label: "Databricks bindings" }),
+  databricksBinding: (id) => ({ method: "GET", path: `/v1/databricks/bindings/${encodePathSegment(id)}`, label: "Databricks binding" }),
+  databricksConnect: (body) => ({ method: "POST", path: "/v1/databricks/bindings", label: "Databricks connect", body }),
+  databricksRecordAgent: (id, body) => ({ method: "POST", path: `/v1/databricks/bindings/${encodePathSegment(id)}/agent`, label: "Databricks agent", body }),
+
   /** GET /v1/account/control/me */
   accountSelf: () => ({ method: "GET", path: "/v1/account/control/me", label: "account show" }),
 

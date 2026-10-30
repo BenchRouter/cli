@@ -1,0 +1,51 @@
+{
+  "active": true,
+  "displayName": "admin@example.com",
+  "emails": [
+    {
+      "primary": true,
+      "type": "work",
+      "value": "admin@example.com"
+    }
+  ],
+  "entitlements": [
+    {
+      "value": "workspace-access"
+    },
+    {
+      "value": "databricks-sql-access"
+    },
+    {
+      "value": "workspace-consume"
+    }
+  ],
+  "groups": [
+    {
+      "$ref": "Groups/80064639949325",
+      "display": "users",
+      "type": "direct",
+      "value": "80064639949325"
+    },
+    {
+      "$ref": "Groups/87804419605848",
+      "display": "admins",
+      "type": "direct",
+      "value": "87804419605848"
+    },
+    {
+      "$ref": "Groups/84465949952836",
+      "display": "account users",
+      "type": "direct",
+      "value": "84465949952836"
+    }
+  ],
+  "id": "76583951708598",
+  "name": {
+    "givenName": "admin@example.com"
+  },
+  "schemas": [
+    "urn:ietf:params:scim:schemas:core:2.0:User",
+    "urn:ietf:params:scim:schemas:extension:workspace:2.0:User"
+  ],
+  "userName": "admin@example.com"
+}

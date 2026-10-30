@@ -1,0 +1,14 @@
+{
+  "status": "valid",
+  "username": "admin@example.com",
+  "details": {
+    "auth_type": "databricks-cli",
+    "host": "https://fixture.cloud.databricks.com",
+    "configuration": {
+      "host": { "value": "https://fixture.cloud.databricks.com" },
+      "account_id": { "value": "00000000-0000-4000-8000-000000000001" },
+      "workspace_id": { "value": "7474660687257254" },
+      "auth_type": { "value": "databricks-cli" }
+    }
+  }
+}

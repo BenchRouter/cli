@@ -1,0 +1,10 @@
+{
+  "binding_id": "dbxb_recorded", "account_id": "acct_fixture", "poll_key": "brdp_recorded.poll-key-must-not-leak", "state": "connecting", "cadence_seconds": 3600,
+  "agent_schedule": { "cadence_seconds": 3600, "quartz_cron_expression": "0 17 * * * ?", "timezone_id": "UTC" },
+  "agent": {
+    "secret_scope": "REPLACED_WITH_HASH", "poll_key_secret": "poll-key", "package": "benchrouter_databricks", "entry_point": "agent", "max_concurrent_runs": 1,
+    "job_parameters": { "api_base": "https://api.benchrouter.com", "scope": "REPLACED_WITH_HASH", "poll_key_name": "poll-key", "job_id": "{{job.id}}" },
+    "environment": { "client": "2", "dependencies": ["https://runtime.benchrouter.com/databricks/benchrouter_databricks-0.3.0-py3-none-any.whl#sha256=recorded"] }
+  },
+  "grants": [], "heal": [], "sp_change": null
+}

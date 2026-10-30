@@ -1,0 +1,73 @@
+{
+  "cleanup_duration": 0,
+  "creator_user_name": "00000000-0000-4000-8000-000000000003",
+  "effective_performance_target": "PERFORMANCE_OPTIMIZED",
+  "end_time": 1793310830657,
+  "execution_duration": 52000,
+  "job_id": 127620839936386,
+  "job_run_id": 132837018013442,
+  "number_in_job": 132837018013442,
+  "original_attempt_run_id": 132837018013442,
+  "run_duration": 55094,
+  "run_id": 132837018013442,
+  "run_name": "br-design-probe-job",
+  "run_page_url": "https://fixture.cloud.databricks.com/?o=7474660687257254#job/127620839936386/run/132837018013442",
+  "run_type": "JOB_RUN",
+  "setup_duration": 2000,
+  "start_time": 1793310775563,
+  "state": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "SUCCESS",
+    "state_message": "",
+    "user_cancelled_or_timedout": false
+  },
+  "status": {
+    "state": "TERMINATED",
+    "termination_details": {
+      "code": "SUCCESS",
+      "message": "",
+      "type": "SUCCESS"
+    }
+  },
+  "tasks": [
+    {
+      "attempt_number": 0,
+      "cleanup_duration": 0,
+      "effective_performance_target": "PERFORMANCE_OPTIMIZED",
+      "end_time": 1793310830354,
+      "environment_key": "default",
+      "execution_duration": 52000,
+      "python_wheel_task": {
+        "entry_point": "probe",
+        "named_parameters": {
+          "catalog": "workspace",
+          "schema": "br_design",
+          "serving": "1",
+          "table": "workspace.br_design.br_design_spark_results"
+        },
+        "package_name": "br_design_probe"
+      },
+      "run_id": 556199715753065,
+      "run_if": "ALL_SUCCESS",
+      "run_page_url": "https://fixture.cloud.databricks.com/?o=7474660687257254#job/127620839936386/run/556199715753065",
+      "setup_duration": 2000,
+      "start_time": 1793310775602,
+      "state": {
+        "life_cycle_state": "TERMINATED",
+        "result_state": "SUCCESS",
+        "state_message": "",
+        "user_cancelled_or_timedout": false
+      },
+      "status": {
+        "state": "TERMINATED",
+        "termination_details": {
+          "code": "SUCCESS",
+          "message": "",
+          "type": "SUCCESS"
+        }
+      },
+      "task_key": "probe"
+    }
+  ],
+  "trigger": "ONE_TIME"
+}
