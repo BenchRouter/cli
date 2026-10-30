@@ -28,7 +28,7 @@ async function removeAcl(workspace, path, principal, admin) {
   }
   await workspace.call('PUT', path, { access_control_list: list });
 }
-async function runRevoke(workspace, step, admin, spId, catalog, schema) {
+async function runRevoke(workspace, step, admin, spId, catalog, schema, diagnostic) {
   if (step.action === 'revoke') return runUcStep(workspace, step, spId, catalog, schema);
   if (step.action === 'manifest_table_revoke') {
     const { grants, reason } = await readWorkspaceEvalGrants(workspace, step.eval_folder, step.route_key, { skipUnavailable: true });
@@ -43,7 +43,18 @@ async function runRevoke(workspace, step, admin, spId, catalog, schema) {
     }
     return;
   }
-  if (step.action === 'secret_acl_delete') {
+  if (step.action === 'manifest_secret_acl_delete') {
+    const { grants, reason } = await readWorkspaceEvalGrants(workspace, step.eval_folder, step.route_key, { skipUnavailable: true });
+    if (reason) return reason;
+    for (const scope of grants.secretScopes) {
+      diagnostic.read = () => workspace.call('GET', `/api/2.0/secrets/acls/list?${new URLSearchParams({ scope })}`);
+      try {
+        await workspace.call('POST', '/api/2.0/secrets/acls/delete', { scope, principal: step.principal.name });
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
+    }
+  } else if (step.action === 'secret_acl_delete') {
     const found = await workspace.optional('GET', `/api/2.0/secrets/acls/get?${new URLSearchParams({ scope: step.scope, principal: step.principal.name })}`);
     if (found) await workspace.call('POST', '/api/2.0/secrets/acls/delete', { scope: step.scope, principal: step.principal.name });
   } else if (step.action === 'job_acl_remove') await removeAcl(workspace, `/api/2.0/permissions/jobs/${encode(step.job_id)}`, step.principal, admin);
@@ -111,7 +122,7 @@ async function stepOwner(workspace, step, diagnostic) {
     }
     const owner = value?.access_control_list?.find((a) => a.all_permissions?.some((p) => p.permission_level === 'IS_OWNER'));
     return value?.owner ?? owner?.user_name ?? owner?.service_principal_name ?? owner?.group_name
-      ?? value?.items?.find((a) => a.permission === 'MANAGE')?.principal ?? 'unknown';
+      ?? (value?.items?.filter((a) => a.permission === 'MANAGE').map((a) => a.principal).join(', ') || 'unknown');
   } catch { return 'unknown'; }
 }
 
@@ -123,7 +134,7 @@ export async function runPendingSpSteps(workspace, br, steps, binding, admin, wa
     const diagnostic = {};
     try {
       const reason = kind === 'grant' ? await runGrant(workspace, step, binding, diagnostic)
-        : await runRevoke(workspace, step, admin, binding.agent_sp_application_id, binding.catalog, binding.schema);
+        : await runRevoke(workspace, step, admin, binding.agent_sp_application_id, binding.catalog, binding.schema, diagnostic);
       if (reason) {
         skipped.push({ object: step.object, action: step.action, route_key: step.route_key, eval_folder: step.eval_folder, reason });
         // A malformed or changed manifest cannot determine safe grants or revokes.

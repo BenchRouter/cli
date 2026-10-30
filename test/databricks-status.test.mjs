@@ -101,6 +101,70 @@ test('status filters hosts without a workspace login', { timeout: 4900 }, async 
   server.assertDone();
 });
 
+test('status prints shared host leftovers once after both bindings, keyed by binding, kind and id', { timeout: 4900 }, async (t) => {
+  const first = reads.archived;
+  const job = first.cleanup_pending.find((step) => step.kind === 'job');
+  const scope = first.cleanup_pending.find((step) => step.kind === 'secret_scope');
+  const second = { ...first, binding: { ...first.binding, id: 'dbxb_other' }, cleanup_pending: [
+    ...first.cleanup_pending,
+    { ...job, binding_id: 'dbxb_other' },
+    { ...scope, id: job.id, command: null }
+  ] };
+  const details = [first, second];
+  const server = await replay(t, [list(details.map((d) => d.binding)), ...details.map((d) => call('GET', `${base}/${d.binding.id}`, d))]);
+  const result = await runCli(server, ['status'], { BR_FIXTURE_AUTH: 'child-error' });
+  assert.equal(result.status, 0, result.stderr);
+  const heading = `Leftovers on ${first.binding.host}\n`;
+  assert.equal(result.stdout.split(heading).length - 1, 1);
+  const [bindings, leftovers] = result.stdout.split(heading);
+  for (const d of details) assert.ok(bindings.includes(`  Binding: ${d.binding.id};`));
+  for (const label of ['Setup items', 'Exposures', 'Evals', 'Routes', 'Setup failure', 'Disconnect failure']) {
+    assert.equal(bindings.split(`\n${label}\n`).length - 1, 2);
+  }
+  assert.ok(!bindings.includes(`  ${job.kind}: ${job.id}\n`));
+  for (const step of second.cleanup_pending) {
+    const entry = `  ${step.kind}: ${step.id}\n    Binding ${step.binding_id}; actor ${step.actor}; reason ${step.reason}\n`;
+    assert.equal(leftovers.split(entry).length - 1, 1, entry);
+    assertIndented(result.stdout, step.instruction);
+    assertIndented(result.stdout, step.command);
+  }
+  server.assertDone();
+});
+
+test('status groups interleaved hosts and prints a separate leftovers heading for each', { timeout: 4900 }, async (t) => {
+  const first = reads.archived;
+  const other = { ...first, binding: { ...first.binding, id: 'dbxb_other_host', host: 'other.cloud.databricks.com' } };
+  const last = { ...first, binding: { ...first.binding, id: 'dbxb_same_host' } };
+  const details = [first, other, last];
+  const server = await replay(t, [list(details.map((d) => d.binding)), ...details.map((d) => call('GET', `${base}/${d.binding.id}`, d))]);
+  const result = await runCli(server, ['status'], { BR_FIXTURE_AUTH: 'child-error' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.split('Leftovers on ').length - 1, 2);
+  const firstHeading = result.stdout.indexOf(`Leftovers on ${first.binding.host}\n`);
+  const otherBinding = result.stdout.indexOf(`  Binding: ${other.binding.id};`);
+  const otherHeading = result.stdout.indexOf(`Leftovers on ${other.binding.host}\n`);
+  assert.ok(result.stdout.indexOf(`  Binding: ${last.binding.id};`) < firstHeading);
+  assert.ok(firstHeading < otherBinding && otherBinding < otherHeading);
+  for (const section of [result.stdout.slice(firstHeading, otherBinding), result.stdout.slice(otherHeading)]) {
+    for (const step of first.cleanup_pending) assert.equal(section.split(`  ${step.kind}: ${step.id}\n`).length - 1, 1);
+  }
+  server.assertDone();
+});
+
+test('status JSON preserves binding order and repeated host leftovers in server reads', { timeout: 4900 }, async (t) => {
+  const first = reads.archived;
+  const details = [
+    first,
+    { ...first, binding: { ...first.binding, id: 'dbxb_other_host', host: 'other.cloud.databricks.com' } },
+    { ...first, binding: { ...first.binding, id: 'dbxb_same_host' } }
+  ];
+  const server = await replay(t, [list(details.map((d) => d.binding)), ...details.map((d) => call('GET', `${base}/${d.binding.id}`, d))]);
+  const result = await runCli(server, ['status', '--json'], { BR_FIXTURE_AUTH: 'child-error' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { bindings: details });
+  server.assertDone();
+});
+
 for (const all of [false, true]) for (const json of [false, true]) test(`status selects open and closed-with-leftovers bindings (${all ? '--all' : 'default'}, ${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
   const details = [
     { ...reads.verified, binding: { ...reads.verified.binding, id: 'dbxb_open' }, cleanup_pending: [] },

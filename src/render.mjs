@@ -1041,8 +1041,8 @@ function databricksEvalLines(e) {
   }
   return lines;
 }
-function databricksLeftoverLines(steps) {
-  const lines = ['Leftovers'];
+function databricksLeftoverLines(steps, heading = 'Leftovers') {
+  const lines = [heading];
   if (!steps.length) lines.push('  None.');
   for (const step of steps) {
     lines.push(`  ${step.kind}: ${step.id}`, `    Binding ${step.binding_id}; actor ${step.actor}; reason ${step.reason}`);
@@ -1058,7 +1058,8 @@ function databricksLeftoverLines(steps) {
 }
 export function renderDatabricksRead(value) {
   if (!value.bindings.length) { process.stdout.write('No Databricks bindings.\n'); return; }
-  const views = value.bindings.map((detail) => {
+  const hosts = new Map();
+  for (const detail of value.bindings) {
     const b = detail.binding;
     const jobLink = (id) => id ? `https://${b.host}/jobs/${id}` : '(not set)';
     const lines = [
@@ -1095,9 +1096,18 @@ export function renderDatabricksRead(value) {
     for (const r of detail.routes) lines.push(`  ${r.route_key} (${r.name}): ${r.model}; eval source: ${dbxValue(r.eval_source)}`);
     lines.push('', 'Setup failure', ...(detail.setup_failure ? databricksFailureLines(detail.setup_failure) : ['  None.']));
     lines.push('', 'Disconnect failure', ...(detail.disconnect_failure ? databricksFailureLines(detail.disconnect_failure) : ['  None.']));
-    lines.push('', ...databricksLeftoverLines(detail.cleanup_pending));
-    return lines.join('\n');
-  });
+    if (!hosts.has(b.host)) hosts.set(b.host, { bindings: [], leftovers: new Map() });
+    const group = hosts.get(b.host);
+    group.bindings.push(lines.join('\n'));
+    for (const step of detail.cleanup_pending) {
+      const key = JSON.stringify([step.binding_id, step.kind, step.id]);
+      if (!group.leftovers.has(key)) group.leftovers.set(key, step);
+    }
+  }
+  const views = Array.from(hosts, ([host, group]) => [
+    ...group.bindings,
+    databricksLeftoverLines([...group.leftovers.values()], `Leftovers on ${host}`).join('\n')
+  ].join('\n\n'));
   process.stdout.write(`${views.join('\n\n')}\n`);
 }
 export function renderDatabricksEval(value) {
