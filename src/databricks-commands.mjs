@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, uc, encode } from './databricks.mjs';
-import { databricksControl, secretRedaction, exits, refusal, numericId, runUcStep } from './databricks-helpers.mjs';
+import { databricksControl, secretRedaction, exits, refusal, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
 import { parseDatabricksSetupItems } from './databricks-contract.mjs';
 import { readEvalGrants } from './databricks-eval-manifest.mjs';
 import { validateCleanup, objectExists, deleteRecorded, recordedObjects, objectKey } from './databricks-cleanup.mjs';
@@ -38,7 +38,7 @@ async function requireAdmin(workspace) {
 }
 async function runAgent(workspace, id) {
   if (!id) return false;
-  if (await workspace.optional('GET', `/api/2.2/jobs/get?job_id=${encode(id)}`)) {
+  if (await readJob(workspace, id)) {
     return Boolean(await workspace.optional('POST', '/api/2.2/jobs/run-now', { job_id: numericId(id) }));
   }
   return false;
@@ -55,7 +55,7 @@ export async function runDatabricksCommand(ctx) {
     const hostArg = ctx.stringArg('host');
     if (ctx.args.host !== undefined && !hostArg) return ctx.usage(1, `databricks ${sub}`, 'Pass --host <url>.');
     const host = hostArg ? workspaceHost(hostArg) : null;
-    const workspace = (url) => new DatabricksWorkspace(workspaceHost(url), remember);
+    const workspace = (url) => new DatabricksWorkspace(workspaceHost(url), remember, clean);
     let result;
     let render;
     if (sub === 'disconnect' && ctx.args.reclaim) {

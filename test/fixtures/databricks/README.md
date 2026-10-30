@@ -16,6 +16,13 @@ owner, privilege and refusal shapes. Scenario variants change owners, error
 codes, existence, restriction status and ACL membership to cover each branch.
 No recording contains an access token or OAuth secret.
 
+`job-deleted.json` is the HTTP 400 body from the first live Connect/Disconnect
+run on 2026-10-30. Jobs get and cleanup delete use `INVALID_PARAMETER_VALUE`
+as absence only for a validated positive job id. The replay also asserts the
+complete rule-set PUT body, including matching top-level and nested names.
+Diagnostic variants reflect a synthetic login token to verify redaction before
+the 300-character message limit in text and JSON output.
+
 `connect.json` is a contract fixture from the final shared `headless-contract.ts`.
 It is not a live H1/H2 response. Its scope and principal fields are filled from
 that test's SP. The fake wheel digest is never downloaded. Live H1/H2 integration

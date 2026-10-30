@@ -1,6 +1,6 @@
 import { accountClient } from './control-helpers.mjs';
 import { apiRequest, ApiError } from './http.mjs';
-import { DatabricksError, uc, ucPaths, encode } from './databricks.mjs';
+import { DatabricksError, uc, ucPaths, encode, isMissing } from './databricks.mjs';
 
 export const exits = { grant_refused: 3, workspace_admin_required: 4, pat_login: 5, databricks_login_required: 1, databricks_auth_unsupported: 1 };
 export const proofErrors = {
@@ -16,6 +16,12 @@ export function numericId(value) {
   const text = String(value ?? '');
   if (!text || ![...text].every((c) => c >= '0' && c <= '9') || BigInt(text) <= 0n || BigInt(text) > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Databricks returned an invalid numeric object id.');
   return Number(text);
+}
+export async function readJob(workspace, id) {
+  // With job_id as the only validated parameter, the recorded 400 means absence.
+  const jobId = numericId(id);
+  try { return await workspace.call('GET', `/api/2.2/jobs/get?job_id=${jobId}`); }
+  catch (error) { if (isMissing(error, { job: true })) return null; throw error; }
 }
 
 function objectPath(step) { return `${uc}/${ucPaths[step.securable]}/${encode(step.full_name)}`; }

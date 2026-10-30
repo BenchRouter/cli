@@ -5,7 +5,7 @@ import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { parseDatabricksConnectResponse, parseDatabricksSetupItems } from './databricks-contract.mjs';
 import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, encode } from './databricks.mjs';
-import { databricksControl, secretRedaction, exits, proofErrors, refusal, numericId, runUcStep } from './databricks-helpers.mjs';
+import { databricksControl, secretRedaction, exits, proofErrors, refusal, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
 import { renderDatabricksConnected } from './render.mjs';
 
 function aclPrincipal(p) {
@@ -23,7 +23,7 @@ export async function runDatabricksConnect(ctx) {
     const host = workspaceHost(hostArg);
     const br = databricksControl(ctx);
     const log = (line) => { if (!ctx.args.json) process.stdout.write(`${line}\n`); };
-    const workspace = new DatabricksWorkspace(host, remember);
+    const workspace = new DatabricksWorkspace(host, remember, clean);
     log('1/8 Read the Databricks OAuth login and workspace admin identity.');
     const claims = await workspace.login();
     const metadata = await workspace.call('GET', '/.well-known/databricks-config', undefined, { anonymous: true });
@@ -49,7 +49,7 @@ export async function runDatabricksConnect(ctx) {
     if (open.length > 1) throw new Error('BenchRouter returned several open bindings for this workspace.');
     const binding = open[0];
     if (binding?.disconnect_requested_at) throw refusal(proofErrors.binding_disconnecting, 'binding_disconnecting');
-    const job = binding?.agent_job_id ? await workspace.optional('GET', `/api/2.2/jobs/get?job_id=${encode(binding.agent_job_id)}`) : null;
+    const job = binding?.agent_job_id ? await readJob(workspace, binding.agent_job_id) : null;
     const selection = await prepareAgent(workspace, binding, job, admin, accountId);
     if (selection.created) log('Created a fresh agent service principal.');
     else if (selection.preserveRunAs) log('Reused the recorded agent job and kept its Run as identity.');
@@ -175,7 +175,8 @@ async function prepareAgent(workspace, binding, job, admin, accountId) {
     sp = await workspace.call('POST', `${scim}/ServicePrincipals`, { displayName: `benchrouter-agent-${randomBytes(4).toString('hex')}`, entitlements: [{ value: 'workspace-access' }, { value: 'databricks-sql-access' }] });
     created = true;
     ruleSet = await readRules(sp.applicationId);
-    await workspace.call('PUT', rules, { name: ruleName(sp.applicationId), rule_set: { etag: ruleSet.etag, grant_rules: [...(ruleSet.grant_rules ?? []), { role: 'roles/servicePrincipal.user', principals: [member] }] } });
+    const name = ruleName(sp.applicationId);
+    await workspace.call('PUT', rules, { name, rule_set: { name, etag: ruleSet.etag, grant_rules: [...(ruleSet.grant_rules ?? []), { role: 'roles/servicePrincipal.user', principals: [member] }] } });
   }
   if (typeof sp.id !== 'string' || typeof sp.applicationId !== 'string') throw new Error('Databricks returned an invalid service principal.');
   // A.7: another admin can keep the job's Run as identity without a role on its SP.

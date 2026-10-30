@@ -32,16 +32,18 @@ export function jwtClaims(token) {
     return header.alg === 'RS256' && typeof claims.scope === 'string' && Number.isFinite(claims.exp) ? claims : null;
   } catch { return null; }
 }
-export function isMissing(error) {
-  return error instanceof DatabricksError && (error.status === 404 || ['RESOURCE_DOES_NOT_EXIST', 'NOT_FOUND'].includes(error.code));
+export function isMissing(error, { job = false } = {}) {
+  return error instanceof DatabricksError && (error.status === 404 || ['RESOURCE_DOES_NOT_EXIST', 'NOT_FOUND'].includes(error.code)
+    || (job && error.status === 400 && error.code === 'INVALID_PARAMETER_VALUE'));
 }
 
 export class DatabricksWorkspace {
   #token;
   #claims;
-  constructor(host, rememberSecret) {
+  constructor(host, rememberSecret, clean) {
     this.host = host;
     this.rememberSecret = rememberSecret;
+    this.clean = clean;
     // Test-only replay boundary. Never changes workspace_url sent to BenchRouter.
     const override = process.env.BENCHROUTER_DATABRICKS_API_BASE;
     if (override) {
@@ -122,8 +124,11 @@ export class DatabricksWorkspace {
       throw new DatabricksError('Databricks request failed or returned invalid JSON.');
     }
     if (!response.ok) {
-      // AUTH-012 / DATA-001: never echo a remote error body, which can reflect a token.
-      throw new DatabricksError(`Databricks request failed (${response.status}).`, result.error_code ?? result.error, response.status);
+      const code = result?.error_code ?? result?.error;
+      const identifier = typeof code === 'string' && code && [...code].every((c) => c === '_' || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) ? ` ${code}` : '';
+      // AUTH-012 / DATA-001: redact before truncation so a partial token cannot escape.
+      const message = typeof result?.message === 'string' ? this.clean(result.message).slice(0, 300) : '';
+      throw new DatabricksError(`Databricks request failed: ${method} ${path.split('?')[0]} answered ${response.status}${identifier}.${message ? ` ${message}` : ''}`, code, response.status);
     }
     return result;
   }

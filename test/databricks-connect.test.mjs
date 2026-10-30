@@ -9,6 +9,7 @@ const fixtureDir = new URL('./fixtures/databricks/', import.meta.url);
 const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureDir), 'utf8'));
 const [me, sp, sp2, ruleset, run, settings, responseTemplate, metadata] = await Promise.all(['me.json', 'p1-create.json', 'p5-sp3.json', 'p1-ruleset-put.json', 'p2-run.json', 'settings.json', 'connect.json', 'databricks-config.json'].map(fixture));
 const setupTemplate = await fixture('binding-read.json');
+const deletedJob = await fixture('job-deleted.json');
 const host = 'https://fixture.cloud.databricks.com';
 const account = '00000000-0000-4000-8000-000000000001';
 const scim = '/api/2.0/preview/scim/v2';
@@ -63,7 +64,7 @@ function plan(options = {}) {
   }
   const bindingsDate = Object.hasOwn(options, 'bindingsDate') ? options.bindingsDate : new Date().toUTCString();
   add('GET', '/v1/databricks/bindings', { bindings: existing ? [existing] : [] }, 200, undefined, { date: bindingsDate });
-  if (existing?.agent_job_id) add('GET', '/api/2.2/jobs/get', options.jobMissing ? { error_code: 'RESOURCE_DOES_NOT_EXIST' } : { job_id: Number(existing.agent_job_id), settings: { run_as: { service_principal_name: existing.agent_sp_application_id } } }, options.jobMissing ? 404 : 200);
+  if (existing?.agent_job_id) add('GET', '/api/2.2/jobs/get', options.jobDeleted ? deletedJob : options.jobMissing ? { error_code: 'RESOURCE_DOES_NOT_EXIST' } : { job_id: Number(existing.agent_job_id), settings: { run_as: { service_principal_name: existing.agent_sp_application_id } } }, options.jobDeleted ? 400 : options.jobMissing ? 404 : 200);
   if (existing) {
     add('GET', `${scim}/ServicePrincipals`, { Resources: options.spMissing ? [] : [sp], totalResults: options.spMissing ? 0 : 1 }, 200, (r) => assert.equal(r.query.get('filter'), `applicationId eq ${JSON.stringify(sp.applicationId)}`));
     if (!options.spMissing) add('GET', rulePath, options.noRole || options.ruleFailure ? { error_code: options.ruleCode ?? 'PERMISSION_DENIED', message: 'Not authorized to perform this operation' } : ruleset, options.noRole || options.ruleFailure ? options.ruleStatus ?? 403 : 200);
@@ -76,9 +77,8 @@ function plan(options = {}) {
     });
     add('GET', rulePath, { ...ruleset, grant_rules: ruleset.grant_rules.slice(0, 1) });
     add('PUT', rulePath, ruleset, 200, (r) => {
-      assert.equal(r.body.name, `accounts/${account}/servicePrincipals/${agent.applicationId}/ruleSets/default`);
-      assert.equal(r.body.rule_set.etag, ruleset.etag);
-      assert.deepEqual(r.body.rule_set.grant_rules.at(-1), { role: 'roles/servicePrincipal.user', principals: [member] });
+      const name = `accounts/${account}/servicePrincipals/${agent.applicationId}/ruleSets/default`;
+      assert.deepEqual(r.body, { name, rule_set: { name, etag: ruleset.etag, grant_rules: [...ruleset.grant_rules.slice(0, 1), { role: 'roles/servicePrincipal.user', principals: [member] }] } });
     });
   }
   if (!options.noRole || options.newSp) {
@@ -137,7 +137,7 @@ function plan(options = {}) {
     }
   }
   if (options.changeCalls) calls.push(...options.changeCalls);
-  const hasJob = existing?.agent_job_id && !options.jobMissing;
+  const hasJob = existing?.agent_job_id && !options.jobMissing && !options.jobDeleted;
   const jobId = hasJob ? existing.agent_job_id : '127620839936386';
   add('POST', `/api/2.2/jobs/${hasJob ? 'reset' : 'create'}`, { job_id: Number(jobId) }, 200, (r) => {
     const s = hasJob ? r.body.new_settings : r.body;
@@ -174,6 +174,48 @@ const replay = (t, calls) => sharedReplay(t, calls, (request) => {
         assert.equal(url.searchParams.get('etag'), '');
         assert.ok([sp, sp2].some((agent) => url.searchParams.get('name') === `accounts/${account}/servicePrincipals/${agent.applicationId}/ruleSets/default`));
       }
+});
+
+test('Connect recreates a deleted recorded agent job after the live 400 response', { timeout: 4900 }, async (t) => {
+  const p = plan({ existing: binding(sp, '1100628925659126'), jobDeleted: true });
+  const server = await sharedReplay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).agent_job_id, '127620839936386');
+  assert.equal(server.requests.find((r) => r.path === '/api/2.2/jobs/get').query.get('job_id'), '1100628925659126');
+  assert.ok(server.requests.some((r) => r.path === '/api/2.2/jobs/create'));
+  assert.ok(!server.requests.some((r) => r.path === '/api/2.2/jobs/reset'));
+  server.assertDone();
+});
+
+for (const id of ['0', '1&job_id=2', '9007199254740992']) test(`Connect rejects invalid recorded job id ${id} before a job request`, { timeout: 4900 }, async (t) => {
+  const p = plan({ existing: binding(sp, id) });
+  p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.2/jobs/get'));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stderr).error.message, 'Databricks returned an invalid numeric object id.');
+  assert.ok(!server.requests.some((r) => r.path.startsWith('/api/2.2/jobs/')));
+  server.assertDone();
+});
+
+for (const json of [false, true]) test(`Databricks diagnostics name the call and redact before truncating (${json ? 'JSON' : 'text'}, AUTH-012 / DATA-001)`, { timeout: 4900 }, async (t) => {
+  const p = plan({ existing: binding() });
+  const at = p.calls.findIndex((c) => c.path === '/api/2.2/jobs/get');
+  let token;
+  const prefix = 'Reflected login: ' + 'x'.repeat(235);
+  p.calls.splice(at, p.calls.length, { method: 'GET', path: '/api/2.2/jobs/get', status: 400,
+    check: (r) => { token = r.headers.authorization.slice('Bearer '.length); },
+    body: () => ({ error_code: 'BAD_REQUEST', message: prefix + token + 'y'.repeat(400) }) });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, json ? ['--json'] : []);
+  assert.equal(result.status, 1);
+  const message = json ? JSON.parse(result.stderr).error.message : result.stderr.trim();
+  assert.equal(message, `Databricks request failed: GET /api/2.2/jobs/get answered 400 BAD_REQUEST. ${(prefix + '[redacted]' + 'y'.repeat(400)).slice(0, 300)}`);
+  assert.ok(!message.includes('?job_id='));
+  assert.ok(!message.includes(token.slice(0, 40)));
+  noSecrets(result);
+  server.assertDone();
 });
 
 for (const [name, options, expectedStatus] of [

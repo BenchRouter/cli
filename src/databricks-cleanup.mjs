@@ -1,5 +1,5 @@
 import { DatabricksError, encode, uc, isMissing } from './databricks.mjs';
-import { numericId } from './databricks-helpers.mjs';
+import { numericId, readJob } from './databricks-helpers.mjs';
 
 const kinds = new Set(['job', 'secret_scope', 'serving_endpoint', 'provider_service', 'volume', 'agent_service_principal']);
 export function validateCleanup(steps) {
@@ -12,7 +12,6 @@ export function validateCleanup(steps) {
 }
 function objectPath(step) {
   const id = encode(step.id);
-  if (step.kind === 'job') return `/api/2.2/jobs/get?job_id=${id}`;
   if (step.kind === 'secret_scope') return `/api/2.0/secrets/acls/list?scope=${id}`;
   if (step.kind === 'serving_endpoint') return `/api/2.0/serving-endpoints/${id}`;
   if (step.kind === 'provider_service') return `${uc}/model-provider-services/${id}`;
@@ -21,7 +20,7 @@ function objectPath(step) {
 }
 // A workspace SCIM read cannot prove account SP deletion (A.7). The caller keeps that step.
 export async function objectExists(workspace, step) {
-  const result = await workspace.optional('GET', objectPath(step));
+  const result = step.kind === 'job' ? await readJob(workspace, step.id) : await workspace.optional('GET', objectPath(step));
   if (!result) return false;
   return true;
 }
@@ -39,7 +38,7 @@ export async function deleteRecorded(workspace, step) {
     // A successful DELETE can be asynchronous. Acknowledge only an observed absence.
     return !await objectExists(workspace, step) ? 'deleted' : false;
   } catch (error) {
-    if (isMissing(error)) return 'absent';
+    if (isMissing(error, { job: step.kind === 'job' })) return 'absent';
     // An admin without MANAGE cannot remove a provider service. Keep the server instruction.
     if (error instanceof DatabricksError && (error.status === 403 || error.code === 'PERMISSION_DENIED')) return false;
     throw error;
