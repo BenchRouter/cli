@@ -40,11 +40,7 @@ export async function runDatabricksConnect(ctx) {
     const warehouseId = await selectWarehouse(workspace, ctx);
 
     log('2/8 Read the recorded binding and prepare its agent service principal.');
-    const { body: listed, headers } = await br({ ...customerPaths.databricksBindings(), includeHeaders: true });
-    // The server Date rounds down to seconds and precedes the register batch.
-    // Use its clock so an admin's laptop clock cannot make fresh items look old.
-    const connectStartedAt = Date.parse(headers.get('date'));
-    if (!Number.isFinite(connectStartedAt)) throw new Error('BenchRouter Databricks binding list response has a missing or invalid HTTP Date header. Connect requires the server clock. Retry Connect.');
+    const listed = await br(customerPaths.databricksBindings());
     if (!Array.isArray(listed.bindings)) throw new Error('BenchRouter returned an invalid Databricks binding list.');
     const open = listed.bindings.filter((b) => b.host === new URL(host).hostname && !['archived', 'disconnected'].includes(b.state));
     if (open.length > 1) throw new Error('BenchRouter returned several open bindings for this workspace.');
@@ -127,7 +123,7 @@ export async function runDatabricksConnect(ctx) {
 
     log('8/8 Start the agent job and wait for its run, setup items, and workspace verification.');
     const started = await workspace.call('POST', '/api/2.2/jobs/run-now', { job_id: jobId });
-    const final = await waitForAgent(workspace, br, connected.binding_id, numericId(started.run_id), spId, connectStartedAt);
+    const final = await waitForAgent(workspace, br, connected.binding_id, numericId(started.run_id), spId, catalog, schema);
     const result = { ok: true, binding_id: connected.binding_id, account_id: connected.account_id, state: final.binding.state, agent_job_id: String(jobId), agent_sp_application_id: spId, job_owner: restricted ? 'connecting_admin' : 'agent', setup_items: final.setup_items.map(({ kind, target, state }) => ({ kind, target, state })), skipped };
     return emit(ctx, result, () => renderDatabricksConnected(result));
   } catch (error) {
@@ -261,27 +257,39 @@ function agentSettings({ agent, agent_schedule: schedule }) {
     environments: [{ environment_key: 'agent', spec: agent.environment }]
   };
 }
-async function waitForAgent(workspace, br, bindingId, runId, spId, connectStartedAt) {
+function expectedSetupItems(bindingId, catalog, schema) {
+  // Server setup item targets, confirmed live in H8 (2026-10-30).
+  return [
+    { kind: 'volume', target: `${catalog}.${schema}.benchrouter_artifacts` },
+    { kind: 'volume', target: `${catalog}.${schema}.benchrouter_results` },
+    { kind: 'results_table', target: `${catalog}.${schema}.benchrouter_eval_results` },
+    { kind: 'experiment', target: `/Shared/benchrouter/${bindingId}` },
+    { kind: 'eval_job', target: `benchrouter-eval-${bindingId}` }
+  ];
+}
+async function waitForAgent(workspace, br, bindingId, runId, spId, catalog, schema) {
   const deadline = Date.now() + 180000;
-  let pending = [];
+  const expected = expectedSetupItems(bindingId, catalog, schema);
+  let pending = expected;
   while (Date.now() < deadline) {
     const run = await workspace.call('GET', `/api/2.2/jobs/runs/get?run_id=${runId}`);
     const view = await br(customerPaths.databricksBinding(bindingId));
     if (!view.binding || view.binding.agent_sp_application_id !== spId || view.binding.disconnect_requested_at || ['disconnected', 'archived'].includes(view.binding.state)) throw new Error('The binding changed or closed during Connect. Run connect again.');
     const items = parseDatabricksSetupItems(view.setup_items);
-    const fresh = (item) => Date.parse(item.queued_at) >= connectStartedAt;
-    const failed = items.find((item) => fresh(item) && item.state === 'failed');
+    const failed = items.find((item) => item.state === 'failed');
     if (failed) {
       const { title, message, owner } = failed.failure;
       throw new Error(`${title}: ${message} (owner: ${owner}).${owner === 'customer' ? ' A workspace admin must fix it.' : ''}`);
     }
-    pending = items.filter((item) => item.kind !== 'serving_endpoint' && (item.state !== 'done' || !fresh(item)));
+    // The binding read returns the newest non-cancelled row per (kind, target).
+    pending = expected.filter(({ kind, target }) => !items.some((item) => item.kind === kind && item.state === 'done'
+      && (kind === 'volume' || kind === 'results_table' ? item.target.toLowerCase() === target.toLowerCase() : item.target === target)));
     if (['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'].includes(run.state?.life_cycle_state)) {
       if (run.state.result_state !== 'SUCCESS') throw new Error('The agent job did not finish successfully. Check the recorded job in Databricks.');
       if (view.binding.state === 'verified' && pending.length === 0) return { ...view, setup_items: items };
     }
     await delay(1000);
   }
-  const waiting = pending.length ? ` Waiting for setup items from this Connect: ${pending.map((item) => `${item.kind} ${item.target}`).join(', ')}.` : '';
+  const waiting = pending.length ? ` Waiting for missing or incomplete setup items: ${pending.map((item) => `${item.kind} ${item.target}`).join(', ')}.` : '';
   throw new Error(`Timed out waiting for the agent run, setup items, and workspace verification.${waiting} Check the agent job and run connect again.`);
 }

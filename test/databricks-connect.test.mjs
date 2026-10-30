@@ -63,8 +63,7 @@ function plan(options = {}) {
     add('GET', '/api/2.0/sql/warehouses', { warehouses: options.warehouses ?? [{ id: 'f7cf158c6784dd06', name: 'Serverless', enable_serverless_compute: true }] });
     if (options.warehouses) return { calls, c };
   }
-  const bindingsDate = Object.hasOwn(options, 'bindingsDate') ? options.bindingsDate : new Date().toUTCString();
-  add('GET', '/v1/databricks/bindings', { bindings: existing ? [existing] : [] }, 200, undefined, { date: bindingsDate });
+  add('GET', '/v1/databricks/bindings', { bindings: existing ? [existing] : [] });
   if (existing?.agent_job_id) add('GET', '/api/2.2/jobs/get', options.jobDeleted ? deletedJob : options.jobMissing ? { error_code: 'RESOURCE_DOES_NOT_EXIST' } : { job_id: Number(existing.agent_job_id), settings: { run_as: { service_principal_name: existing.agent_sp_application_id } } }, options.jobDeleted ? 400 : options.jobMissing ? 404 : 200);
   if (existing) {
     add('GET', `${scim}/ServicePrincipals`, { Resources: options.spMissing ? [] : [sp], totalResults: options.spMissing ? 0 : 1 }, 200, (r) => assert.equal(r.query.get('filter'), `applicationId eq ${JSON.stringify(sp.applicationId)}`));
@@ -154,7 +153,7 @@ function plan(options = {}) {
   add('POST', '/v1/databricks/bindings/dbxb_recorded/agent', { ok: true }, 200, (r) => assert.deepEqual(r.body, { agent_job_id: jobId, secret_scope: scope }));
   add('POST', '/api/2.2/jobs/run-now', { run_id: run.run_id });
   for (const snapshot of options.setupReads ?? [{}]) {
-    add('GET', '/api/2.2/jobs/runs/get', options.runFailed ? { state: { life_cycle_state: 'TERMINATED', result_state: 'FAILED' } } : run);
+    add('GET', '/api/2.2/jobs/runs/get', options.runFailed ? { state: { life_cycle_state: 'TERMINATED', result_state: 'FAILED' } } : snapshot.run ?? run);
     add('GET', '/v1/databricks/bindings/dbxb_recorded', () => {
       const items = structuredClone(setupTemplate.setup_items).map((item) => ({ ...item, queued_at: queuedAt }));
       snapshot.items?.(items, queuedAt);
@@ -280,20 +279,55 @@ test('two Connect runs create one SP and one job; human logs show all eight step
   assert.equal(server.requests.filter((r) => r.path === '/api/2.2/jobs/create').length, 1);
 });
 
+test('Connect matches Unity Catalog targets case-insensitively with mixed-case catalog and schema flags', { timeout: 4900 }, async (t) => {
+  const server = await replay(t, plan({ setupReads: [{ items: (items) => {
+    for (const item of items) {
+      if (item.kind === 'volume' || item.kind === 'results_table') item.target = item.target.replace('br_design', 'br_h8');
+    }
+  } }] }).calls);
+  const result = await runCli(server, ['--catalog', 'Workspace', '--schema', 'BR_H8', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.state, 'verified');
+  assert.deepEqual(output.setup_items, setupTemplate.setup_items.map(({ kind, target, state }) => ({ kind, target: target.replace('br_design', 'br_h8'), state })));
+  const connect = server.requests.find((r) => r.method === 'POST' && r.path === '/v1/databricks/bindings');
+  assert.equal(connect.body.catalog, 'Workspace');
+  assert.equal(connect.body.schema, 'BR_H8');
+  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 1);
+  server.assertDone();
+});
+
+test('same-SP same-schema Reconnect succeeds with an older done eval_job row (live H8)', { timeout: 4900 }, async (t) => {
+  const setupReads = [{ items: (items, queuedAt) => {
+    const evalJob = items.find((item) => item.kind === 'eval_job');
+    evalJob.queued_at = new Date(Date.parse(queuedAt) - 86400000).toISOString();
+  } }];
+  const server = await replay(t, plan({ existing: binding(), setupReads }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).state, 'verified');
+  assert.deepEqual(JSON.parse(result.stdout).setup_items, [
+    { kind: 'volume', target: 'workspace.br_design.benchrouter_artifacts', state: 'done' },
+    { kind: 'volume', target: 'workspace.br_design.benchrouter_results', state: 'done' },
+    { kind: 'results_table', target: 'workspace.br_design.benchrouter_eval_results', state: 'done' },
+    { kind: 'experiment', target: '/Shared/benchrouter/dbxb_recorded', state: 'done' },
+    { kind: 'eval_job', target: 'benchrouter-eval-dbxb_recorded', state: 'done' }
+  ]);
+  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 1);
+  noSecrets(result);
+  server.assertDone();
+});
+
 for (const [name, setupReads, status, reads] of [
-  ['all non-serving rows done after Connect started succeed without eval_job_id or exposure checks', [{ binding: { eval_job_id: null }, exposures: [{ state: 'exposing', failure: setupTemplate.failure }], setupFailure: setupTemplate.failure }], 0, 1],
-  ['a done row from before Connect waits until a newer row is done', [{ items: (items, queuedAt) => { items[2].queued_at = new Date(Date.parse(queuedAt) - 86400000).toISOString(); } }, {}], 0, 2],
-  ['a fresh pending row waits until done', [{ items: (items) => { items[2].state = 'pending'; } }, {}], 0, 2],
+  ['all expected rows done succeed without eval_job_id or exposure checks', [{ binding: { eval_job_id: null }, exposures: [{ state: 'exposing', failure: setupTemplate.failure }], setupFailure: setupTemplate.failure }], 0, 1],
+  ['a re-queued pending row waits until done', [{ items: (items) => { items[2].state = 'pending'; } }, {}], 0, 2],
   ['done rows still wait for binding verification', [{ binding: { state: 'connecting' } }, {}], 0, 2],
-  ['queue times with a UTC offset compare as instants', [{ items: (items, queuedAt) => {
-    const offsetTime = new Date(Date.parse(queuedAt) - 5 * 3600000).toISOString().slice(0, -1) + '-05:00';
-    for (const item of items) item.queued_at = offsetTime;
-  } }], 0, 1],
+  ['done rows still wait for the started agent run to succeed', [{ run: { ...run, state: { life_cycle_state: 'RUNNING' } } }, {}], 0, 2],
   ['a failed results_table stops with its title, message, and customer owner', [{ items: (items) => { Object.assign(items[2], { state: 'failed', failure: setupTemplate.failure }); } }], 1, 1],
   ['a pending serving_endpoint does not block success', [{ items: (items, queuedAt) => { items.push({ ...setupTemplate.serving_endpoint, queued_at: queuedAt }); } }], 0, 1],
   ['a failed serving_endpoint stops Connect even when core items are done', [{ items: (items, queuedAt) => { items.push({ ...setupTemplate.serving_endpoint, queued_at: queuedAt, state: 'failed', failure: { ...setupTemplate.failure, owner: 'unknown' } }); } }], 1, 1],
-  ['a failed core row from before Connect waits for a newer done row', [{ items: (items, queuedAt) => { Object.assign(items[2], { queued_at: new Date(Date.parse(queuedAt) - 86400000).toISOString(), state: 'failed', failure: setupTemplate.failure }); } }, {}], 0, 2],
-  ['a failed serving_endpoint from before Connect does not block success', [{ items: (items, queuedAt) => { items.push({ ...setupTemplate.serving_endpoint, queued_at: new Date(Date.parse(queuedAt) - 86400000).toISOString(), state: 'failed', failure: setupTemplate.failure }); } }], 0, 1],
+  ['an old failed core row stops Connect', [{ items: (items, queuedAt) => { Object.assign(items[2], { queued_at: new Date(Date.parse(queuedAt) - 86400000).toISOString(), state: 'failed', failure: setupTemplate.failure }); } }], 1, 1],
+  ['an old failed serving_endpoint stops Connect', [{ items: (items, queuedAt) => { items.push({ ...setupTemplate.serving_endpoint, queued_at: new Date(Date.parse(queuedAt) - 86400000).toISOString(), state: 'failed', failure: { ...setupTemplate.failure, owner: 'unknown' } }); } }], 1, 1],
   ['a binding that closed during Connect fails', [{ binding: { state: 'disconnected' } }], 1, 1],
   ['a binding that requested disconnect during Connect fails', [{ binding: { disconnect_requested_at: setupTemplate.setup_items[0].queued_at } }], 1, 1],
   ['a binding that changed SP during Connect fails', [{ binding: { agent_sp_application_id: sp2.applicationId } }], 1, 1]
@@ -322,43 +356,38 @@ for (const [name, setupReads, status, reads] of [
   }
 });
 
-for (const offset of [0, 1000]) test(`Connect succeeds with a local clock ahead of the server and items queued ${offset} ms after its Date header`, { timeout: 4900 }, async (t) => {
-  const bindingsDate = new Date(Date.now() - 30000).toUTCString();
-  const queuedAt = new Date(Date.parse(bindingsDate) + offset).toISOString();
-  assert.ok(Date.parse(queuedAt) < Date.now());
-  const server = await replay(t, plan({ bindingsDate, queuedAt }).calls);
-  const result = await runCli(server, ['--json']);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).state, 'verified');
-  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 1);
-  noSecrets(result);
-  server.assertDone();
-});
+for (const [index, expected] of setupTemplate.setup_items.entries()) {
+  test(`missing ${expected.kind} ${expected.target} keeps Connect waiting until it exists and is done`, { timeout: 4900 }, async (t) => {
+    const setupReads = [{ items: (items) => { items.splice(index, 1); } }, {}];
+    const server = await replay(t, plan({ setupReads }).calls);
+    const result = await runCli(server, ['--json']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 2);
+    noSecrets(result);
+    server.assertDone();
+  });
 
-test('an item queued before the server Date header keeps Connect waiting for a fresh item', { timeout: 4900 }, async (t) => {
-  const bindingsDate = new Date(Date.now() - 30000).toUTCString();
-  const queuedAt = new Date(Date.parse(bindingsDate) + 1000).toISOString();
-  const setupReads = [{ items: (items) => { items[2].queued_at = new Date(Date.parse(bindingsDate) - 1).toISOString(); } }, {}];
-  const server = await replay(t, plan({ bindingsDate, queuedAt, setupReads }).calls);
-  const result = await runCli(server, ['--json']);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).state, 'verified');
-  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 2);
-  noSecrets(result);
-  server.assertDone();
-});
-
-for (const bindingsDate of [null, 'invalid']) test(`Connect fails before registration when the server Date header is ${bindingsDate === null ? 'missing' : 'invalid'}`, { timeout: 4900 }, async (t) => {
-  const { calls } = plan({ bindingsDate });
-  const listIndex = calls.findIndex((call) => call.method === 'GET' && call.path === '/v1/databricks/bindings');
-  const server = await replay(t, calls.slice(0, listIndex + 1));
-  const result = await runCli(server, ['--json']);
-  assert.equal(result.status, 1, result.stderr);
-  assert.equal(result.stdout, '');
-  assert.match(JSON.parse(result.stderr).error.message, /missing or invalid HTTP Date header.*requires the server clock/);
-  noSecrets(result);
-  server.assertDone();
-});
+  for (const state of ['missing', 'pending', 'wrong target']) test(`Connect timeout names ${state} ${expected.kind} ${expected.target}`, { timeout: 4900 }, async (t) => {
+    const setupReads = [{ items: (items) => {
+      if (state === 'missing') items.splice(index, 1);
+      else if (state === 'pending') items[index].state = 'pending';
+      else items[index].target = `other-${expected.target}`;
+    } }];
+    const server = await replay(t, plan({ setupReads }).calls);
+    const result = await runCli(server, ['--json'], {
+      NODE_OPTIONS: `--import=${new URL('./fixtures/databricks/timeout-clock.mjs', import.meta.url).href}`,
+      // Node 22 warns that mock timers are experimental. Keep stderr as CLI JSON.
+      NODE_NO_WARNINGS: '1'
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.stdout, '');
+    const message = JSON.parse(result.stderr).error.message;
+    assert.ok(message.includes('Timed out waiting for the agent run'));
+    assert.ok(message.includes(`Waiting for missing or incomplete setup items: ${expected.kind} ${expected.target}.`));
+    noSecrets(result);
+    server.assertDone();
+  });
+}
 
 test('setup-item failure text redacts credentials in human output', { timeout: 4900 }, async (t) => {
   const p = plan({ m2m: true, setupReads: [{ items: (items) => {
@@ -431,6 +460,7 @@ for (const json of [false, true]) test(`M2M admin connects and refreshes without
 });
 
 for (const [name, options, env, status] of [
+  ['Connect uses its catalog and schema flags for setup targets rather than the saved binding', { existing: { ...binding(), catalog: 'previous', schema: 'previous' } }, {}, 0],
   ['metadata overrides saved binding and environment account ids on Reconnect', { existing: { ...binding(), databricks_account_id: 'stale-account' } }, { DATABRICKS_ACCOUNT_ID: 'wrong-account' }, 0],
   ['missing metadata account id uses DATABRICKS_ACCOUNT_ID', { metadata: { ...metadata, account_id: undefined } }, { DATABRICKS_ACCOUNT_ID: account }, 0],
   ['missing metadata account id does not reuse a saved binding account id', { existing: binding(), metadata: { ...metadata, account_id: undefined }, missingAccount: true }, {}, 1],

@@ -15,7 +15,9 @@ Uses your local Databricks OAuth login and BenchRouter control-token login.
 Supports user (U2M) and service principal (M2M) OAuth logins.
 The Databricks login token stays in memory on this machine. PAT logins are refused.
 Connect writes the poll key, applies REST grants and heal, and starts the agent job.
-It waits for this Connect's non-serving setup items and binding verification.
+It waits for the agent run to succeed, binding verification, and all five expected
+setup rows to exist and be done: two volumes, the results table, experiment, and eval job.
+Any failed setup row stops Connect. Pending serving endpoints do not block completion.
 Human output lists each setup item. JSON includes setup_items (kind, target, state).
 
 Options:
@@ -28,7 +30,7 @@ Options:
   --manage-group <group>       Account group that can manage serving objects.
 ${ACCOUNT_FLAGS}
 Exit codes:
-  0  Agent run succeeded, binding verified, and this Connect's non-serving setup items done.
+  0  Agent run succeeded, binding verified, and all five expected setup rows exist and are done.
   1  Other error, unsupported Databricks auth type, invalid arguments, or verification timeout.
   3  Grant or heal refused. The error names the catalog, schema, and known object owners.
   4  workspace_admin_required. Log in as a Databricks workspace admin.
@@ -410,7 +412,7 @@ ${ACCOUNT_FLAGS}`,
   benchrouter routes catalog <route-key>
   benchrouter routes activity <route-key>
   benchrouter routes startup-failures <route-key>
-  benchrouter routes create --name <text> --model <model-id> --product <name> | --product-id <id> [--route-slug <slug>]
+  benchrouter routes create --name <text> --model <model-id> (--group <name> [--group-slug <slug>] | --group-id <id>) [--route-slug <slug>]
   benchrouter routes pin <route-key> [--model <model-id>]
   benchrouter routes archive <route-key>
   benchrouter routes unarchive <route-id>
@@ -477,20 +479,21 @@ Options:
   --json
 `,
   "routes create": `Usage:
-  benchrouter routes create --name <text> --model <model-id> --product <name> [--product-slug <slug>] [--route-slug <slug>]
-  benchrouter routes create --name <text> --model <model-id> --product-id <id> [--route-slug <slug>]
+  benchrouter routes create --name <text> --model <model-id> --group <name> [--group-slug <slug>] [--route-slug <slug>]
+  benchrouter routes create --name <text> --model <model-id> --group-id <id> [--route-slug <slug>]
 
-Creates a pinned route: it serves one catalog model and has no eval. --product puts
-it in a new hosted product (creating one needs the account owner); --product-id puts
-it in an existing product with no repository. Slugs default to the names. A route
-key that exists already is refused (route_key_taken). It spends nothing.
+Creates a pinned route: it serves one catalog model and has no eval. --group puts
+it in a new group (creating one needs the account owner); --group-id puts
+it in an existing group with no repository. Pass exactly one of --group or --group-id.
+--group-slug requires --group. Slugs default to the names. A route key that exists
+already is refused (route_key_taken). It spends nothing.
 
 Options:
   --name <text>
   --model <model-id>
-  --product <name>
-  --product-slug <slug>
-  --product-id <id>
+  --group <name>
+  --group-slug <slug>
+  --group-id <id>
   --route-slug <slug>
   --yes, -y
 ${ACCOUNT_FLAGS}`,

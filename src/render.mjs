@@ -598,7 +598,7 @@ export function renderRoutePin(body) {
 
 export function renderRouteCreated(body) {
   printLines([
-    `Created ${body.route_key} serving ${body.model} (${body.route_id})${body.product_created ? "; created its product" : ""}.`,
+    `Created ${body.route_key} serving ${body.model} (${body.route_id})${body.group_created ? "; created its group" : ""}.`,
     `Point the app at it with a key: benchrouter keys create --product-id ${body.product?.productId ?? "<product-id>"}`
   ]);
 }

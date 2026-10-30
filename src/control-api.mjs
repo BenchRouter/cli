@@ -148,7 +148,7 @@ export const customerPaths = {
     label
   }),
 
-  /** POST /v1/control/routes — body { name, model, route_slug?, product: { name, slug? } } or { ..., product_id } (SERVE-001). */
+  /** POST /v1/control/routes — body { name, model, route_slug?, group: { name, slug? } } or { ..., group_id } (SERVE-001). */
   routeCreate: (body) => ({ method: "POST", path: "/v1/control/routes", label: "routes create", body }),
 
   /** GET /v1/control/routes/:routeKey/pin — the model a route serves, its generations, and whether it can be re-pinned (ROUTE-004). */

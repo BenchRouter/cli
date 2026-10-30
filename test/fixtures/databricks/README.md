@@ -30,9 +30,12 @@ and two real workspace Connect runs remain a deployment check.
 
 `binding-read.json` contains setup-item contract fixtures from the final
 `DatabricksSetupItemView` and `DatabricksFailure` types (2026-10-30). These are
-not live server recordings. The replay sets fresh queue timestamps when it
-receives the register POST. Scenario variants preserve old timestamps or change
-item state and failure to prove that Connect waits for its own setup items.
+not live server recordings. The experiment and eval job targets match the live
+H8 findings (2026-10-30). The replay sets queue timestamps when it receives the
+register POST. Scenario variants preserve old timestamps, omit expected rows,
+or change state and failure to check completion from the current setup state.
+`timeout-clock.mjs` advances only the subprocess clock to exercise the three-minute
+timeout within the four-second subprocess limit. HTTP replay and polling stay real.
 
 `auth-describe.json` and `databricks-config.json` use the live wire shapes supplied
 in the 2026-10-30 round 2 review (Databricks CLI v1.22.1 and the anonymous workspace
@@ -87,7 +90,7 @@ supplied endpoint/provider-service permission evidence and the UC grant/volume
 shapes used by H4. Every H5 test has a 4.9-second test timeout.
 The shared runner checks output for credential leaks after every command, including
 help and refusal paths. The server also checks each request's credential boundary.
-It preserves response Date headers and deferred setup snapshots for #35's Connect tests.
+It supports deferred setup snapshots for the Connect tests.
 
 Round 2 coverage uses the final typed `results_owner` and disconnect response
 contracts. Status always wraps the unchanged reads in `{bindings: [...]}`. Setup
