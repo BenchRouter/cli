@@ -4,15 +4,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { parseDatabricksConnectResponse, parseDatabricksSetupItems } from './databricks-contract.mjs';
-import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, encode, isMissing } from './databricks.mjs';
+import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, encode } from './databricks.mjs';
 import { databricksControl, secretRedaction, exits, proofErrors, refusal, workspaceAdmin, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
-import { readWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
+import { aclPrincipal, runPendingSpSteps } from './databricks-sp-steps.mjs';
 import { renderDatabricksConnected } from './render.mjs';
-
-function aclPrincipal(p) {
-  return { [p.type === 'user' ? 'user_name' : p.type === 'group' ? 'group_name' : 'service_principal_name']: p.name };
-}
-function samePrincipal(entry, p) { return Object.entries(aclPrincipal(p)).every(([key, value]) => entry[key] === value); }
 
 export async function runDatabricksConnect(ctx) {
   const { remember, clean } = secretRedaction();
@@ -89,16 +84,12 @@ export async function runDatabricksConnect(ctx) {
 
     log('5/8 Apply the ordered catalog and schema grants.');
     for (const step of connected.grants) await runUcStep(workspace, step, spId, catalog, schema);
-    log('6/8 Heal existing objects and revoke the previous agent service principal.');
+    log('6/8 Heal existing objects and run pending SP-change grants, then revokes.');
     for (const step of connected.heal) await runUcStep(workspace, step, spId, catalog, schema);
-    const skipped = [];
-    for (const step of connected.sp_change?.revoke ?? []) {
-      const reason = await runRevoke(workspace, step, admin, spId, catalog, schema);
-      if (reason) {
-        skipped.push({ object: step.object, action: step.action, route_key: step.route_key, eval_folder: step.eval_folder, reason });
-        log(clean(`Skipped cases table revoke for ${step.route_key}: ${reason}.`));
-      }
-    }
+    const { pending_steps, skipped } = await runPendingSpSteps(workspace, br, connected.cleanup_pending,
+      { id: connected.binding_id, agent_sp_application_id: spId, catalog, schema }, admin,
+      (line) => process.stderr.write(clean(`${line}\n`)));
+    for (const step of skipped) log(clean(`Skipped ${step.action === 'manifest_table_revoke' ? 'cases table revoke' : step.action} for ${step.route_key}: ${step.reason}.`));
 
     log('7/8 Create or reset the recorded agent job and replace its direct ACL.');
     const jobSettings = agentSettings(connected);
@@ -123,7 +114,7 @@ export async function runDatabricksConnect(ctx) {
     log('8/8 Start the agent job and wait for its run, setup items, and workspace verification.');
     const started = await workspace.call('POST', '/api/2.2/jobs/run-now', { job_id: jobId });
     const final = await waitForAgent(workspace, br, connected.binding_id, numericId(started.run_id), spId, catalog, schema);
-    const result = { ok: true, binding_id: connected.binding_id, account_id: connected.account_id, state: final.binding.state, agent_job_id: String(jobId), agent_sp_application_id: spId, job_owner: restricted ? 'connecting_admin' : 'agent', setup_items: final.setup_items.map(({ kind, target, state }) => ({ kind, target, state })), skipped };
+    const result = JSON.parse(clean(JSON.stringify({ ok: true, binding_id: connected.binding_id, account_id: connected.account_id, state: final.binding.state, agent_job_id: String(jobId), agent_sp_application_id: spId, job_owner: restricted ? 'connecting_admin' : 'agent', setup_items: final.setup_items.map(({ kind, target, state }) => ({ kind, target, state })), skipped, pending_steps })));
     return emit(ctx, result, () => renderDatabricksConnected(result));
   } catch (error) {
     const code = error instanceof DatabricksError ? (Object.hasOwn(exits, error.code) || Object.hasOwn(proofErrors, error.code) ? error.code : 'databricks_request_failed') : 'command_failed';
@@ -177,9 +168,10 @@ async function prepareAgent(workspace, binding, job, admin, accountId) {
   if (!sp) {
     sp = await workspace.call('POST', `${scim}/ServicePrincipals`, { displayName: `benchrouter-agent-${randomBytes(4).toString('hex')}`, entitlements: [{ value: 'workspace-access' }, { value: 'databricks-sql-access' }] });
     created = true;
-    ruleSet = await readRules(sp.applicationId);
+    const retry = newSpRuleRetry();
+    ruleSet = await retry(() => readRules(sp.applicationId));
     const name = ruleName(sp.applicationId);
-    await workspace.call('PUT', rules, { name, rule_set: { name, etag: ruleSet.etag, grant_rules: [...(ruleSet.grant_rules ?? []), { role: 'roles/servicePrincipal.user', principals: [member] }] } });
+    await retry(() => workspace.call('PUT', rules, { name, rule_set: { name, etag: ruleSet.etag, grant_rules: [...(ruleSet.grant_rules ?? []), { role: 'roles/servicePrincipal.user', principals: [member] }] } }));
   }
   if (typeof sp.id !== 'string' || typeof sp.applicationId !== 'string') throw new Error('Databricks returned an invalid service principal.');
   // A.7: another admin can keep the job's Run as identity without a role on its SP.
@@ -189,6 +181,24 @@ async function prepareAgent(workspace, binding, job, admin, accountId) {
     await removeOAuthSecrets(workspace, sp.id);
   }
   return { sp, created, preserveRunAs };
+}
+// Only a newly created SP can have propagation delay. Share the 60 s budget across GET and PUT.
+function newSpRuleRetry() {
+  // Test-only: shorten waits only when Databricks uses the validated loopback replay boundary.
+  const override = process.env.BENCHROUTER_DATABRICKS_TEST_RULE_RETRY_MS;
+  const wait = override !== undefined && process.env.BENCHROUTER_DATABRICKS_API_BASE ? Number(override) : null;
+  if (wait !== null && (!Number.isSafeInteger(wait) || wait < 0 || wait > 100)) throw new Error('Invalid test rule-set retry delay.');
+  const waits = [2000, 4000, 8000, 16000, 30000];
+  let attempt = 0;
+  return async (call) => {
+    for (;;) {
+      try { return await call(); } catch (error) {
+        if (!(error instanceof DatabricksError && (error.status === 403 || error.code === 'PERMISSION_DENIED')) || attempt === waits.length) throw error;
+        await delay(wait ?? waits[attempt]);
+        attempt++;
+      }
+    }
+  };
 }
 async function removeOAuthSecrets(workspace, id) {
   const path = `/api/2.0/accounts/servicePrincipals/${encode(id)}/credentials/secrets`;
@@ -200,52 +210,6 @@ async function removeOAuthSecrets(workspace, id) {
     page = answer.next_page_token;
   } while (page);
   for (const id of ids) await workspace.call('DELETE', `${path}/${encode(id)}`);
-}
-async function removeAcl(workspace, path, principal, admin) {
-  const existing = await workspace.optional('GET', path);
-  if (!existing) return;
-  let removedOwner = false;
-  const list = [];
-  for (const entry of existing.access_control_list ?? []) {
-    const direct = (entry.all_permissions ?? []).filter((p) => p.inherited !== true);
-    if (samePrincipal(entry, principal)) { removedOwner ||= direct.some((p) => p.permission_level === 'IS_OWNER'); continue; }
-    for (const permission of direct) {
-      const field = ['user_name', 'service_principal_name', 'group_name'].find((key) => typeof entry[key] === 'string');
-      if (field) list.push({ [field]: entry[field], permission_level: permission.permission_level });
-    }
-  }
-  if (removedOwner) {
-    for (let i = list.length - 1; i >= 0; i--) if (samePrincipal(list[i], admin)) list.splice(i, 1);
-    list.push({ ...aclPrincipal(admin), permission_level: 'IS_OWNER' });
-  }
-  await workspace.call('PUT', path, { access_control_list: list });
-}
-async function runRevoke(workspace, step, admin, spId, catalog, schema) {
-  if (step.action === 'revoke') return runUcStep(workspace, step, spId, catalog, schema);
-  if (step.action === 'manifest_table_revoke') {
-    const { grants, reason } = await readWorkspaceEvalGrants(workspace, step.eval_folder, step.route_key, { skipUnavailable: true });
-    if (reason) return reason;
-    const [casesCatalog, casesSchema] = grants.casesTable.split('.');
-    try {
-      // The PATCH itself checks existence. Reuse UC owner diagnostics on refusal.
-      await runUcStep(workspace, { action: 'revoke', securable: 'table', full_name: grants.casesTable, principal: step.principal, privileges: ['SELECT'], only_if: 'always' }, spId, casesCatalog, casesSchema);
-    } catch (error) {
-      if (isMissing(error)) return 'cases table is missing';
-      throw error;
-    }
-    return;
-  }
-  if (step.action === 'secret_acl_delete') {
-    const found = await workspace.optional('GET', `/api/2.0/secrets/acls/get?${new URLSearchParams({ scope: step.scope, principal: step.principal.name })}`);
-    if (found) await workspace.call('POST', '/api/2.0/secrets/acls/delete', { scope: step.scope, principal: step.principal.name });
-  } else if (step.action === 'job_acl_remove') await removeAcl(workspace, `/api/2.0/permissions/jobs/${encode(step.job_id)}`, step.principal, admin);
-  else if (step.action === 'endpoint_acl_remove') {
-    const endpoint = await workspace.optional('GET', `/api/2.0/serving-endpoints/${encode(step.endpoint_name)}`);
-    if (endpoint) await removeAcl(workspace, `/api/2.0/permissions/serving-endpoints/${encode(endpoint.id)}`, step.principal, admin);
-  } else if (step.action === 'folder_acl_remove') {
-    const folder = await workspace.optional('GET', `/api/2.0/workspace/get-status?${new URLSearchParams({ path: step.path })}`);
-    if (folder) await removeAcl(workspace, `/api/2.0/permissions/directories/${encode(folder.object_id)}`, step.principal, admin);
-  }
 }
 function agentSettings({ agent, agent_schedule: schedule }) {
   return {

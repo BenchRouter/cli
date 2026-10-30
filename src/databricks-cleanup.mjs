@@ -1,15 +1,7 @@
 import { DatabricksError, encode, uc, isMissing } from './databricks.mjs';
 import { numericId, readJob } from './databricks-helpers.mjs';
 
-const kinds = new Set(['job', 'secret_scope', 'serving_endpoint', 'provider_service', 'volume', 'agent_service_principal']);
-export function validateCleanup(steps) {
-  if (!Array.isArray(steps) || steps.some((s) => !s || !kinds.has(s.kind) || typeof s.id !== 'string' || !s.id
-      || typeof s.binding_id !== 'string' || !s.binding_id || typeof s.instruction !== 'string'
-      || !(s.command === null || typeof s.command === 'string')
-      || !['agent_sp_replaced', 'binding_force_closed'].includes(s.reason)
-      || s.actor !== (s.kind === 'agent_service_principal' ? 'account_admin' : 'workspace_admin'))) throw new Error('BenchRouter returned invalid cleanup steps.');
-  return steps;
-}
+export { validateCleanup } from './databricks-contract.mjs';
 function objectPath(step) {
   const id = encode(step.id);
   if (step.kind === 'secret_scope') return `/api/2.0/secrets/acls/list?scope=${id}`;

@@ -1,11 +1,11 @@
 {
   "name": "@benchrouter/cli",
-  "version": "0.2.39",
+  "version": "0.2.40",
   "description": "Command-line interface for BenchRouter",
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check:syntax": "node --check bin/benchrouter.mjs && node --check src/cli.mjs && node --check src/config.mjs && node --check src/repo-read.mjs && node --check src/http.mjs && node --check src/control-api.mjs && node --check src/control-helpers.mjs && node --check src/commands.mjs && node --check src/login.mjs && node --check src/usage-text.mjs && node --check src/render.mjs && node --check src/route-manifest.mjs && node --check src/generated-kit.mjs && node --check src/databricks.mjs && node --check src/databricks-contract.mjs && node --check src/databricks-connect.mjs && node --check src/databricks-helpers.mjs && node --check src/databricks-commands.mjs && node --check src/databricks-eval-manifest.mjs && node --check src/databricks-cleanup.mjs",
+    "check:syntax": "node --check bin/benchrouter.mjs && node --check src/cli.mjs && node --check src/config.mjs && node --check src/repo-read.mjs && node --check src/http.mjs && node --check src/control-api.mjs && node --check src/control-helpers.mjs && node --check src/commands.mjs && node --check src/login.mjs && node --check src/usage-text.mjs && node --check src/render.mjs && node --check src/route-manifest.mjs && node --check src/generated-kit.mjs && node --check src/databricks.mjs && node --check src/databricks-contract.mjs && node --check src/databricks-connect.mjs && node --check src/databricks-helpers.mjs && node --check src/databricks-commands.mjs && node --check src/databricks-eval-manifest.mjs && node --check src/databricks-cleanup.mjs && node --check src/databricks-sp-steps.mjs",
     "check": "npm run check:syntax && npm test && npm pack --dry-run"
   },
   "bin": {

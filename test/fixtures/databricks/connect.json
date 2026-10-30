@@ -6,5 +6,5 @@
     "job_parameters": { "api_base": "https://api.benchrouter.com", "scope": "REPLACED_WITH_HASH", "poll_key_name": "poll-key", "job_id": "{{job.id}}" },
     "environment": { "client": "2", "dependencies": ["https://runtime.benchrouter.com/databricks/benchrouter_databricks-0.3.0-py3-none-any.whl#sha256=recorded"] }
   },
-  "grants": [], "heal": [], "sp_change": null
+  "grants": [], "heal": [], "sp_change": null, "cleanup_pending": []
 }

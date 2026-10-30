@@ -9,7 +9,7 @@ const envName = (v, max = 64) => text(v, max) && v[0] >= 'A' && v[0] <= 'Z'
   && !v.startsWith('BENCHROUTER_') && !v.startsWith('DATABRICKS_');
 const invalid = () => refusal('The eval manifest is invalid. Check .benchrouter/benchrouter.yml against the Databricks runner manifest schema.', 'manifest_invalid');
 
-export async function readWorkspaceEvalGrants(workspace, folder, routeKey, { skipUnavailable = false } = {}) {
+export async function readWorkspaceEvalGrants(workspace, folder, routeKey, { skipUnavailable = false, skipInvalidManifest = true } = {}) {
   let directory;
   try { directory = await workspace.call('GET', `/api/2.0/workspace/get-status?${new URLSearchParams({ path: folder })}`); }
   catch (error) {
@@ -26,7 +26,7 @@ export async function readWorkspaceEvalGrants(workspace, folder, routeKey, { ski
     if (typeof exported?.content !== 'string') throw refusal('Databricks did not export the manifest.', 'manifest_invalid');
     return { directory, grants: readEvalGrants(Buffer.from(exported.content, 'base64').toString('utf8'), routeKey) };
   } catch (error) {
-    if (skipUnavailable && error instanceof DatabricksError) {
+    if (skipUnavailable && skipInvalidManifest && error instanceof DatabricksError) {
       if (error.code === 'route_not_declared') return { reason: 'route_key is no longer declared exactly once in the eval manifest' };
       if (['manifest_invalid', 'secret_scope_reserved'].includes(error.code)) return { reason: 'eval manifest is invalid' };
     }

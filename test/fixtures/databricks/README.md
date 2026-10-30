@@ -125,3 +125,21 @@ and [case-insensitive scope names](https://docs.databricks.com/aws/en/security/s
 The replay covers a newer binding that records the same scope and volumes with
 different casing. Deletion is acknowledged only after a confirming missing-object
 read; a service that still exists remains pending.
+
+## CLI 0.2.40 SP-change steps
+
+`sp-change.json` follows the final 2026-10-30 `DatabricksSpChange` and
+`DatabricksCleanupStep` contract supplied with H8. It is a contract fixture,
+not a live server response. Its five grant actions use the recorded UC, endpoint,
+folder, manifest export and secret ACL response shapes above. Replays assert the
+exact outgoing request for each action. They also cover grant-first ordering,
+resuming with `sp_change: null`, one completion acknowledgement, refusal owner
+warnings, absent targets, Disconnect ordering and read-only pending steps in Status.
+
+The rule-set replay inserts the H8 propagation refusal before the recorded GET
+or PUT response. `BENCHROUTER_DATABRICKS_TEST_RULE_RETRY_MS` shortens each backoff
+wait to 0 through 100 ms only with the validated loopback API override. It is a
+test-only setting. Production waits total at most 60 seconds across GET and PUT,
+with five waits (2, 4, 8, 16 and 30 seconds) and up to six tries per call.
+The recorded-SP tests still expect exactly one read and no propagation retry.
+All subprocesses retain the four-second limit and credential leak assertions.

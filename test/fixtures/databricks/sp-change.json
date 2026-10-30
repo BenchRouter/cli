@@ -1,0 +1,217 @@
+{
+  "sp_change": {
+    "previous_agent_sp_application_id": "00000000-0000-4000-8000-000000000002",
+    "grant": [
+      {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "provider_service",
+        "action": "grant",
+        "securable": "model_provider_service",
+        "full_name": "workspace.br_design.provider",
+        "privileges": [
+          "MANAGE"
+        ]
+      },
+      {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "serving_endpoint",
+        "action": "endpoint_acl_add",
+        "endpoint_name": "recorded-endpoint",
+        "permission": "CAN_MANAGE"
+      },
+      {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "eval_folder",
+        "action": "folder_acl_add",
+        "path": "/Shared/eval",
+        "permission": "CAN_READ"
+      },
+      {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "cases_table",
+        "action": "manifest_table_grant",
+        "eval_folder": "/Shared/eval",
+        "route_key": "support/triage",
+        "privileges": [
+          "SELECT"
+        ]
+      },
+      {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "secret_scope",
+        "action": "manifest_secret_acl_put",
+        "eval_folder": "/Shared/eval",
+        "route_key": "support/triage",
+        "permission": "READ"
+      }
+    ],
+    "revoke": [
+      {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000002"
+        },
+        "only_if": "exists",
+        "object": "provider_service",
+        "action": "revoke",
+        "securable": "model_provider_service",
+        "full_name": "workspace.br_design.provider",
+        "privileges": [
+          "MANAGE"
+        ]
+      }
+    ]
+  },
+  "cleanup_pending": [
+    {
+      "kind": "grant",
+      "id": "grant-0",
+      "binding_id": "dbxb_recorded",
+      "reason": "agent_sp_replaced",
+      "actor": "workspace_admin",
+      "command": null,
+      "instruction": "Complete grant grant-0.",
+      "grant": {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "provider_service",
+        "action": "grant",
+        "securable": "model_provider_service",
+        "full_name": "workspace.br_design.provider",
+        "privileges": [
+          "MANAGE"
+        ]
+      }
+    },
+    {
+      "kind": "grant",
+      "id": "grant-1",
+      "binding_id": "dbxb_recorded",
+      "reason": "agent_sp_replaced",
+      "actor": "workspace_admin",
+      "command": null,
+      "instruction": "Complete grant grant-1.",
+      "grant": {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "serving_endpoint",
+        "action": "endpoint_acl_add",
+        "endpoint_name": "recorded-endpoint",
+        "permission": "CAN_MANAGE"
+      }
+    },
+    {
+      "kind": "grant",
+      "id": "grant-2",
+      "binding_id": "dbxb_recorded",
+      "reason": "agent_sp_replaced",
+      "actor": "workspace_admin",
+      "command": null,
+      "instruction": "Complete grant grant-2.",
+      "grant": {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "eval_folder",
+        "action": "folder_acl_add",
+        "path": "/Shared/eval",
+        "permission": "CAN_READ"
+      }
+    },
+    {
+      "kind": "grant",
+      "id": "grant-3",
+      "binding_id": "dbxb_recorded",
+      "reason": "agent_sp_replaced",
+      "actor": "workspace_admin",
+      "command": null,
+      "instruction": "Complete grant grant-3.",
+      "grant": {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "cases_table",
+        "action": "manifest_table_grant",
+        "eval_folder": "/Shared/eval",
+        "route_key": "support/triage",
+        "privileges": [
+          "SELECT"
+        ]
+      }
+    },
+    {
+      "kind": "grant",
+      "id": "grant-4",
+      "binding_id": "dbxb_recorded",
+      "reason": "agent_sp_replaced",
+      "actor": "workspace_admin",
+      "command": null,
+      "instruction": "Complete grant grant-4.",
+      "grant": {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000004"
+        },
+        "only_if": "exists",
+        "object": "secret_scope",
+        "action": "manifest_secret_acl_put",
+        "eval_folder": "/Shared/eval",
+        "route_key": "support/triage",
+        "permission": "READ"
+      }
+    },
+    {
+      "kind": "revoke",
+      "id": "revoke-0",
+      "binding_id": "dbxb_recorded",
+      "reason": "agent_sp_replaced",
+      "actor": "workspace_admin",
+      "command": null,
+      "instruction": "Complete revoke revoke-0.",
+      "revoke": {
+        "principal": {
+          "type": "service_principal",
+          "name": "00000000-0000-4000-8000-000000000002"
+        },
+        "only_if": "exists",
+        "object": "provider_service",
+        "action": "revoke",
+        "securable": "model_provider_service",
+        "full_name": "workspace.br_design.provider",
+        "privileges": [
+          "MANAGE"
+        ]
+      }
+    }
+  ]
+}

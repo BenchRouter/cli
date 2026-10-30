@@ -46,7 +46,9 @@ export async function runUcStep(workspace, step, spId, catalog, schema, command 
     const owner = async (path) => { try { return (await workspace.call('GET', path)).owner ?? 'unknown'; } catch { return 'unknown'; } };
     const catalogOwner = await owner(`${uc}/catalogs/${encode(catalog)}`);
     const schemaOwner = await owner(`${uc}/schemas/${encode(`${catalog}.${schema}`)}`);
-    throw refusal(`Databricks refused ${step.action} on ${step.full_name}. Catalog owner: ${catalogOwner}. Schema owner: ${schemaOwner}.${step.only_if !== 'always' ? ` Object owner: ${object?.owner ?? 'unknown'}.` : ''} Ask the owner or a metastore admin to run ${command}.`);
+    const refused = refusal(`Databricks refused ${step.action} on ${step.full_name}. Catalog owner: ${catalogOwner}. Schema owner: ${schemaOwner}.${step.only_if !== 'always' ? ` Object owner: ${object?.owner ?? 'unknown'}.` : ''} Ask the owner or a metastore admin to run ${command}.`);
+    refused.owner = object?.owner ?? (schemaOwner !== 'unknown' ? schemaOwner : catalogOwner);
+    throw refused;
   }
 }
 
