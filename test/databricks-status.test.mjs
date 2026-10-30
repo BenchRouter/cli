@@ -8,6 +8,7 @@ const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureD
 const states = ['connecting', 'verified', 'agent_silent', 'disconnecting', 'disconnected', 'archived'];
 const reads = Object.fromEntries(await Promise.all(states.map(async (s) => [s, await fixture(`binding-${s}.json`)])));
 const [me, metadata, run] = await Promise.all(['me.json', 'databricks-config.json', 'p2-run.json'].map(fixture));
+const m2mMe = await fixture('me-m2m.json');
 const deletedJob = await fixture('job-deleted.json');
 const manifest = await readFile(new URL('eval-manifest.yml', fixtureDir), 'utf8');
 const host = 'https://fixture.cloud.databricks.com';
@@ -380,19 +381,37 @@ for (const command of ['status', 'add-eval', 'disconnect']) test(`${command} hel
 
 const clientId = '00000000-0000-4000-8000-000000000099';
 function m2mToken() {
-  return `${Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url')}.${Buffer.from(JSON.stringify({ scope: 'all-apis', exp: Math.floor(Date.now() / 1000) + 3500, sub: clientId })).toString('base64url')}.fake-login-token-must-not-leak-m2m`;
+  return `${Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url')}.${Buffer.from(JSON.stringify({ scope: 'all-apis', exp: Math.floor(Date.now() / 1000) + 3500, sub: clientId, client_id: clientId })).toString('base64url')}.fake-login-token-must-not-leak-m2m`;
 }
 function m2mCall(token) {
   return call('POST', '/oidc/v1/token', { access_token: token }, 200, (r) => {
     assert.deepEqual([...r.form], [['grant_type', 'client_credentials'], ['scope', 'all-apis']]);
   });
 }
+for (const m2m of [false, true]) for (const command of ['add-eval', 'disconnect', 'reclaim']) test(`${command} refuses ${m2m ? 'M2M' : 'U2M'} when Me differs from the login subject`, { timeout: 4900 }, async (t) => {
+  const token = m2m ? m2mToken() : null;
+  const calls = [
+    ...(command === 'reclaim' ? [] : [list(), read()]),
+    ...(m2m ? [m2mCall(token)] : []),
+    call('GET', `${scim}/Me`, { ...(m2m ? m2mMe : me), userName: 'other-principal' })
+  ];
+  const server = await replay(t, calls);
+  const args = command === 'reclaim' ? ['disconnect', '--reclaim', '--host', host] : [command, ...(command === 'add-eval' ? ['support/triage', '/Shared/eval'] : [])];
+  const result = await runCli(server, [...args, '--json'], { BR_FIXTURE_AUTH: m2m ? 'm2m' : '' });
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(JSON.parse(result.stderr).error.code, 'workspace_admin_required');
+  assert.ok(!server.requests.some((r) => r.method !== 'GET' && r.path !== '/oidc/v1/token'));
+  noSecrets(result);
+  if (token) assert.ok(!JSON.stringify(result).includes(token));
+  server.assertDone();
+});
+
 for (const command of ['add-eval', 'disconnect']) test(`${command} completes with M2M without sending its credentials to BenchRouter (AUTH-012 / DATA-001)`, { timeout: 4900 }, async (t) => {
   const p = command === 'add-eval' ? { calls: evalPlan() } : disconnectPlan({ force: true });
   const token = m2mToken();
   const at = p.calls.findIndex((c) => c.path === `${scim}/Me`);
   p.calls.splice(at, 0, m2mCall(token));
-  p.calls[at + 1].body = { ...me, applicationId: clientId };
+  p.calls[at + 1].body = m2mMe;
   const server = await replay(t, p.calls);
   const result = await runCli(server, [command, ...(command === 'add-eval' ? ['support/triage', '/Shared/eval'] : ['--force']), '--json'], { BR_FIXTURE_AUTH: 'm2m' });
   assert.equal(result.status, 0, result.stderr);

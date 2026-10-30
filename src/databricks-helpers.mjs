@@ -12,6 +12,13 @@ export const proofErrors = {
   binding_disconnecting: 'This workspace is disconnecting. Wait for it to finish before Connect.'
 };
 export function refusal(message, code = 'grant_refused') { return new DatabricksError(message, code); }
+export function workspaceAdmin(claims, me) {
+  const sub = claims.sub;
+  if (typeof sub !== 'string' || !sub || me.userName !== sub || !Array.isArray(me.groups) || !me.groups.some((g) => g.display === 'admins')) {
+    throw refusal(proofErrors.workspace_admin_required, 'workspace_admin_required');
+  }
+  return { type: claims.client_id === sub ? 'service_principal' : 'user', name: sub };
+}
 export function numericId(value) {
   const text = String(value ?? '');
   if (!text || ![...text].every((c) => c >= '0' && c <= '9') || BigInt(text) <= 0n || BigInt(text) > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Databricks returned an invalid numeric object id.');

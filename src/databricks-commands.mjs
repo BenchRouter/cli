@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, uc, encode } from './databricks.mjs';
-import { databricksControl, secretRedaction, exits, refusal, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
+import { databricksControl, secretRedaction, exits, refusal, workspaceAdmin, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
 import { parseDatabricksSetupItems } from './databricks-contract.mjs';
 import { readWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
 import { validateCleanup, objectExists, deleteRecorded, recordedObjects, objectKey } from './databricks-cleanup.mjs';
@@ -32,9 +32,9 @@ function selectBinding(bindings) {
   return choices[0];
 }
 async function requireAdmin(workspace) {
-  await workspace.freshLogin();
+  const claims = await workspace.freshLogin();
   const me = await workspace.call('GET', `${scim}/Me`);
-  if (!(me.applicationId || me.userName) || !me.groups?.some((g) => g.display === 'admins')) throw refusal('Log in as a Databricks workspace admin.', 'workspace_admin_required');
+  return workspaceAdmin(claims, me);
 }
 async function runAgent(workspace, id) {
   if (!id) return false;
