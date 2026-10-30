@@ -5,7 +5,7 @@ import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { parseDatabricksConnectResponse, parseDatabricksSetupItems } from './databricks-contract.mjs';
 import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, encode, isMissing } from './databricks.mjs';
-import { databricksControl, secretRedaction, exits, proofErrors, refusal, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
+import { databricksControl, secretRedaction, exits, proofErrors, refusal, workspaceAdmin, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
 import { readWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
 import { renderDatabricksConnected } from './render.mjs';
 
@@ -35,8 +35,7 @@ export async function runDatabricksConnect(ctx) {
     const accountId = metadata.account_id ?? process.env.DATABRICKS_ACCOUNT_ID;
     if (typeof accountId !== 'string' || !accountId) throw new Error('Databricks did not return its account id. Set DATABRICKS_ACCOUNT_ID from the account console and retry.');
     const me = await workspace.call('GET', `${scim}/Me`);
-    const admin = me.applicationId ? { type: 'service_principal', name: me.applicationId } : { type: 'user', name: me.userName };
-    if (!admin.name || !me.groups?.some((g) => g.display === 'admins')) throw refusal(proofErrors.workspace_admin_required, 'workspace_admin_required');
+    const admin = workspaceAdmin(claims, me);
     const warehouseId = await selectWarehouse(workspace, ctx);
 
     log('2/8 Read the recorded binding and prepare its agent service principal.');

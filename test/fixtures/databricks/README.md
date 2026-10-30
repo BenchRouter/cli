@@ -16,6 +16,15 @@ owner, privilege and refusal shapes. Scenario variants change owners, error
 codes, existence, restriction status and ACL membership to cover each branch.
 No recording contains an access token or OAuth secret.
 
+`me-m2m.json` follows the H8 `/Me` probes from 2026-10-30
+(`51-me-probe-admin2.txt` and `51-me-probe-nav.txt`). The M2M response uses
+the same fields as the user response. It has no `applicationId` field.
+Its `userName` is the SP application id, and its groups include `admins`.
+The fixture keeps the recorded user response structure and replaces identity
+values with test values. M2M login claims set both `sub` and `client_id` to
+that application id. Replay variants change the subject match or admin group
+to check refusal before writes.
+
 `job-deleted.json` is the HTTP 400 body from the first live Connect/Disconnect
 run on 2026-10-30. Jobs get and cleanup delete use `INVALID_PARAMETER_VALUE`
 as absence only for a validated positive job id. The replay also asserts the

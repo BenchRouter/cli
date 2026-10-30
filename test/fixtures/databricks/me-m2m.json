@@ -1,0 +1,51 @@
+{
+  "active": true,
+  "displayName": "fixture-m2m-admin",
+  "emails": [
+    {
+      "primary": true,
+      "type": "work",
+      "value": "00000000-0000-4000-8000-000000000099"
+    }
+  ],
+  "entitlements": [
+    {
+      "value": "workspace-access"
+    },
+    {
+      "value": "databricks-sql-access"
+    },
+    {
+      "value": "workspace-consume"
+    }
+  ],
+  "groups": [
+    {
+      "$ref": "Groups/80064639949325",
+      "display": "users",
+      "type": "direct",
+      "value": "80064639949325"
+    },
+    {
+      "$ref": "Groups/87804419605848",
+      "display": "admins",
+      "type": "direct",
+      "value": "87804419605848"
+    },
+    {
+      "$ref": "Groups/84465949952836",
+      "display": "account users",
+      "type": "direct",
+      "value": "84465949952836"
+    }
+  ],
+  "id": "70727893511851",
+  "name": {
+    "givenName": "00000000-0000-4000-8000-000000000099"
+  },
+  "schemas": [
+    "urn:ietf:params:scim:schemas:core:2.0:User",
+    "urn:ietf:params:scim:schemas:extension:workspace:2.0:User"
+  ],
+  "userName": "00000000-0000-4000-8000-000000000099"
+}

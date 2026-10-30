@@ -8,6 +8,7 @@ import { replay as sharedReplay, runDatabricksCli, noSecrets } from './helpers/d
 const fixtureDir = new URL('./fixtures/databricks/', import.meta.url);
 const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureDir), 'utf8'));
 const [me, sp, sp2, ruleset, run, settings, responseTemplate, metadata] = await Promise.all(['me.json', 'p1-create.json', 'p5-sp3.json', 'p1-ruleset-put.json', 'p2-run.json', 'settings.json', 'connect.json', 'databricks-config.json'].map(fixture));
+const m2mMe = await fixture('me-m2m.json');
 const setupTemplate = await fixture('binding-read.json');
 const deletedJob = await fixture('job-deleted.json');
 const manifest = await readFile(new URL('eval-manifest.yml', fixtureDir), 'utf8');
@@ -57,8 +58,9 @@ function plan(options = {}) {
   const config = options.metadata ?? metadata;
   add('GET', '/.well-known/databricks-config', config);
   if (options.badWorkspace || options.missingAccount) return { calls, c };
-  add('GET', `${scim}/Me`, options.nonAdmin ? { ...me, groups: [] } : options.m2m ? { ...me, applicationId: clientId } : me);
-  if (options.nonAdmin) return { calls, c };
+  const identity = options.m2m ? m2mMe : me;
+  add('GET', `${scim}/Me`, { ...identity, ...(options.nonAdmin ? { groups: [] } : {}), ...(options.mismatchedMe ? { userName: 'other-principal' } : {}) });
+  if (options.nonAdmin || options.mismatchedMe) return { calls, c };
   if (!options.warehouseFlag) {
     add('GET', '/api/2.0/sql/warehouses', { warehouses: options.warehouses ?? [{ id: 'f7cf158c6784dd06', name: 'Serverless', enable_serverless_compute: true }] });
     if (options.warehouses) return { calls, c };
@@ -67,7 +69,7 @@ function plan(options = {}) {
   if (existing?.agent_job_id) add('GET', '/api/2.2/jobs/get', options.jobDeleted ? deletedJob : options.jobMissing ? { error_code: 'RESOURCE_DOES_NOT_EXIST' } : { job_id: Number(existing.agent_job_id), settings: { run_as: { service_principal_name: existing.agent_sp_application_id } } }, options.jobDeleted ? 400 : options.jobMissing ? 404 : 200);
   if (existing) {
     add('GET', `${scim}/ServicePrincipals`, { Resources: options.spMissing ? [] : [sp], totalResults: options.spMissing ? 0 : 1 }, 200, (r) => assert.equal(r.query.get('filter'), `applicationId eq ${JSON.stringify(sp.applicationId)}`));
-    if (!options.spMissing) add('GET', rulePath, options.noRole || options.ruleFailure ? { error_code: options.ruleCode ?? 'PERMISSION_DENIED', message: 'Not authorized to perform this operation' } : ruleset, options.noRole || options.ruleFailure ? options.ruleStatus ?? 403 : 200);
+    if (!options.spMissing) add('GET', rulePath, options.noRole || options.ruleFailure ? { error_code: options.ruleCode ?? 'PERMISSION_DENIED', message: 'Not authorized to perform this operation' } : { ...ruleset, grant_rules: ruleset.grant_rules.map((r) => r.role === 'roles/servicePrincipal.user' ? { ...r, principals: [member] } : r) }, options.noRole || options.ruleFailure ? options.ruleStatus ?? 403 : 200);
     if (options.ruleFailure) return { calls, c };
   }
   if (!existing || options.newSp) {
@@ -456,6 +458,39 @@ for (const json of [false, true]) test(`M2M admin connects and refreshes without
   for (const request of server.requests.filter((r) => r.path.startsWith('/v1/'))) {
     for (const token of accessTokens) assert.ok(!JSON.stringify(request).includes(token));
   }
+  server.assertDone();
+});
+
+for (const m2m of [false, true]) for (const failure of ['mismatchedMe', 'nonAdmin']) test(`Connect refuses ${m2m ? 'M2M' : 'U2M'} ${failure} before writes`, { timeout: 4900 }, async (t) => {
+  const server = await replay(t, plan({ m2m, [failure]: true }).calls);
+  const result = await runCli(server, ['--json'], { BR_FIXTURE_AUTH: m2m ? 'm2m' : '' });
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(JSON.parse(result.stderr).error.code, 'workspace_admin_required');
+  assert.ok(!server.requests.some((r) => r.method !== 'GET' && r.path !== '/oidc/v1/token'));
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('M2M Reconnect matches the existing servicePrincipal.user grant without creating another SP', { timeout: 4900 }, async (t) => {
+  const server = await replay(t, plan({ m2m: true, existing: binding(sp, null) }).calls);
+  const result = await runCli(server, ['--json'], { BR_FIXTURE_AUTH: 'm2m' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!server.requests.some((r) => r.method === 'POST' && r.path === `${scim}/ServicePrincipals`));
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('M2M SP change transfers job ownership to the admin SP and removes its old direct permission', { timeout: 4900 }, async (t) => {
+  const path = '/api/2.0/permissions/jobs/70';
+  const change = { object: 'agent_job', action: 'job_acl_remove', job_id: '70', principal: principal(), only_if: 'exists' };
+  const changeCalls = [
+    { method: 'GET', path, status: 200, body: { access_control_list: [direct(sp.applicationId, 'IS_OWNER'), direct(clientId, 'CAN_MANAGE'), { user_name: clientId, all_permissions: [{ permission_level: 'CAN_VIEW' }] }] } },
+    { method: 'PUT', path, status: 200, body: {}, check: (r) => assert.deepEqual(r.body.access_control_list, [{ user_name: clientId, permission_level: 'CAN_VIEW' }, { service_principal_name: clientId, permission_level: 'IS_OWNER' }]) }
+  ];
+  const server = await replay(t, plan({ m2m: true, existing: binding(), spMissing: true, newSp: true, change: [change], changeCalls }).calls);
+  const result = await runCli(server, ['--json'], { BR_FIXTURE_AUTH: 'm2m' });
+  assert.equal(result.status, 0, result.stderr);
+  noSecrets(result);
   server.assertDone();
 });
 
