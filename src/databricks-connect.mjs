@@ -1,57 +1,27 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { accountClient, emit } from './control-helpers.mjs';
-import { apiRequest, ApiError } from './http.mjs';
+import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { parseDatabricksConnectResponse, parseDatabricksSetupItems } from './databricks-contract.mjs';
-import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, uc, ucPaths, encode } from './databricks.mjs';
+import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, encode } from './databricks.mjs';
+import { databricksControl, secretRedaction, exits, proofErrors, refusal, numericId, runUcStep } from './databricks-helpers.mjs';
 import { renderDatabricksConnected } from './render.mjs';
 
-const exits = { grant_refused: 3, workspace_admin_required: 4, pat_login: 5, databricks_login_required: 1, databricks_auth_unsupported: 1 };
-const proofErrors = {
-  workspace_proof_invalid: 'The workspace proof was refused. Log in to Databricks again and retry.',
-  workspace_admin_required: 'Connect requires a Databricks workspace admin. Log in as a workspace admin and retry.',
-  workspace_proof_replayed: 'The workspace proof was already used. Run connect again for a fresh proof.',
-  workspace_unreachable: 'BenchRouter could not reach the workspace to verify its proof.',
-  workspace_connected_elsewhere: 'This workspace is connected to another BenchRouter account.',
-  binding_disconnecting: 'This workspace is disconnecting. Wait for it to finish before Connect.'
-};
-function refusal(message, code = 'grant_refused') { return new DatabricksError(message, code); }
-function numericId(value) {
-  const text = String(value ?? '');
-  if (!text || ![...text].every((c) => c >= '0' && c <= '9') || BigInt(text) <= 0n || BigInt(text) > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Databricks returned an invalid numeric object id.');
-  return Number(text);
-}
 function aclPrincipal(p) {
   return { [p.type === 'user' ? 'user_name' : p.type === 'group' ? 'group_name' : 'service_principal_name']: p.name };
 }
 function samePrincipal(entry, p) { return Object.entries(aclPrincipal(p)).every(([key, value]) => entry[key] === value); }
 
 export async function runDatabricksConnect(ctx) {
-  const secrets = new Set();
-  const remember = (s) => { if (typeof s === 'string' && s) secrets.add(s); };
-  const clean = (s) => {
-    let result = String(s);
-    for (const secret of secrets) {
-      for (const representation of new Set([secret, encode(secret), JSON.stringify(secret).slice(1, -1)])) result = result.split(representation).join('[redacted]');
-    }
-    return result;
-  };
+  const { remember, clean } = secretRedaction();
   try {
     const hostArg = ctx.stringArg('host');
     const catalog = ctx.stringArg('catalog');
     const schema = ctx.stringArg('schema');
     if (!hostArg || !catalog || !schema) return ctx.usage(1, 'databricks connect', 'Pass --host, --catalog, and --schema.');
     const host = workspaceHost(hostArg);
-    // AUTH-006: reuse the CLI control-token login, resolved before workspace mutations.
-    const control = accountClient(ctx);
-    const br = async (spec) => {
-      try { return await apiRequest({ ...control, ...spec }); } catch (error) {
-        if (error instanceof ApiError) throw refusal(proofErrors[error.code] ?? `BenchRouter Databricks request failed (${error.status}).`, Object.hasOwn(proofErrors, error.code) ? error.code : 'benchrouter_request_failed');
-        throw new Error('BenchRouter Databricks request failed.');
-      }
-    };
+    const br = databricksControl(ctx);
     const log = (line) => { if (!ctx.args.json) process.stdout.write(`${line}\n`); };
     const workspace = new DatabricksWorkspace(host, remember);
     log('1/8 Read the Databricks OAuth login and workspace admin identity.');
@@ -226,24 +196,6 @@ async function removeOAuthSecrets(workspace, id) {
     page = answer.next_page_token;
   } while (page);
   for (const id of ids) await workspace.call('DELETE', `${path}/${encode(id)}`);
-}
-function objectPath(step) { return `${uc}/${ucPaths[step.securable]}/${encode(step.full_name)}`; }
-async function runUcStep(workspace, step, spId, catalog, schema) {
-  let object;
-  try {
-    if (step.only_if !== 'always') {
-      object = await workspace.optional('GET', objectPath(step));
-      if (!object || (step.only_if === 'exists_not_agent_owned' && object.owner === spId)) return;
-    }
-    if (step.action === 'set_owner') await workspace.call('PATCH', objectPath(step), { owner: step.principal.name });
-    else await workspace.call('PATCH', `${uc}/permissions/${step.securable}/${encode(step.full_name)}`, { changes: [{ principal: step.principal.name, [step.action === 'grant' ? 'add' : 'remove']: step.privileges }] });
-  } catch (error) {
-    if (!(error instanceof DatabricksError && error.code === 'PERMISSION_DENIED')) throw error;
-    const owner = async (path) => { try { return (await workspace.call('GET', path)).owner ?? 'unknown'; } catch { return 'unknown'; } };
-    const catalogOwner = await owner(`${uc}/catalogs/${encode(catalog)}`);
-    const schemaOwner = await owner(`${uc}/schemas/${encode(`${catalog}.${schema}`)}`);
-    throw refusal(`Databricks refused ${step.action} on ${step.full_name}. Catalog owner: ${catalogOwner}. Schema owner: ${schemaOwner}.${step.only_if !== 'always' ? ` Object owner: ${object?.owner ?? 'unknown'}.` : ''} Ask the owner or a metastore admin to run connect.`);
-  }
 }
 async function removeAcl(workspace, path, principal, admin) {
   const existing = await workspace.optional('GET', path);

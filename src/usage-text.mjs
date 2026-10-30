@@ -35,8 +35,60 @@ Exit codes:
   5  PAT login. Run databricks auth login --host <url>.
 `;
 
+const DATABRICKS_EXITS = `Exit codes:
+  0  Command completed.
+  1  Other error, refused request, invalid manifest, login missing, or disconnect timeout.
+  3  Grant refused. The error names the known owners.
+  4  workspace_admin_required. Log in as a Databricks workspace admin.
+  5  PAT login. Run databricks auth login --host <url>.
+`;
+const DATABRICKS_STATUS_USAGE = `Usage:
+  benchrouter databricks status [--host <url>] [--json]
+
+Any account member can read matching bindings, setup items, routes, evals, failures and leftovers.
+JSON always returns {bindings: [<server read>, ...]}.
+With an available OAuth login, check the agent job owner and leftovers.
+Warn if removing the user who owns the job will stop it. Acknowledge objects that are gone.
+A missing Databricks login does not prevent status. Cleanup acknowledgement needs owner/admin.
+Options:
+  --host <url>                 Filter by HTTPS Databricks workspace URL.
+${ACCOUNT_FLAGS}
+${DATABRICKS_EXITS}`;
+const DATABRICKS_EVAL_USAGE = `Usage:
+  benchrouter databricks add-eval <route> <folder> [--host <url>] [--json]
+
+Needs a BenchRouter owner/admin and a Databricks workspace-admin OAuth login.
+Check the workspace admin, read the folder, and export and validate its manifest.
+Then attach the folder, PATCH folder CAN_READ and cases-table SELECT,
+then start the recorded agent job. Grant USE CATALOG/USE SCHEMA outside the binding schema.
+Print secret-scope READ commands. Supply no secret value.
+Options:
+  --host <url>                 Select a workspace when several bindings exist.
+${ACCOUNT_FLAGS}
+${DATABRICKS_EXITS}`;
+const DATABRICKS_DISCONNECT_USAGE = `Usage:
+  benchrouter databricks disconnect [--host <url>] [--force] [--reclaim] [--results-owner <group>] [--json]
+
+Needs a BenchRouter owner/admin and a Databricks workspace-admin OAuth login.
+Start the agent, wait up to three minutes for archive/closure, then delete only its recorded
+objects. Preserve ids held by an open binding. Keep the agent SP for account-console cleanup.
+For a closed binding, resume cleanup without sending another disconnect request.
+Without --results-owner, the results table and experiment stay with the agent SP.
+Options:
+  --host <url>                 Select a workspace. Required with --reclaim.
+  --force                      Close now; perform the server's pending cleanup as admin.
+  --reclaim                    Fresh proof closes the holding binding without its account role.
+                               Delete only the returned endpoints and provider services.
+                               Cannot use --force or --results-owner.
+  --results-owner <group>      Give the results table and experiment to this group.
+${ACCOUNT_FLAGS}
+${DATABRICKS_EXITS}`;
+
 const CONTROL_USAGE = {
-  databricks: DATABRICKS_CONNECT_USAGE,
+  databricks: `${DATABRICKS_CONNECT_USAGE}\n${DATABRICKS_STATUS_USAGE}\n${DATABRICKS_EVAL_USAGE}\n${DATABRICKS_DISCONNECT_USAGE}`,
+  "databricks status": DATABRICKS_STATUS_USAGE,
+  "databricks add-eval": DATABRICKS_EVAL_USAGE,
+  "databricks disconnect": DATABRICKS_DISCONNECT_USAGE,
   "databricks connect": DATABRICKS_CONNECT_USAGE,
   login: `Usage:
   benchrouter login [--name text] [--expires-in-days 90]
@@ -804,6 +856,9 @@ export function resolveControlUsageName(positional) {
 export function topLevelControlUsageLines() {
   return `  benchrouter login [--name text] [--expires-in-days 90]
   benchrouter databricks connect --host <url> --catalog <catalog> --schema <schema> [--json]
+  benchrouter databricks status [--host <url>] [--json]
+  benchrouter databricks add-eval <route> <folder> [--host <url>] [--json]
+  benchrouter databricks disconnect [--host <url>] [--force] [--reclaim] [--results-owner <group>] [--json]
   benchrouter account show|token save [--json]
   benchrouter billing show|activity|statement [--json]
   benchrouter billing top-up --amount <usd> [--yes]

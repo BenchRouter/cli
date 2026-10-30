@@ -1,19 +1,14 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 import { parseDatabricksSetupItems } from '../src/databricks-contract.mjs';
+import { replay as sharedReplay, runDatabricksCli, noSecrets } from './helpers/databricks-replay.mjs';
 
 const fixtureDir = new URL('./fixtures/databricks/', import.meta.url);
 const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureDir), 'utf8'));
 const [me, sp, sp2, ruleset, run, settings, responseTemplate, metadata] = await Promise.all(['me.json', 'p1-create.json', 'p5-sp3.json', 'p1-ruleset-put.json', 'p2-run.json', 'settings.json', 'connect.json', 'databricks-config.json'].map(fixture));
 const setupTemplate = await fixture('binding-read.json');
-const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const host = 'https://fixture.cloud.databricks.com';
 const account = '00000000-0000-4000-8000-000000000001';
 const scim = '/api/2.0/preview/scim/v2';
@@ -169,69 +164,17 @@ function plan(options = {}) {
   return { calls, c };
 }
 
-async function replay(t, calls) {
-  const requests = [];
-  const errors = [];
-  const queue = [...calls];
-  const server = createServer(async (req, res) => {
-    let raw = '';
-    for await (const chunk of req) raw += chunk;
-    const url = new URL(req.url, 'http://127.0.0.1');
-    const request = { method: req.method, path: url.pathname, query: url.searchParams, headers: req.headers, raw, body: raw && req.headers['content-type']?.startsWith('application/json') ? JSON.parse(raw) : null, form: new URLSearchParams(raw) };
-    requests.push(request);
-    const expected = queue.shift();
-    try {
-      assert.equal(`${req.method} ${url.pathname}`, `${expected?.method} ${expected?.path}`);
-      if (url.pathname.startsWith('/v1/')) {
-        assert.equal(req.headers.authorization, 'Bearer br_ctrl_recorded_fixture');
-        for (const secret of [loginMarker, clientSecret, basic]) assert.ok(!JSON.stringify(request).includes(secret), 'AUTH-012 / DATA-001: no login credential reaches BenchRouter');
-      } else {
-        assert.equal(req.headers['user-agent'], `benchrouter-cli/${version}`);
-        if (url.pathname === '/.well-known/databricks-config') assert.equal(req.headers.authorization, undefined);
-        else if (url.pathname === '/oidc/v1/token' && request.form.get('grant_type') === 'client_credentials') assert.equal(req.headers.authorization, `Basic ${basic}`);
-        else assert.ok(req.headers.authorization?.includes(loginMarker));
-      }
+const runCli = (server, args = [], env = {}) => runDatabricksCli(server, ['connect', '--host', host, '--catalog', 'workspace', '--schema', 'br_design', '--results-group', 'readers', '--manage-group', 'managers', ...args], env);
+const replay = (t, calls) => sharedReplay(t, calls, (request) => {
+  const url = { pathname: request.path, searchParams: request.query };
       if (url.pathname === '/api/2.2/jobs/get') assert.deepEqual([...url.searchParams], [['job_id', '127620839936386']]);
       if (url.pathname === '/api/2.2/jobs/runs/get') assert.deepEqual([...url.searchParams], [['run_id', String(run.run_id)]]);
       if (url.pathname === '/api/2.0/workspace/get-status') assert.deepEqual([...url.searchParams], [['path', '/Shared/eval']]);
-      if (url.pathname === rulePath && req.method === 'GET') {
+      if (url.pathname === rulePath && request.method === 'GET') {
         assert.equal(url.searchParams.get('etag'), '');
         assert.ok([sp, sp2].some((agent) => url.searchParams.get('name') === `accounts/${account}/servicePrincipals/${agent.applicationId}/ruleSets/default`));
       }
-      expected.check?.(request);
-      if (expected.headers?.date === null) res.sendDate = false;
-      const headers = Object.fromEntries(Object.entries(expected.headers ?? {}).filter(([, value]) => value !== null));
-      res.writeHead(expected.status, { 'content-type': 'application/json', ...headers });
-      res.end(JSON.stringify(typeof expected.body === 'function' ? expected.body() : expected.body));
-    } catch (error) {
-      errors.push(error.message);
-      res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error_code: 'FIXTURE_MISMATCH' }));
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => { server.closeAllConnections(); server.close(); });
-  return { url: `http://127.0.0.1:${server.address().port}`, requests, assertDone() { assert.deepEqual(errors, []); assert.equal(queue.length, 0, `Uncalled: ${queue.map((x) => `${x.method} ${x.path}`).join(', ')}`); } };
-}
-async function runCli(server, args = [], env = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'databricks-replay-'));
-  const authLog = join(dir, 'auth-calls.jsonl');
-  try {
-    const result = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/benchrouter.mjs', import.meta.url)), 'databricks', 'connect', '--host', host, '--catalog', 'workspace', '--schema', 'br_design', '--results-group', 'readers', '--manage-group', 'managers', '--account-token', 'br_ctrl_recorded_fixture', '--api-url', server.url, ...args], { env: { ...process.env, BR_FIXTURE_AUTH: '', DATABRICKS_ACCOUNT_ID: '', PATH: `${fileURLToPath(new URL('bin/', fixtureDir))}:${process.env.PATH}`, BENCHROUTER_DATABRICKS_API_BASE: server.url, ...env, BR_FIXTURE_AUTH_LOG: authLog }, stdio: ['ignore', 'pipe', 'pipe'] });
-      let stdout = '', stderr = '';
-      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('CLI exceeded 4 s')); }, 4000);
-      child.stdout.on('data', (c) => { stdout += c; });
-      child.stderr.on('data', (c) => { stderr += c; });
-      child.on('error', reject);
-      child.on('close', (status) => { clearTimeout(timeout); resolve({ status, stdout, stderr }); });
-    });
-    return { ...result, authCalls: (await readFile(authLog, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)) };
-  } finally { await rm(dir, { recursive: true, force: true }); }
-}
-function noSecrets(result) {
-  for (const secret of [loginMarker, clientSecret, basic, pollMarker, 'proof-signature']) assert.ok(!(result.stdout + result.stderr).includes(secret));
-}
+});
 
 for (const [name, options, expectedStatus] of [
   ['first Connect writes the key before grants and creates a fresh SP (AUTH-006 / AUTH-012 / DATA-001)', { absent: true }, 0],

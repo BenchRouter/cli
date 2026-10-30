@@ -1,0 +1,95 @@
+{
+  "binding": {
+    "id": "dbxb_recorded",
+    "account_id": "acct_fixture",
+    "host": "fixture.cloud.databricks.com",
+    "workspace_id": "7474660687257254",
+    "databricks_account_id": "00000000-0000-4000-8000-000000000001",
+    "agent_sp_application_id": "00000000-0000-4000-8000-000000000002",
+    "catalog": "workspace",
+    "schema": "br_design",
+    "warehouse_id": "f7cf158c6784dd06",
+    "results_group": "readers",
+    "manage_group": "managers",
+    "agent_job_id": "127620839936386",
+    "eval_job_id": "55",
+    "secret_scope": "benchrouter-recorded",
+    "state": "connecting",
+    "cadence_seconds": 3600,
+    "last_poll_at": null,
+    "last_agent_version": "0.3.0",
+    "disconnect_requested_at": null,
+    "closed_reason": null,
+    "created_at": "2026-10-30T09:00:00.000Z",
+    "updated_at": "2026-10-30T10:00:00.000Z"
+  },
+  "evals": [
+    {
+      "id": "dbxe_recorded",
+      "route_key": "support/triage",
+      "binding_id": "dbxb_recorded",
+      "eval_folder": "/Shared/eval",
+      "desired_revision": 1,
+      "active_revision": null,
+      "active_digest": null,
+      "state": "attached",
+      "updated_at": "2026-10-30T10:00:00.000Z",
+      "grant_needed": {
+        "owner": "customer",
+        "title": "Databricks needs a grant before this eval runs",
+        "message": "The agent cannot read the cases table. Only a workspace admin can grant access.",
+        "since": "2026-10-30T10:00:00.000Z",
+        "grants": [
+          {
+            "kind": "table_select",
+            "missing": "the cases table main.evals.cases",
+            "fix": "Have the table owner grant SELECT.",
+            "command": "GRANT SELECT ON TABLE main.evals.cases TO `00000000-0000-4000-8000-000000000002`;"
+          }
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route_key": "support/triage",
+      "name": "Triage",
+      "model": "provider/model",
+      "eval_source": "databricks"
+    }
+  ],
+  "exposures": [
+    {
+      "route_key": "support/triage",
+      "endpoint_name": "br-support-triage",
+      "provider_service_name": "workspace.br_design.br_support_triage",
+      "state": "exposing",
+      "updated_at": "2026-10-30T10:00:00.000Z",
+      "failure": {
+        "code": "lease_attempts_exhausted",
+        "failed_at": "2026-10-30T10:00:00.000Z",
+        "owner": "unknown",
+        "title": "The agent job did not finish",
+        "message": "The agent job stopped before it finished, five times in a row. Check the last runs of the BenchRouter agent job in Databricks."
+      }
+    }
+  ],
+  "disconnect_failure": null,
+  "setup_failure": {
+    "code": "lease_attempts_exhausted",
+    "failed_at": "2026-10-30T10:00:00.000Z",
+    "owner": "unknown",
+    "title": "The agent job did not finish",
+    "message": "The agent job stopped before it finished, five times in a row. Check the last runs of the BenchRouter agent job in Databricks."
+  },
+  "setup_items": [
+    {
+      "kind": "volume",
+      "target": "workspace.br_design.benchrouter_results",
+      "state": "done",
+      "queued_at": "2026-10-30T09:00:00.000Z",
+      "failure": null
+    }
+  ],
+  "cleanup_pending": []
+}
