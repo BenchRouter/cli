@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { parseDatabricksConnectResponse, parseDatabricksSetupItems } from '../src/databricks-contract.mjs';
+import { parseDatabricksConnectResponse, parseDatabricksSetupItems, spStepTarget } from '../src/databricks-contract.mjs';
 import { replay as sharedReplay, runDatabricksCli, noSecrets } from './helpers/databricks-replay.mjs';
 
 const fixtureDir = new URL('./fixtures/databricks/', import.meta.url);
@@ -570,6 +570,7 @@ test('SP change revokes every inventory object, skips missing objects, and remov
 });
 
 const manifestRevoke = (fields = {}) => ({ object: 'cases_table', action: 'manifest_table_revoke', route_key: 'support/triage', eval_folder: '/Shared/eval', principal: principal(), privileges: ['SELECT'], only_if: 'exists', ...fields });
+const manifestSecretRevoke = (fields = {}) => ({ object: 'secret_scope', action: 'manifest_secret_acl_delete', route_key: 'support/triage', eval_folder: '/Shared/eval', principal: principal(), only_if: 'exists', ...fields });
 function manifestRevokeCalls(change, { content = manifest, folderMissing = false, manifestMissing = false, exported, table = 'main.evals.cases', status = 200, code = 'RESOURCE_DOES_NOT_EXIST' } = {}) {
   const calls = [{ method: 'GET', path: '/api/2.0/workspace/get-status', status: folderMissing ? 404 : 200,
     body: folderMissing ? { error_code: code } : { object_id: 999, object_type: 'DIRECTORY' },
@@ -706,13 +707,114 @@ function grantCalls(grant, { sameSchema = false } = {}) {
 const ucRevokeCalls = (s) => [call('GET', `${uc}/model-provider-services/${s.full_name}`, { owner: 'service-owner' }),
   call('PATCH', `${uc}/permissions/model_provider_service/${s.full_name}`, {}, 200, bodyIs({ changes: [{ principal: s.principal.name, remove: s.privileges }] }))];
 
-for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manifest_table_revoke']) for (const [content, reason] of [
+const secretRevokeId = (s) => `${s.principal.name}|secret_scope|${s.eval_folder}#${s.route_key}`;
+function manifestSecretRevokeCalls(change, { scope = 'support-evals', status = 200, code = 'RESOURCE_DOES_NOT_EXIST', ...options } = {}) {
+  const calls = manifestRevokeCalls(change, { ...options, table: null });
+  if (options.folderMissing || options.manifestMissing || scope === null) return calls;
+  calls.push(call('POST', '/api/2.0/secrets/acls/delete', status === 200 ? {} : { error_code: code, message: `${loginMarker} ${pollMarker}` }, status,
+    bodyIs({ scope, principal: change.principal.name })));
+  return calls;
+}
+
+for (const retry of [false, true]) test(`Connect revokes each eval's old SP secret ACL after its table revoke (${retry ? 'persisted retry' : 'SP change'})`, { timeout: 4900 }, async (t) => {
+  const changes = [
+    manifestRevoke(), manifestSecretRevoke(),
+    manifestRevoke({ route_key: 'other/route', eval_folder: '/Shared/other' }),
+    manifestSecretRevoke({ route_key: 'other/route', eval_folder: '/Shared/other' })
+  ];
+  const content = manifest + manifest.slice(manifest.indexOf('  - route_id:')).replace('support/triage', 'other/route')
+    .replace('main.evals.cases', 'other.data.cases').replace('support-evals', 'other-evals');
+  const pending = changes.map((s, i) => pendingStep('revoke', s, s.object === 'secret_scope' ? secretRevokeId(s) : `table-${i}`));
+  const inherited = pendingStep('revoke', manifestSecretRevoke({ principal: principal(sp2.applicationId) }), 'earlier-binding');
+  inherited.binding_id = 'dbxb_older';
+  const grant = persistedChange.sp_change.grant.find((s) => s.action === 'manifest_secret_acl_put');
+  const grantItem = pendingStep('grant', grant, 'new-sp-secret-read');
+  const changeCalls = [...grantCalls(grant), ...changes.flatMap((s, i) => s.object === 'secret_scope'
+    ? manifestSecretRevokeCalls(s, { content, scope: i > 1 ? 'other-evals' : 'support-evals' })
+    : manifestRevokeCalls(s, { content, table: i > 1 ? 'other.data.cases' : 'main.evals.cases' }))];
+  const p = plan({ existing: binding(retry ? sp2 : sp), ...(retry ? { agent: sp2 } : { newSp: true, spMissing: true, grants: [grant], change: changes }),
+    pending: [inherited, ...pending, grantItem], changeCalls,
+    done: [grantItem, ...pending].map(({ kind, id }) => ({ kind, id })) });
+  const server = await sharedReplay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(p.c.sp_change === null, retry);
+  assert.deepEqual(JSON.parse(result.stdout).pending_steps, []);
+  assert.equal(server.requests.filter((r) => r.path === '/api/2.0/secrets/acls/delete').length, 2);
+  assert.equal(server.requests.filter((r) => r.path.endsWith('/cleanup')).length, 1);
+  noSecrets(result);
+  server.assertDone();
+});
+
+for (const [name, options] of [
+  ['missing folder', { folderMissing: true }],
+  ['missing manifest', { manifestMissing: true }],
+  ['scope not declared', { content: manifest.replace('secret_env: [JUDGE_API_KEY]', 'secret_env: []').replace('secret_scope: support-evals', '# no scope'), scope: null }],
+  ['missing scope', { status: 404 }],
+  ['missing ACL', { status: 400, code: 'RESOURCE_DOES_NOT_EXIST' }]
+]) test(`manifest_secret_acl_delete acknowledges ${name}`, { timeout: 4900 }, async (t) => {
+  const change = manifestSecretRevoke();
+  const item = pendingStep('revoke', change, secretRevokeId(change));
+  const server = await replay(t, plan({ agent: sp2, pending: [item], changeCalls: manifestSecretRevokeCalls(change, options) }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).pending_steps, []);
+  assert.deepEqual(server.requests.find((r) => r.path.endsWith('/cleanup')).body.done, [{ kind: 'revoke', id: item.id }]);
+  noSecrets(result);
+  server.assertDone();
+});
+
+for (const status of [400, 403]) for (const json of [false, true]) test(`manifest_secret_acl_delete refusal (${status}, ${json ? 'JSON' : 'text'}) names MANAGE holders and Connect exits 0`, { timeout: 4900 }, async (t) => {
+  const change = manifestSecretRevoke();
+  const item = pendingStep('revoke', change, secretRevokeId(change));
+  const success = manifestSecretRevoke({ eval_folder: '/Shared/other' });
+  const successItem = pendingStep('revoke', success, secretRevokeId(success));
+  const changeCalls = [
+    ...manifestSecretRevokeCalls(change, { status, code: 'PERMISSION_DENIED' }),
+    call('GET', '/api/2.0/secrets/acls/list', { items: [
+      { principal: 'scope-reader', permission: 'READ' },
+      { principal: 'scope-owner', permission: 'MANAGE' },
+      { principal: 'scope-admins', permission: 'MANAGE' }
+    ] }, 200, (r) => assert.deepEqual([...r.query], [['scope', 'support-evals']])),
+    ...manifestSecretRevokeCalls(success)
+  ];
+  const server = await sharedReplay(t, plan({ agent: sp2, pending: [item, successItem], changeCalls,
+    done: [{ kind: 'revoke', id: successItem.id }] }).calls);
+  const result = await runCli(server, json ? ['--json'] : []);
+  assert.equal(result.status, 0, result.stderr);
+  if (json) assert.deepEqual(JSON.parse(result.stdout).pending_steps, [{ kind: 'revoke', id: item.id, action: change.action,
+    object: change.object, target: `${change.eval_folder}#${change.route_key}`, owner: 'scope-owner, scope-admins' }]);
+  assert.match(result.stderr, /Pending revoke.*manifest_secret_acl_delete.*Owner: scope-owner, scope-admins.*Re-run benchrouter databricks connect/);
+  assert.ok(server.requests.some((r) => r.path === '/api/2.2/jobs/create'));
+  assert.ok(server.requests.some((r) => r.path === '/api/2.2/jobs/run-now'));
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('secret_scope revoke parser distinguishes direct and manifest actions and validates required fields', { timeout: 4900 }, () => {
+  const direct = inventoryRevokes().find((s) => s.action === 'secret_acl_delete');
+  const change = manifestSecretRevoke();
+  const response = { ...structuredClone(responseTemplate), cleanup_pending: [],
+    sp_change: { previous_agent_sp_application_id: sp.applicationId, grant: [], revoke: [direct, change] } };
+  assert.deepEqual(parseDatabricksConnectResponse(response, sp2.applicationId), response);
+  assert.equal(spStepTarget(direct), direct.scope);
+  assert.equal(spStepTarget({ ...change, scope: 'unused-extra-field' }), `${change.eval_folder}#${change.route_key}`);
+  for (const invalid of [
+    { ...direct, action: change.action }, { ...change, action: direct.action },
+    ...[{ object: 'cases_table' }, { action: 'unknown' }, { eval_folder: null }, { eval_folder: undefined },
+      { route_key: 1 }, { route_key: undefined }, { principal: null },
+      { only_if: 'always' }, { only_if: 'exists_not_agent_owned' }, { only_if: undefined }].map((fields) => ({ ...change, ...fields }))
+  ]) assert.throws(() => parseDatabricksConnectResponse({ ...response, sp_change: { ...response.sp_change, revoke: [invalid] } }, sp2.applicationId), /invalid Databricks Connect response/);
+});
+
+for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manifest_table_revoke', 'manifest_secret_acl_delete']) for (const [content, reason] of [
   ['routes: [', 'eval manifest is invalid'],
   [manifest.replace('support/triage', 'other/route'), 'route_key is no longer declared exactly once in the eval manifest'],
   [manifest.replace('support-evals', 'benchrouter-private'), 'eval manifest is invalid']
 ]) test(`Connect keeps ${action} pending for ${reason}${content.includes('benchrouter-private') ? ' (reserved scope)' : ''}`, { timeout: 4900 }, async (t) => {
-  const kind = action === 'manifest_table_revoke' ? 'revoke' : 'grant';
-  const step = kind === 'revoke' ? manifestRevoke() : persistedChange.sp_change.grant.find((s) => s.action === action);
+  const kind = ['manifest_table_revoke', 'manifest_secret_acl_delete'].includes(action) ? 'revoke' : 'grant';
+  const step = kind === 'revoke' ? action === 'manifest_secret_acl_delete' ? manifestSecretRevoke() : manifestRevoke()
+    : persistedChange.sp_change.grant.find((s) => s.action === action);
   const item = pendingStep(kind, step, 'manifest-pending');
   const success = persistedChange.sp_change.revoke[0];
   const changeCalls = [
@@ -748,9 +850,10 @@ for (const retry of [false, true]) test(`Connect runs all persisted grants befor
   server.assertDone();
 });
 
-for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manifest_table_revoke']) test(`Connect fails on unexpected ${action} export errors without acknowledgement`, { timeout: 4900 }, async (t) => {
-  const kind = action === 'manifest_table_revoke' ? 'revoke' : 'grant';
-  const step = kind === 'revoke' ? manifestRevoke() : persistedChange.sp_change.grant.find((s) => s.action === action);
+for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manifest_table_revoke', 'manifest_secret_acl_delete']) test(`Connect fails on unexpected ${action} export errors without acknowledgement`, { timeout: 4900 }, async (t) => {
+  const kind = ['manifest_table_revoke', 'manifest_secret_acl_delete'].includes(action) ? 'revoke' : 'grant';
+  const step = kind === 'revoke' ? action === 'manifest_secret_acl_delete' ? manifestSecretRevoke() : manifestRevoke()
+    : persistedChange.sp_change.grant.find((s) => s.action === action);
   const changeCalls = manifestRevokeCalls(step, { table: null });
   changeCalls[1] = { ...changeCalls[1], status: 500, body: { error_code: 'INTERNAL_ERROR' } };
   const p = plan({ agent: sp2, pending: [pendingStep(kind, step, 'failed-export')], changeCalls, done: [] });
@@ -999,7 +1102,7 @@ for (const only_if of ['always', 'exists_not_agent_owned']) test(`Connect revoke
 // Mutate fixture-derived plans to exercise semantic errors that the DTO permits.
 for (const source of ['sp_change', 'cleanup_pending']) for (const kind of ['grant', 'revoke']) {
   test(`${source} ${kind} checks every action's principal`, { timeout: 4900 }, () => {
-    const steps = kind === 'grant' ? persistedChange.sp_change.grant : [...inventoryRevokes(), manifestRevoke()];
+    const steps = kind === 'grant' ? persistedChange.sp_change.grant : [...inventoryRevokes(), manifestRevoke(), manifestSecretRevoke()];
     for (const step of steps) {
       const valid = { ...structuredClone(responseTemplate), sp_change: null, cleanup_pending: [] };
       if (source === 'sp_change') valid.sp_change = { previous_agent_sp_application_id: sp.applicationId, grant: [], revoke: [], [kind]: [step] };

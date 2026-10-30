@@ -1,4 +1,4 @@
-// Source: server src/shared/databricks-dto.ts on origin/main (2026-10-30).
+// Source: server src/shared/databricks-dto.ts, including follow-up H (2026-10-30).
 // AUTH-012: validate the complete plan before any workspace write using its fields.
 /**
  * @typedef {{type: 'user'|'service_principal'|'group', name: string}} DatabricksPrincipal
@@ -18,6 +18,7 @@
  *   {object: 'cases_table', action: 'manifest_table_revoke', route_key: string, eval_folder: string,
  *   principal: DatabricksPrincipal, privileges: ['SELECT'], only_if: 'exists'} |
  *   {object: 'secret_scope', action: 'secret_acl_delete', scope: string, principal: DatabricksPrincipal, only_if: 'exists'} |
+ *   {object: 'secret_scope', action: 'manifest_secret_acl_delete', eval_folder: string, route_key: string, principal: DatabricksPrincipal, only_if: 'exists'} |
  *   {object: 'agent_job'|'eval_job', action: 'job_acl_remove', job_id: string, principal: DatabricksPrincipal, only_if: 'exists'} |
  *   {object: 'serving_endpoint', action: 'endpoint_acl_remove', endpoint_name: string, principal: DatabricksPrincipal, only_if: 'exists'} |
  *   {object: 'eval_folder', action: 'folder_acl_remove', path: string, principal: DatabricksPrincipal, only_if: 'exists'}} DatabricksRevokeStep
@@ -54,6 +55,7 @@ function revokeStep(s) {
   if (s.action === 'manifest_table_revoke') return s.object === 'cases_table'
     && strings(s, ['route_key', 'eval_folder']) && singleton(s.privileges, 'SELECT');
   if (s.action === 'secret_acl_delete') return s.object === 'secret_scope' && string(s.scope);
+  if (s.action === 'manifest_secret_acl_delete') return s.object === 'secret_scope' && strings(s, ['eval_folder', 'route_key']);
   if (s.action === 'job_acl_remove') return ['agent_job', 'eval_job'].includes(s.object) && string(s.job_id);
   if (s.action === 'endpoint_acl_remove') return s.object === 'serving_endpoint' && string(s.endpoint_name);
   if (s.action === 'folder_acl_remove') return s.object === 'eval_folder' && string(s.path);
@@ -196,4 +198,5 @@ export function validateDatabricksRead(value) {
   return value;
 }
 
-export const spStepTarget = (step) => step.full_name ?? step.scope ?? step.job_id ?? step.endpoint_name ?? step.path ?? `${step.eval_folder}#${step.route_key}`;
+export const spStepTarget = (step) => step.action === 'manifest_secret_acl_delete' ? `${step.eval_folder}#${step.route_key}`
+  : step.full_name ?? step.scope ?? step.job_id ?? step.endpoint_name ?? step.path ?? `${step.eval_folder}#${step.route_key}`;
