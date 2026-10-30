@@ -1,0 +1,24 @@
+routes:
+  - route_id: support/triage
+    call_site: {base_url_env: OPENAI_BASE_URL}
+    eval_pack:
+      mode: repository_executable
+      api_family: openai_chat_completions
+      lockfile: requirements.lock
+      input_refs: [predict.py]
+      acceptance_refs: [scorers.py]
+      primary_metric: correctness
+      timeout_minutes: 30
+      secret_env: [JUDGE_API_KEY]
+      databricks:
+        cases_table: main.evals.cases
+        secret_scope: support-evals          # each secret_env value is the key of the same name
+        cases: {id_column: case_id, inputs_column: inputs, expectations_column: expectations, critical_column: critical}
+        predict: {file: predict.py, function: predict_fn}
+        scorers: {file: scorers.py, attribute: SCORERS}
+        normalization:
+          version: 1
+          metrics:
+            - {name: correctness, assessment: correctness, type: boolean, required: true}
+            - {name: tone, assessment: tone, type: categorical, values: {good: 1, ok: 0.5, bad: 0}, required: false}
+          pass_rule: {metrics: [correctness], min_score: 1}

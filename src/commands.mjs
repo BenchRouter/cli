@@ -15,6 +15,7 @@ import * as render from "./render.mjs";
 import { resolveControlUsageName } from "./usage-text.mjs";
 import { runLogin } from "./login.mjs";
 import { runDatabricksConnect } from "./databricks-connect.mjs";
+import { runDatabricksCommand } from "./databricks-commands.mjs";
 
 export const CUSTOMER_ROOT_COMMANDS = new Set([
   "login",
@@ -57,8 +58,9 @@ export async function runControlCommand(ctx) {
   }
   try {
     if (command === "databricks") {
-      if (ctx.args._[1] !== "connect") return unknown(ctx, "databricks", ctx.args._[1]);
-      return await runDatabricksConnect(ctx);
+      if (ctx.args._[1] === "connect") return await runDatabricksConnect(ctx);
+      if (["status", "add-eval", "disconnect"].includes(ctx.args._[1])) return await runDatabricksCommand(ctx);
+      return unknown(ctx, "databricks", ctx.args._[1]);
     }
     if (command === "login") return await runLogin(ctx);
     if (command === "account") return await runAccount(ctx);

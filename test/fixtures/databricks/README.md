@@ -57,3 +57,52 @@ also follow the official generated Databricks SDK:
 The test-only `BENCHROUTER_DATABRICKS_API_BASE` accepts a loopback HTTP origin.
 It redirects Databricks calls to the replay server while preserving the real
 workspace URL in the registration request. Do not set it for a real workspace.
+
+## H5 contract and replay coverage
+
+`binding-{connecting,verified,agent_silent,disconnecting,disconnected,archived}.json`
+are contract fixtures derived from the supplied `headless-contract.ts` and
+`databricks-dto.ts`. They are not live H2 recordings. Disconnecting is represented
+by a verified binding with `disconnect_requested_at`, as the contract specifies.
+The failure and grant records follow the DTO builders. Test identities replace
+all account and workspace identifiers. Live binding reads for these states and
+a live force-disconnect remain integration checks once the H2 target is supplied.
+
+`eval-manifest.yml` is the YAML example from the supplied runner `manifest.py`,
+with its route and scope changed to fixed test identifiers. The replay exports
+that file over the Workspace API as base64. Invalid variants change the fields
+that H5 consumes. The parser does not validate unused runner code or scoring fields.
+
+H4 and H5 share `test/helpers/databricks-replay.mjs`, the same ordered loopback
+server, credential boundary assertions, four-second subprocess timeout, and
+recorded Databricks CLI binary. No internal function is mocked. H5 replays the
+supplied endpoint/provider-service permission evidence and the UC grant/volume
+shapes used by H4. Every H5 test has a 4.9-second test timeout.
+The shared runner checks output for credential leaks after every command, including
+help and refusal paths. The server also checks each request's credential boundary.
+It preserves response Date headers and deferred setup snapshots for #35's Connect tests.
+
+Round 2 coverage uses the final typed `results_owner` and disconnect response
+contracts. Status always wraps the unchanged reads in `{bindings: [...]}`. Setup
+failures use `binding-read.json`. Job-owner checks use the same Databricks job ACL
+shape as Connect, with user-owner, SP-owner, denied and missing variants. The user
+warning is on stderr, outside the server-read JSON. Replay request timestamps
+verify the two-second disconnect interval. Ordered requests require one inventory
+list and one read per other open binding before cleanup. Closed-binding variants
+expect neither a disconnect POST nor run-now. Invalid manifests and non-admin
+logins expect no BenchRouter POST.
+
+The REST mapping also follows the official
+[Workspace export API](https://docs.databricks.com/api/workspace/workspace/export),
+[Workspace permissions API](https://docs.databricks.com/api/workspace/workspace/updatepermissions),
+and [Secrets API](https://docs.databricks.com/api/workspace/secrets/listacls).
+A scope existence check reads its ACL metadata, never secret values.
+
+The generic outbound User-Agent contains no user or repository identifier.
+
+Cleanup identity checks follow Databricks' documented
+[lowercase UC names](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-names)
+and [case-insensitive scope names](https://docs.databricks.com/aws/en/security/secrets).
+The replay covers a newer binding that records the same scope and volumes with
+different casing. Deletion is acknowledged only after a confirming missing-object
+read; a service that still exists remains pending.

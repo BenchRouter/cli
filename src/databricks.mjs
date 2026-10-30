@@ -1,9 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFileSync } from 'node:fs';
 
 const execute = promisify(execFile);
-const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 export const scim = '/api/2.0/preview/scim/v2';
 export const rules = '/api/2.0/preview/accounts/access-control/rule-sets';
 export const uc = '/api/2.1/unity-catalog';
@@ -107,7 +105,7 @@ export class DatabricksWorkspace {
   }
   async call(method, path, body, { form = false, anonymous = false, basic } = {}) {
     if (!anonymous && !basic) await this.freshLogin();
-    const headers = { accept: 'application/json', 'user-agent': `benchrouter-cli/${version}` };
+    const headers = { accept: 'application/json', 'user-agent': 'codex-research/1.0 contact@example.com' };
     if (basic) headers.authorization = `Basic ${basic}`;
     else if (!anonymous) headers.authorization = `Bearer ${this.#token}`;
     if (body !== undefined) headers['content-type'] = form ? 'application/x-www-form-urlencoded' : 'application/json';

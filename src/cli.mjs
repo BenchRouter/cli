@@ -1523,7 +1523,8 @@ function parseArgs(values) {
     const key = equalsIndex === -1 ? option : option.slice(0, equalsIndex);
     const inlineValue = equalsIndex === -1 ? undefined : option.slice(equalsIndex + 1);
     const next = values[index + 1];
-    const argValue = inlineValue !== undefined ? inlineValue : next && !next.startsWith("--") ? values[++index] : true;
+    const databricksBoolean = values[0] === "databricks" && ["json", "help", "force", "reclaim"].includes(key);
+    const argValue = inlineValue !== undefined ? (databricksBoolean && ["true", "false"].includes(inlineValue) ? inlineValue === "true" : inlineValue) : !databricksBoolean && next && !next.startsWith("--") ? values[++index] : true;
 
     if (parsed[key] === undefined) {
       parsed[key] = argValue;

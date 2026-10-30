@@ -21,6 +21,10 @@ export const customerPaths = {
   databricksBindings: () => ({ method: "GET", path: "/v1/databricks/bindings", label: "Databricks bindings" }),
   databricksBinding: (id) => ({ method: "GET", path: `/v1/databricks/bindings/${encodePathSegment(id)}`, label: "Databricks binding" }),
   databricksConnect: (body) => ({ method: "POST", path: "/v1/databricks/bindings", label: "Databricks connect", body }),
+  databricksAddEval: (id, body) => ({ method: "POST", path: `/v1/databricks/bindings/${encodePathSegment(id)}/evals`, label: "Databricks add eval", body }),
+  databricksDisconnect: (id, body) => ({ method: "POST", path: `/v1/databricks/bindings/${encodePathSegment(id)}/disconnect`, label: "Databricks disconnect", body }),
+  databricksCleanup: (id, body) => ({ method: "POST", path: `/v1/databricks/bindings/${encodePathSegment(id)}/cleanup`, label: "Databricks cleanup", body }),
+  databricksReclaim: (body) => ({ method: "POST", path: "/v1/databricks/bindings/reclaim", label: "Databricks reclaim", body }),
   databricksRecordAgent: (id, body) => ({ method: "POST", path: `/v1/databricks/bindings/${encodePathSegment(id)}/agent`, label: "Databricks agent", body }),
 
   /** GET /v1/account/control/me */

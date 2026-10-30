@@ -51,7 +51,65 @@ admin to fix it. A timeout names the items still waiting for completion.
 The JSON result includes `setup_items`, with `kind`, `target`, and `state` for each
 item. Human output prints one line per item.
 
-This command requires the H1/H2 headless Connect server contract.
+Read workspace state, attach an eval, or disconnect:
+
+```bash
+benchrouter databricks status --host https://<workspace>.cloud.databricks.com --json
+benchrouter databricks add-eval support/triage /Shared/evals/triage --host https://<workspace>.cloud.databricks.com
+benchrouter databricks disconnect --host https://<workspace>.cloud.databricks.com
+benchrouter databricks disconnect --host https://<workspace>.cloud.databricks.com --force --json
+benchrouter databricks disconnect --host https://<workspace>.cloud.databricks.com --reclaim --json
+```
+
+All four commands support `--json`. Status is available to any account member.
+It lists every matching binding, with state, check-in, cadence, agent SP, routes,
+exposures, eval folders, grants, setup items, failures and the server's exact cleanup
+instructions and commands. JSON always has the shape `{bindings: [<server read>, ...]}`.
+Each entry is the full server read after any cleanup acknowledgement. With no
+matching bindings, it returns `{bindings: []}`. Text shows agent and eval job
+links to their Databricks job pages, where admins can inspect the last runs.
+
+Status needs no Databricks login. When an OAuth login is available, status checks
+pending workspace objects. It reports objects that are gone to the cleanup endpoint
+and reads the binding again. An account member can still read status if the server
+refuses that acknowledgement. Account-console SP steps stay pending; a workspace
+SCIM read cannot prove that an account SP was deleted. Status never reads secret values.
+With a login, status also reads the agent job ACL. If its owner is a user, status
+warns on stderr that removing that user stops the job under
+`restrict_workspace_admins`. This warning does not change the JSON server reads.
+
+Add-eval and disconnect need an account owner/admin and a Databricks workspace-admin
+OAuth login. With several workspaces, pass `--host`. Add-eval attaches the route and
+folder only after checking the workspace admin, reading the folder, and exporting
+and validating the YAML manifest. It then grants folder `CAN_READ` with PATCH and
+grants the agent SP `SELECT` on its cases table. It also grants `USE_CATALOG` and `USE_SCHEMA`
+when those namespaces differ from the binding. It uses the runner's validation rules
+for the manifest fields it reads. It prints one `databricks secrets put-acl ... READ`
+command for each declared scope and starts the recorded agent job. No secret value is
+accepted. The server refuses routes with repository or hosted evals.
+
+Disconnect requests closure and starts the recorded agent job. It waits up to three
+minutes for `archived` or `disconnected`, then checks and deletes the closed binding's
+recorded objects. It polls the binding every two seconds. Before deleting, it
+reads the open-binding list once and each other open binding once. It preserves
+ids they hold. `--force` closes at once and runs only that binding's server cleanup steps as
+the admin. Jobs, secret scopes, serving endpoints, manageable provider services and
+the two working volumes are removed. The results table and experiment remain.
+The agent SP remains for an account admin to remove in the account console.
+Unmanageable objects retain their cleanup instructions. Successful cleanup is
+acknowledged with `{done: [{kind, id}]}`. Repeating disconnect can resume cleanup
+for a closed binding without another disconnect request or agent run.
+
+`--reclaim` needs `--host`. It creates a fresh identity-only proof and closes the
+holding binding without requiring a role in its BenchRouter account. It reads no
+holding binding. It removes only the returned endpoints and manageable provider
+services. It cannot use `--force` or `--results-owner`.
+
+`--results-owner <group>` sends `results_owner: {type: "group", name: <group>}`.
+Without the flag, the field is omitted and the results table and experiment stay
+with the agent SP. The server rejects string principals with `invalid_results_owner`.
+
+These commands require the H1/H2 headless server contract.
 For local replay tests only, `BENCHROUTER_DATABRICKS_API_BASE` redirects Databricks
 REST calls to a loopback HTTP server. Keep it unset for real workspace setup.
 If workspace discovery does not return the Databricks account id, set

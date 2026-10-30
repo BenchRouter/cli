@@ -1011,3 +1011,109 @@ export function renderDatabricksConnected(result) {
   process.stdout.write(`Connected Databricks. Binding ${result.binding_id}; agent job ${result.agent_job_id}.\n`);
   for (const item of result.setup_items) process.stdout.write(`${item.kind} ${item.target}: ${item.state}\n`);
 }
+
+// Keep the text view organized around the admin's tasks. JSON retains the server read.
+const dbxValue = (value) => value ?? '(not set)';
+const dbxIndentedLines = (text, indent = '    ') => text.split('\n').map((line) => `${indent}${line}`);
+function databricksFailureLines(failure, indent = '  ') {
+  if (!failure) return [];
+  return [
+    `${indent}${failure.title}`,
+    `${indent}${failure.message}`,
+    `${indent}Owner: ${failure.owner}; code: ${failure.code}; failed: ${dbxValue(failure.failed_at)}`
+  ];
+}
+function databricksEvalLines(e) {
+  const lines = [
+    `  ${e.route_key}: ${e.state}`,
+    `    Folder: ${e.eval_folder}`,
+    `    Revision: desired ${e.desired_revision}; active ${dbxValue(e.active_revision)}; digest ${dbxValue(e.active_digest)}`,
+    `    Eval ${e.id}; binding ${e.binding_id}; updated ${e.updated_at}`
+  ];
+  if (e.grant_needed) {
+    const g = e.grant_needed;
+    lines.push(`    ${g.title}`, `    ${g.message}`, `    Owner: ${g.owner}; pending since ${dbxValue(g.since)}`);
+    for (const grant of g.grants) {
+      lines.push(`    Missing ${grant.kind}: ${grant.missing}`, ...dbxIndentedLines(grant.fix, '      '));
+      if (grant.command !== null) lines.push(...dbxIndentedLines(grant.command, '      '));
+    }
+  }
+  return lines;
+}
+function databricksLeftoverLines(steps) {
+  const lines = ['Leftovers'];
+  if (!steps.length) lines.push('  None.');
+  for (const step of steps) {
+    lines.push(`  ${step.kind}: ${step.id}`, `    Binding ${step.binding_id}; actor ${step.actor}; reason ${step.reason}`);
+    // Add display indentation to each line without changing the server text.
+    lines.push(...dbxIndentedLines(step.instruction));
+    if (step.command !== null) lines.push(...dbxIndentedLines(step.command));
+  }
+  return lines;
+}
+export function renderDatabricksRead(value) {
+  if (!value.bindings.length) { process.stdout.write('No Databricks bindings.\n'); return; }
+  const views = value.bindings.map((detail) => {
+    const b = detail.binding;
+    const jobLink = (id) => id ? `https://${b.host}/jobs/${id}` : '(not set)';
+    const lines = [
+      `${b.host} | ${b.state}`,
+      `  Last check-in: ${dbxValue(b.last_poll_at)}; cadence: ${b.cadence_seconds} seconds`,
+      `  Agent SP application id: ${b.agent_sp_application_id}`,
+      `  Catalog/schema: ${b.catalog}.${b.schema}`,
+      `  Results group: ${dbxValue(b.results_group)}; manage group: ${dbxValue(b.manage_group)}`,
+      `  Agent job (last runs): ${jobLink(b.agent_job_id)}`,
+      `  Eval job (last runs): ${jobLink(b.eval_job_id)}`,
+      `  Binding: ${b.id}; account: ${b.account_id}; workspace: ${b.workspace_id}`,
+      `  Databricks account: ${dbxValue(b.databricks_account_id)}; warehouse: ${dbxValue(b.warehouse_id)}`,
+      `  Secret scope: ${dbxValue(b.secret_scope)}; agent version: ${dbxValue(b.last_agent_version)}`,
+      `  Created: ${b.created_at}; updated: ${b.updated_at}`,
+      `  Disconnect requested: ${dbxValue(b.disconnect_requested_at)}; closed reason: ${dbxValue(b.closed_reason)}`,
+      '', 'Setup items'
+    ];
+    if (!detail.setup_items.length) lines.push('  None.');
+    for (const item of detail.setup_items) {
+      lines.push(`  ${item.kind} ${item.target}: ${item.state}`, `    Queued: ${item.queued_at}`,
+        ...databricksFailureLines(item.failure, '    '));
+    }
+    lines.push('', 'Exposures');
+    if (!detail.exposures.length) lines.push('  None.');
+    for (const e of detail.exposures) {
+      lines.push(`  ${e.route_key}: ${e.state}`, `    Endpoint: ${e.endpoint_name}`, `    Provider service: ${e.provider_service_name}`,
+        `    Updated: ${e.updated_at}`, ...databricksFailureLines(e.failure, '    '));
+    }
+    lines.push('', 'Evals');
+    if (!detail.evals.length) lines.push('  None.');
+    for (const e of detail.evals) lines.push(...databricksEvalLines(e));
+    lines.push('', 'Routes');
+    if (!detail.routes.length) lines.push('  None.');
+    for (const r of detail.routes) lines.push(`  ${r.route_key} (${r.name}): ${r.model}; eval source: ${dbxValue(r.eval_source)}`);
+    lines.push('', 'Setup failure', ...(detail.setup_failure ? databricksFailureLines(detail.setup_failure) : ['  None.']));
+    lines.push('', 'Disconnect failure', ...(detail.disconnect_failure ? databricksFailureLines(detail.disconnect_failure) : ['  None.']));
+    lines.push('', ...databricksLeftoverLines(detail.cleanup_pending));
+    return lines.join('\n');
+  });
+  process.stdout.write(`${views.join('\n\n')}\n`);
+}
+export function renderDatabricksEval(value) {
+  const lines = ['Eval registered. Folder and cases-table grants applied.', ...databricksEvalLines(value.eval),
+    value.agent_started ? 'The recorded agent job was started.' : 'The recorded agent job is absent. No agent job was started.', 'Secret READ grants to run:'];
+  lines.push(...(value.secret_acl_commands.length ? value.secret_acl_commands : ['  None.']));
+  process.stdout.write(`${lines.join('\n')}\n`);
+}
+export function renderDatabricksDisconnect(value) {
+  const lines = [];
+  if (Object.hasOwn(value, 'closed_binding_id')) {
+    lines.push(value.closed_binding_id ? `Reclaimed binding ${value.closed_binding_id}.` : 'No open binding to reclaim.');
+  } else {
+    lines.push(value.disconnect_sent ? `Disconnect sent. Binding is ${value.state}.` : `Binding is already ${value.state}. No disconnect was sent.`);
+    if (value.disconnect_sent) lines.push(`Cleanup: ${value.cleanup}; disconnect requested: ${dbxValue(value.disconnect_requested_at)}`);
+  }
+  for (const e of value.closed_exposures ?? []) lines.push(`Closed exposure: ${e.endpoint_name}; provider service: ${e.provider_service_name}`);
+  for (const [label, items] of [['Deleted', value.deleted], ['Already absent', value.absent], ['Skipped (held by an open binding)', value.skipped], ['Left in Databricks', value.remaining]]) {
+    lines.push(`${label}:`);
+    lines.push(...(items.length ? items.map((s) => `  ${s.kind}: ${s.id}`) : ['  None.']));
+  }
+  if (value.cleanup_pending) lines.push(...databricksLeftoverLines(value.cleanup_pending));
+  process.stdout.write(`${lines.join('\n')}\n`);
+}
