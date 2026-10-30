@@ -35,7 +35,8 @@ function pendingStep(kind, step, id) {
 }
 
 function plan(options = {}) {
-  const agent = options.newSp ? sp2 : sp;
+  const agent = options.agent ?? (options.newSp ? sp2 : sp);
+  const recordedAgent = options.existing?.agent_sp_application_id === sp2.applicationId ? sp2 : sp;
   const admin = options.m2m ? { service_principal_name: clientId } : { user_name: 'admin@example.com' };
   const member = options.m2m ? `servicePrincipals/${clientId}` : 'users/admin@example.com';
   const existing = options.existing;
@@ -49,7 +50,7 @@ function plan(options = {}) {
     ...(c.sp_change?.grant ?? []).map((s, i) => pendingStep('grant', s, `grant-${i}`)),
     ...(c.sp_change?.revoke ?? []).map((s, i) => pendingStep('revoke', s, `revoke-${i}`))
   ];
-  if (options.invalid) c.agent.job_parameters.job_id = 'wrong';
+  if (options.invalid) c.agent.job_parameters.job_id = null;
   const calls = [];
   let queuedAt;
   const add = (method, path, body = {}, status = 200, check, headers) => calls.push({ method, path, body, status, check, headers });
@@ -77,7 +78,7 @@ function plan(options = {}) {
   add('GET', '/v1/databricks/bindings', { bindings: existing ? [existing] : [] });
   if (existing?.agent_job_id) add('GET', '/api/2.2/jobs/get', options.jobDeleted ? deletedJob : options.jobMissing ? { error_code: 'RESOURCE_DOES_NOT_EXIST' } : { job_id: Number(existing.agent_job_id), settings: { run_as: { service_principal_name: existing.agent_sp_application_id } } }, options.jobDeleted ? 400 : options.jobMissing ? 404 : 200);
   if (existing) {
-    add('GET', `${scim}/ServicePrincipals`, { Resources: options.spMissing ? [] : [sp], totalResults: options.spMissing ? 0 : 1 }, 200, (r) => assert.equal(r.query.get('filter'), `applicationId eq ${JSON.stringify(sp.applicationId)}`));
+    add('GET', `${scim}/ServicePrincipals`, { Resources: options.spMissing ? [] : [recordedAgent], totalResults: options.spMissing ? 0 : 1 }, 200, (r) => assert.equal(r.query.get('filter'), `applicationId eq ${JSON.stringify(recordedAgent.applicationId)}`));
     if (!options.spMissing) add('GET', rulePath, options.noRole || options.ruleFailure ? { error_code: options.ruleCode ?? 'PERMISSION_DENIED', message: 'Not authorized to perform this operation' } : { ...ruleset, grant_rules: ruleset.grant_rules.map((r) => r.role === 'roles/servicePrincipal.user' ? { ...r, principals: [member] } : r) }, options.noRole || options.ruleFailure ? options.ruleStatus ?? 403 : 200);
     if (options.ruleFailure) return { calls, c };
   }
@@ -426,9 +427,9 @@ test('setup_items parser accepts the contract and rejects malformed fields', { t
   assert.deepEqual(parseDatabricksSetupItems([]), []);
   const validFailure = { ...setupTemplate.setup_items[2], state: 'failed', failure: setupTemplate.failure };
   assert.deepEqual(parseDatabricksSetupItems([validFailure]), [validFailure]);
-  for (const value of [undefined, null, {}, [null], [setupTemplate.setup_items[0], setupTemplate.setup_items[0]],
-    ...[{ kind: 'grant_check' }, { target: '' }, { state: 'cancelled' }, { queued_at: 'invalid' }, { queued_at: null }, { failure: undefined }, { failure: setupTemplate.failure }, { state: 'failed', failure: null }].map((fields) => [{ ...setupTemplate.setup_items[0], ...fields }]),
-    ...[{ owner: 'admin' }, { code: '' }, { title: null }, { message: undefined }, { failed_at: 'invalid' }, { failed_at: undefined }].map((fields) => [{ ...validFailure, failure: { ...setupTemplate.failure, ...fields } }])
+  for (const value of [undefined, null, {}, [null],
+    ...[{ kind: 'grant_check' }, { state: 'cancelled' }, { queued_at: null }, { failure: undefined }].map((fields) => [{ ...setupTemplate.setup_items[0], ...fields }]),
+    ...[{ owner: 'admin' }, { title: null }, { message: undefined }, { failed_at: undefined }].map((fields) => [{ ...validFailure, failure: { ...setupTemplate.failure, ...fields } }])
   ]) assert.throws(() => parseDatabricksSetupItems(value), /invalid Databricks setup_items/);
 });
 
@@ -525,9 +526,8 @@ for (const [name, options, env, status] of [
   server.assertDone();
 });
 
-test('SP change revokes every inventory object, skips missing objects, and removes inherited ACL fields', { timeout: 4900 }, async (t) => {
-  const old = sp.applicationId;
-  const changes = [
+function inventoryRevokes(old = sp.applicationId) {
+  return [
     { ...step('revoke', 'catalog', 'workspace', ['USE_CATALOG'], 'exists', old), object: 'catalog' },
     { ...step('revoke', 'schema', 'workspace.br_design', ['USE_SCHEMA'], 'exists', old), object: 'schema' },
     { ...step('revoke', 'table', 'workspace.br_design.results_table', ['SELECT'], 'exists', old), object: 'results_table' },
@@ -537,6 +537,11 @@ test('SP change revokes every inventory object, skips missing objects, and remov
     { object: 'serving_endpoint', action: 'endpoint_acl_remove', endpoint_name: 'recorded-endpoint', principal: principal(old), only_if: 'exists' },
     { object: 'eval_folder', action: 'folder_acl_remove', path: '/Shared/eval', principal: principal(old), only_if: 'exists' }
   ];
+}
+
+test('SP change revokes every inventory object, skips missing objects, and removes inherited ACL fields', { timeout: 4900 }, async (t) => {
+  const old = sp.applicationId;
+  const changes = inventoryRevokes(old);
   const calls = [];
   const add = (method, path, body = {}, status = 200, check) => calls.push({ method, path, body, status, check });
   for (const change of changes.filter((s) => s.action === 'revoke')) {
@@ -650,17 +655,18 @@ test('SP change rejects the former UC cases_table revoke before the scope or key
   server.assertDone();
 });
 
-test('SP change manifest revoke parser validates the route, folder, previous SP, SELECT and exists condition', { timeout: 4900 }, () => {
+test('SP change manifest revoke parser validates string route and folder, previous SP, SELECT and exists condition', { timeout: 4900 }, () => {
   const change = manifestRevoke();
   const response = { ...structuredClone(responseTemplate), sp_change: { previous_agent_sp_application_id: sp.applicationId, grant: [], revoke: [change] } };
-  assert.deepEqual(parseDatabricksConnectResponse(response), response);
+  assert.deepEqual(parseDatabricksConnectResponse(response, sp2.applicationId), response);
   for (const fields of [
-    { object: 'results_table' }, { action: 'grant' }, { route_key: '' }, { route_key: ' ' }, { route_key: null },
-    ...[undefined, '', 'Shared/eval', '/', '/Shared/eval/', '/Shared//eval', '/Shared/./eval', '/Shared/../eval', '/Shared/ev\0al', '/Shared/ev\\al'].map((eval_folder) => ({ eval_folder })),
-    { principal: principal(sp2.applicationId) }, { principal: { type: 'user', name: sp.applicationId } }, { principal: null },
+    { object: 'results_table' }, { action: 'grant' }, { route_key: null },
+    { eval_folder: undefined }, { eval_folder: null },
+    { principal: null }, { principal: principal(sp2.applicationId) },
+    { principal: { type: 'user', name: sp.applicationId } }, { principal: { type: 'group', name: sp.applicationId } },
     ...[undefined, [], ['MODIFY'], ['SELECT', 'MODIFY'], ['SELECT', 'SELECT']].map((privileges) => ({ privileges })),
     { only_if: 'always' }, { only_if: 'exists_not_agent_owned' }, { only_if: undefined }
-  ]) assert.throws(() => parseDatabricksConnectResponse({ ...response, sp_change: { ...response.sp_change, revoke: [{ ...change, ...fields }] } }), /invalid Databricks Connect response/);
+  ]) assert.throws(() => parseDatabricksConnectResponse({ ...response, sp_change: { ...response.sp_change, revoke: [{ ...change, ...fields }] } }, sp2.applicationId), /invalid Databricks Connect response/);
 });
 
 const persistedChange = await fixture('sp-change.json');
@@ -713,7 +719,7 @@ for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manife
     ...manifestRevokeCalls(step, { content, table: null }),
     ...ucRevokeCalls(success)
   ];
-  const server = await replay(t, plan({ pending: [item, pendingStep('revoke', success, 'successful-revoke')], changeCalls, done: [{ kind: 'revoke', id: 'successful-revoke' }] }).calls);
+  const server = await replay(t, plan({ agent: sp2, pending: [item, pendingStep('revoke', success, 'successful-revoke')], changeCalls, done: [{ kind: 'revoke', id: 'successful-revoke' }] }).calls);
   const result = await runCli(server, ['--json']);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout).pending_steps, [{ kind, id: item.id, action, object: step.object, target: `${step.eval_folder}#${step.route_key}`, reason }]);
@@ -730,7 +736,7 @@ for (const retry of [false, true]) test(`Connect runs all persisted grants befor
   const pending = [...steps].reverse();
   const grants = pending.filter((s) => s.kind === 'grant').map((s) => s.grant);
   const changeCalls = [...grants.flatMap((g) => grantCalls(g)), ...change.revoke.flatMap(ucRevokeCalls)];
-  const p = plan({ existing: binding(), ...(retry ? {} : { newSp: true, spMissing: true, grants: change.grant, change: change.revoke }),
+  const p = plan({ existing: retry ? binding(sp2) : binding(), ...(retry ? { agent: sp2 } : { newSp: true, spMissing: true, grants: change.grant, change: change.revoke }),
     pending, changeCalls, done: [...pending.filter((s) => s.kind === 'grant'), ...pending.filter((s) => s.kind === 'revoke')].map(({ kind, id }) => ({ kind, id })) });
   const server = await replay(t, p.calls);
   const result = await runCli(server, ['--json']);
@@ -747,7 +753,7 @@ for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manife
   const step = kind === 'revoke' ? manifestRevoke() : persistedChange.sp_change.grant.find((s) => s.action === action);
   const changeCalls = manifestRevokeCalls(step, { table: null });
   changeCalls[1] = { ...changeCalls[1], status: 500, body: { error_code: 'INTERNAL_ERROR' } };
-  const p = plan({ pending: [pendingStep(kind, step, 'failed-export')], changeCalls, done: [] });
+  const p = plan({ agent: sp2, pending: [pendingStep(kind, step, 'failed-export')], changeCalls, done: [] });
   p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.0/workspace/export') + 1);
   const server = await replay(t, p.calls);
   const result = await runCli(server, ['--json']);
@@ -788,7 +794,7 @@ for (const json of [false, true]) test(`refused provider grant and revoke stay p
 for (const grant of persistedChange.sp_change.grant) test(`missing ${grant.action} target is acknowledged`, { timeout: 4900 }, async (t) => {
   const calls = grantCalls(grant);
   calls[0] = { ...calls[0], body: { error_code: 'RESOURCE_DOES_NOT_EXIST' }, status: 404 };
-  const p = plan({ pending: [pendingStep('grant', grant, 'absent')], changeCalls: calls.slice(0, 1) });
+  const p = plan({ agent: sp2, pending: [pendingStep('grant', grant, 'absent')], changeCalls: calls.slice(0, 1) });
   const server = await replay(t, p.calls);
   const result = await runCli(server, ['--json']);
   assert.equal(result.status, 0, result.stderr);
@@ -799,7 +805,7 @@ for (const action of ['manifest_table_grant', 'manifest_secret_acl_put']) test(`
   const grant = persistedChange.sp_change.grant.find((s) => s.action === action);
   const calls = grantCalls(grant).slice(0, 2);
   calls[1] = { ...calls[1], body: { error_code: 'NOT_FOUND' }, status: 404 };
-  const server = await replay(t, plan({ pending: [pendingStep('grant', grant, 'absent-manifest')], changeCalls: calls }).calls);
+  const server = await replay(t, plan({ agent: sp2, pending: [pendingStep('grant', grant, 'absent-manifest')], changeCalls: calls }).calls);
   const result = await runCli(server, ['--json']);
   assert.equal(result.status, 0, result.stderr);
   server.assertDone();
@@ -807,7 +813,7 @@ for (const action of ['manifest_table_grant', 'manifest_secret_acl_put']) test(`
 
 test('manifest table grant in the binding schema applies SELECT without extra namespace grants', { timeout: 4900 }, async (t) => {
   const grant = persistedChange.sp_change.grant.find((s) => s.action === 'manifest_table_grant');
-  const server = await replay(t, plan({ pending: [pendingStep('grant', grant, 'same-schema')], changeCalls: grantCalls(grant, { sameSchema: true }) }).calls);
+  const server = await replay(t, plan({ agent: sp2, pending: [pendingStep('grant', grant, 'same-schema')], changeCalls: grantCalls(grant, { sameSchema: true }) }).calls);
   const result = await runCli(server, ['--json']);
   assert.equal(result.status, 0, result.stderr);
   server.assertDone();
@@ -862,19 +868,19 @@ test('new SP shares a bounded retry budget between rule-set GET and PUT', { time
 
 test('Connect parser rejects malformed grant and cleanup union fields before any workspace write', { timeout: 4900 }, () => {
   const response = { ...structuredClone(responseTemplate), ...structuredClone(persistedChange) };
-  assert.deepEqual(parseDatabricksConnectResponse(response), response);
+  assert.deepEqual(parseDatabricksConnectResponse(response, sp2.applicationId), response);
   for (const grant of response.sp_change.grant) for (const fields of [
-    { object: 'job' }, { action: 'unknown' }, { principal: { type: 'user', name: 'admin' } },
-    { only_if: 'unknown' }, { permission: 'MANAGE' }, { privileges: ['MODIFY'] }, { extra: true }
-  ]) assert.throws(() => parseDatabricksConnectResponse({ ...response, sp_change: { ...response.sp_change, grant: [{ ...grant, ...fields }] } }), /invalid Databricks Connect response/);
-  for (const value of [undefined, null, {}, [null], [{ kind: 'grant' }], [...response.cleanup_pending, response.cleanup_pending[0]]]) {
-    assert.throws(() => parseDatabricksConnectResponse({ ...response, cleanup_pending: value }), /invalid Databricks Connect response/);
+    { object: 'job' }, { action: 'unknown' }, { principal: { type: 'admin', name: 'admin' } },
+    { only_if: 'unknown' }, ...(grant.action === 'grant' || grant.action === 'manifest_table_grant' ? [{ privileges: ['MODIFY'] }] : [{ permission: 'MANAGE' }])
+  ]) assert.throws(() => parseDatabricksConnectResponse({ ...response, sp_change: { ...response.sp_change, grant: [{ ...grant, ...fields }] } }, sp2.applicationId), /invalid Databricks Connect response/);
+  for (const value of [undefined, null, {}, [null], [{ kind: 'grant' }]]) {
+    assert.throws(() => parseDatabricksConnectResponse({ ...response, cleanup_pending: value }, sp2.applicationId), /invalid Databricks Connect response/);
   }
   for (const kind of ['grant', 'revoke']) {
     const item = response.cleanup_pending.find((s) => s.kind === kind);
-    for (const fields of [{ reason: 'binding_force_closed' }, { actor: 'account_admin' }, { command: 'run me' }, { id: '' },
-      { binding_id: '' }, { instruction: '' }, { [kind]: null }, { [kind]: { ...item[kind], only_if: 'unknown' } }, { extra: true }]) {
-      assert.throws(() => parseDatabricksConnectResponse({ ...response, cleanup_pending: [{ ...item, ...fields }] }), /invalid Databricks Connect response/);
+    for (const fields of [{ reason: 'binding_force_closed' }, { reason: 'binding_disconnected' }, { actor: 'account_admin' }, { command: 'run me' }, { id: null },
+      { binding_id: null }, { instruction: null }, { [kind]: null }, { [kind]: { ...item[kind], only_if: 'unknown' } }]) {
+      assert.throws(() => parseDatabricksConnectResponse({ ...response, cleanup_pending: [{ ...item, ...fields }] }, sp2.applicationId), /invalid Databricks Connect response/);
     }
   }
 });
@@ -889,7 +895,7 @@ for (const action of ['endpoint_acl_add', 'folder_acl_add', 'manifest_secret_acl
   calls.push(call('GET', path, action === 'manifest_secret_acl_put' ? { items: [{ principal: 'acl-owner', permission: 'MANAGE' }] }
     : { access_control_list: [{ user_name: 'acl-owner', all_permissions: [{ permission_level: 'IS_OWNER' }] }] }, 200,
   action === 'manifest_secret_acl_put' ? (r) => assert.equal(r.query.get('scope'), 'support-evals') : undefined));
-  const server = await replay(t, plan({ pending: [pendingStep('grant', grant, 'acl-refused')], changeCalls: calls, done: [] }).calls);
+  const server = await replay(t, plan({ agent: sp2, pending: [pendingStep('grant', grant, 'acl-refused')], changeCalls: calls, done: [] }).calls);
   const result = await runCli(server, ['--json']);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).pending_steps[0].owner, 'acl-owner');
@@ -901,7 +907,7 @@ for (const status of [404, 500]) test(`manifest_table_grant table read ${status}
   const grant = persistedChange.sp_change.grant.find((s) => s.action === 'manifest_table_grant');
   const calls = grantCalls(grant).slice(0, 3);
   calls[2] = { ...calls[2], status, body: { error_code: status === 404 ? 'RESOURCE_DOES_NOT_EXIST' : 'INTERNAL_ERROR' } };
-  const p = plan({ pending: [pendingStep('grant', grant, 'table-read')], changeCalls: calls });
+  const p = plan({ agent: sp2, pending: [pendingStep('grant', grant, 'table-read')], changeCalls: calls });
   if (status === 500) p.calls.splice(p.calls.findIndex((c) => c.path.endsWith('/cleanup')));
   const server = await replay(t, p.calls);
   const result = await runCli(server, ['--json']);
@@ -909,18 +915,28 @@ for (const status of [404, 500]) test(`manifest_table_grant table read ${status}
   server.assertDone();
 });
 
-test('Connect executes and acknowledges only this binding\'s pending steps', { timeout: 4900 }, async (t) => {
-  const pending = persistedChange.cleanup_pending.map((s) => ({ ...s, binding_id: 'dbxb_older' }));
-  const server = await replay(t, plan({ pending, done: [] }).calls);
+test('Connect executes and acknowledges only this binding\'s steps alongside an earlier closed binding\'s different SPs', { timeout: 4900 }, async (t) => {
+  const current = structuredClone([persistedChange.cleanup_pending[0], persistedChange.cleanup_pending.at(-1)]);
+  const inherited = structuredClone(current);
+  // The earlier binding rotated in the opposite direction on this host/account.
+  for (const item of inherited) {
+    item.binding_id = 'dbxb_older';
+    item[item.kind].principal.name = item.kind === 'grant' ? sp.applicationId : sp2.applicationId;
+  }
+  const p = plan({ existing: binding(sp2), agent: sp2, pending: [inherited[0], current[1], inherited[1], current[0]],
+    changeCalls: [...grantCalls(current[0].grant), ...ucRevokeCalls(current[1].revoke)],
+    done: current.map(({ kind, id }) => ({ kind, id })) });
+  const server = await replay(t, p.calls);
   const result = await runCli(server, ['--json']);
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(!server.requests.some((r) => r.path.endsWith('/cleanup')));
+  assert.deepEqual(JSON.parse(result.stdout).pending_steps, []);
+  assert.equal(server.requests.filter((r) => r.path.endsWith('/cleanup')).length, 1);
   server.assertDone();
 });
 
-test('Connect rejects a malformed cleanup_pending response before the poll-key write', { timeout: 4900 }, async (t) => {
+for (const binding_id of ['dbxb_recorded', 'dbxb_older']) test(`Connect rejects malformed cleanup_pending from ${binding_id} before the poll-key write`, { timeout: 4900 }, async (t) => {
   const p = plan();
-  p.c.cleanup_pending = [{ ...persistedChange.cleanup_pending[0], command: 'not allowed' }];
+  p.c.cleanup_pending = [{ ...persistedChange.cleanup_pending[0], binding_id, command: 'not allowed' }];
   p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.0/secrets/scopes/create'));
   const server = await replay(t, p.calls);
   const result = await runCli(server, ['--json']);
@@ -934,6 +950,125 @@ test('provider grants accept the UC conditions defined by the shared contract', 
     const response = { ...structuredClone(responseTemplate), ...structuredClone(persistedChange) };
     response.sp_change.grant[0].only_if = only_if;
     response.cleanup_pending[0].grant.only_if = only_if;
-    assert.deepEqual(parseDatabricksConnectResponse(response), response);
+    assert.deepEqual(parseDatabricksConnectResponse(response, sp2.applicationId), response);
   }
+});
+
+// Contract variants come from server databricks-dto.ts on origin/main, 2026-10-30.
+for (const [name, mutate] of [
+  ['independent numeric cadences', (c) => { c.cadence_seconds = 900.5; c.agent_schedule.cadence_seconds = 1800.5; }],
+  ['string poll-key prefix', (c) => { c.agent.poll_key_secret = 'custom-key'; }],
+  ['independent job parameter strings', (c) => Object.assign(c.agent.job_parameters, { scope: 'other-scope', poll_key_name: 'other-key', job_id: 'server-job-id' })],
+  ['empty UC privilege array', (c) => { c.grants[0].privileges = []; }]
+]) test(`Connect replays DTO ${name}`, { timeout: 4900 }, async (t) => {
+  const p = plan();
+  mutate(p.c);
+  if (name === 'string poll-key prefix') {
+    p.calls.find((r) => r.path === '/api/2.0/secrets/put').check = (r) => assert.match(r.body.key, /^custom-key-[a-f0-9]{16}$/);
+  }
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  server.assertDone();
+});
+
+for (const only_if of ['exists', 'exists_not_agent_owned']) test(`Connect grants replay DTO condition ${only_if}`, { timeout: 4900 }, async (t) => {
+  const p = plan();
+  p.c.grants[0].only_if = only_if;
+  const at = p.calls.findIndex((r) => r.path === `${uc}/permissions/catalog/workspace`);
+  p.calls.splice(at, 0, { method: 'GET', path: `${uc}/catalogs/workspace`, body: { owner: 'catalog-owner' }, status: 200 });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  server.assertDone();
+});
+
+for (const only_if of ['always', 'exists_not_agent_owned']) test(`Connect revokes replay DTO condition ${only_if} for the previous SP`, { timeout: 4900 }, async (t) => {
+  const change = { ...inventoryRevokes()[1], object: 'catalog', only_if };
+  const changeCalls = [
+    ...(only_if === 'always' ? [] : [call('GET', `${uc}/schemas/workspace.br_design`, { owner: 'schema-owner' })]),
+    call('PATCH', `${uc}/permissions/schema/workspace.br_design`, {}, 200,
+      bodyIs({ changes: [{ principal: sp.applicationId, remove: ['USE_SCHEMA'] }] }))
+  ];
+  const server = await replay(t, plan({ newSp: true, change: [change], changeCalls }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  server.assertDone();
+});
+
+// Mutate fixture-derived plans to exercise semantic errors that the DTO permits.
+for (const source of ['sp_change', 'cleanup_pending']) for (const kind of ['grant', 'revoke']) {
+  test(`${source} ${kind} checks every action's principal`, { timeout: 4900 }, () => {
+    const steps = kind === 'grant' ? persistedChange.sp_change.grant : [...inventoryRevokes(), manifestRevoke()];
+    for (const step of steps) {
+      const valid = { ...structuredClone(responseTemplate), sp_change: null, cleanup_pending: [] };
+      if (source === 'sp_change') valid.sp_change = { previous_agent_sp_application_id: sp.applicationId, grant: [], revoke: [], [kind]: [step] };
+      else valid.cleanup_pending = [pendingStep(kind, step, 'safe')];
+      assert.deepEqual(parseDatabricksConnectResponse(valid, sp2.applicationId), valid);
+      const invalid = [
+        { type: 'user', name: step.principal.name },
+        { type: 'group', name: step.principal.name },
+        principal(kind === 'grant' ? sp.applicationId : sp2.applicationId),
+        ...(source === 'sp_change' && kind === 'revoke' ? [principal(clientId)] : [])
+      ];
+      for (const p of invalid) {
+        const response = structuredClone(valid);
+        const target = source === 'sp_change' ? response.sp_change[kind][0] : response.cleanup_pending[0][kind];
+        target.principal = p;
+        assert.throws(() => parseDatabricksConnectResponse(response, sp2.applicationId), /contract error.*principal must be/);
+      }
+    }
+  });
+
+  for (const type of ['user', 'group', 'service_principal']) test(`Connect refuses ${source} ${kind} with unsafe ${type} before scope or poll-key writes`, { timeout: 4900 }, async (t) => {
+    const p = plan({ newSp: true });
+    const step = structuredClone(persistedChange.sp_change[kind][0]);
+    step.principal = { type, name: type === 'service_principal'
+      ? kind === 'grant' ? sp.applicationId : sp2.applicationId : step.principal.name };
+    if (source === 'sp_change') p.c.sp_change[kind] = [step];
+    else {
+      // Retry path: no sp_change, and a valid grant before an invalid revoke.
+      p.c.sp_change = null;
+      p.c.cleanup_pending = [pendingStep('grant', persistedChange.sp_change.grant[0], 'valid-first'), pendingStep(kind, step, 'unsafe')];
+    }
+    p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.0/secrets/scopes/create'));
+    const server = await replay(t, p.calls);
+    const result = await runCli(server, ['--json']);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /invalid Databricks Connect response.*contract error.*principal must be/);
+    assert.equal(result.stdout, '');
+    assert.equal(server.requests.at(-1).path, '/v1/databricks/bindings');
+    server.assertDone();
+  });
+}
+
+test('Connect refuses an SP-change revoke for an unrelated retired SP before workspace writes', { timeout: 4900 }, async (t) => {
+  const p = plan({ newSp: true });
+  p.c.sp_change.revoke = [{ ...persistedChange.sp_change.revoke[0], principal: principal(clientId) }];
+  p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.0/secrets/scopes/create'));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /contract error.*previous agent service principal/);
+  server.assertDone();
+});
+
+test('Connect handles a DTO failed setup item with null failure', { timeout: 4900 }, async (t) => {
+  const p = plan({ setupReads: [{ items: (items) => { items[0].state = 'failed'; items[0].failure = null; } }] });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Databricks setup failed: volume/);
+  assert.doesNotMatch(result.stderr, /invalid Databricks setup_items|Cannot destructure/);
+  server.assertDone();
+});
+
+test('Connect replays structurally typed DTO fields without an exact-key restriction', { timeout: 4900 }, async (t) => {
+  const p = plan();
+  p.c.grants[0].description = 'Server context';
+  p.c.sp_change = { previous_agent_sp_application_id: sp2.applicationId, grant: [], revoke: [], description: 'Server context' };
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  server.assertDone();
 });

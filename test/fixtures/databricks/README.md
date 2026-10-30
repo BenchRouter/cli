@@ -87,6 +87,11 @@ The failure and grant records follow the DTO builders. Test identities replace
 all account and workspace identifiers. Live binding reads for these states and
 a live force-disconnect remain integration checks once the H2 target is supplied.
 
+The normal-Disconnect replay variant follows Server #715: a null `closed_reason`,
+object cleanup steps with reason `binding_disconnected`, and the current agent SP
+with actor `account_admin`. It derives from `binding-disconnected.json`; it is not
+a live recording. Grant and revoke steps still require `agent_sp_replaced`.
+
 `eval-manifest.yml` is the YAML example from the supplied runner `manifest.py`,
 with its route and scope changed to fixed test identifiers. The replay exports
 that file over the Workspace API as base64. Invalid variants change the fields
@@ -143,3 +148,15 @@ test-only setting. Production waits total at most 60 seconds across GET and PUT,
 with five waits (2, 4, 8, 16 and 30 seconds) and up to six tries per call.
 The recorded-SP tests still expect exactly one read and no propagation retry.
 All subprocesses retain the four-second limit and credential leak assertions.
+
+
+## CLI 0.2.41 server DTO audit
+
+The source of truth is now server `src/shared/databricks-dto.ts` on `origin/main`
+at commit `08ec51540bbf2130ac16c08062cb3a817558d147` (2026-10-30).
+The earlier headless-contract references above describe fixture history.
+The 0.2.41 replay variants derive from the server DTO. They cover principal,
+condition, cleanup actor, state, reason, nullable failure and grant-needed unions.
+They also exercise the DTO's string and array fields without extra parser rules.
+These variants are contract fixtures, not live server recordings.
+The full comparison is in `docs/databricks-dto-audit-0.2.41.md`.

@@ -69,7 +69,7 @@ export async function runDatabricksConnect(ctx) {
     }
     const response = await br(customerPaths.databricksConnect(request));
     remember(response?.poll_key);
-    const connected = parseDatabricksConnectResponse(response);
+    const connected = parseDatabricksConnectResponse(response, spId);
     const expectedScope = `benchrouter-${createHash('sha256').update(spId.toLowerCase()).digest('hex').slice(0, 12)}`;
     if (connected.agent.secret_scope !== expectedScope) throw new Error('BenchRouter returned a scope that does not match the agent service principal.');
     if (connected.sp_change && connected.sp_change.previous_agent_sp_application_id === spId) throw new Error('BenchRouter returned an SP change targeting the current agent.');
@@ -241,6 +241,7 @@ async function waitForAgent(workspace, br, bindingId, runId, spId, catalog, sche
     const items = parseDatabricksSetupItems(view.setup_items);
     const failed = items.find((item) => item.state === 'failed');
     if (failed) {
+      if (failed.failure === null) throw new Error(`Databricks setup failed: ${failed.kind} ${failed.target}. Run status for details.`);
       const { title, message, owner } = failed.failure;
       throw new Error(`${title}: ${message} (owner: ${owner}).${owner === 'customer' ? ' A workspace admin must fix it.' : ''}`);
     }

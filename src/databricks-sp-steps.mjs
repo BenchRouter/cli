@@ -1,4 +1,4 @@
-import { spStepTarget } from './databricks-contract.mjs';
+import { spStepTarget, validateCleanup } from './databricks-contract.mjs';
 import { customerPaths } from './control-api.mjs';
 import { DatabricksError, encode, uc, isMissing } from './databricks.mjs';
 import { runUcStep } from './databricks-helpers.mjs';
@@ -116,6 +116,7 @@ async function stepOwner(workspace, step, diagnostic) {
 }
 
 export async function runPendingSpSteps(workspace, br, steps, binding, admin, warn) {
+  validateCleanup(steps, binding.agent_sp_application_id, binding.id);
   const done = [], pending_steps = [], skipped = [];
   for (const kind of ['grant', 'revoke']) for (const item of steps.filter((s) => s.kind === kind && s.binding_id === binding.id)) {
     const step = item[kind];

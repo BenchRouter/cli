@@ -1,4 +1,4 @@
-import { spStepTarget } from './databricks-contract.mjs';
+import { bindingStateLabel, spStepTarget } from './databricks-contract.mjs';
 export function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -1062,7 +1062,7 @@ export function renderDatabricksRead(value) {
     const b = detail.binding;
     const jobLink = (id) => id ? `https://${b.host}/jobs/${id}` : '(not set)';
     const lines = [
-      `${b.host} | ${b.state}`,
+      `${b.host} | ${bindingStateLabel[b.state]} (${b.state})`,
       `  Last check-in: ${dbxValue(b.last_poll_at)}; cadence: ${b.cadence_seconds} seconds`,
       `  Agent SP application id: ${b.agent_sp_application_id}`,
       `  Catalog/schema: ${b.catalog}.${b.schema}`,

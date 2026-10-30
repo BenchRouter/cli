@@ -1,11 +1,12 @@
-// H1/H2 headless-contract.ts: shared Connect response and setup-item parsers.
+// Source: server src/shared/databricks-dto.ts on origin/main (2026-10-30).
 // AUTH-012: validate the complete plan before any workspace write using its fields.
 /**
  * @typedef {{type: 'user'|'service_principal'|'group', name: string}} DatabricksPrincipal
  * @typedef {'catalog'|'schema'|'volume'|'table'|'model_provider_service'} DatabricksUcSecurable
+ * @typedef {'USE_CATALOG'|'USE_SCHEMA'|'CREATE_TABLE'|'CREATE_VOLUME'|'CREATE_SERVICE'|'SELECT'|'MODIFY'|'READ_VOLUME'|'WRITE_VOLUME'|'MANAGE'|'EXECUTE'} DatabricksUcPrivilege
  * @typedef {'always'|'exists'|'exists_not_agent_owned'} DatabricksStepCondition
  * @typedef {{action: 'grant'|'revoke', securable: DatabricksUcSecurable, full_name: string,
- *   principal: DatabricksPrincipal, privileges: string[], only_if: DatabricksStepCondition} |
+ *   principal: DatabricksPrincipal, privileges: DatabricksUcPrivilege[], only_if: DatabricksStepCondition} |
  *   {action: 'set_owner', securable: 'volume'|'table', full_name: string,
  *   principal: DatabricksPrincipal, only_if: DatabricksStepCondition}} DatabricksUcStep
  * @typedef {(DatabricksUcStep & {action: 'grant', object: 'provider_service', securable: 'model_provider_service', privileges: ['MANAGE']}) |
@@ -35,118 +36,164 @@ const securables = new Set(['catalog', 'schema', 'volume', 'table', 'model_provi
 const privileges = new Set(['USE_CATALOG', 'USE_SCHEMA', 'CREATE_TABLE', 'CREATE_VOLUME', 'CREATE_SERVICE', 'SELECT', 'MODIFY', 'READ_VOLUME', 'WRITE_VOLUME', 'MANAGE', 'EXECUTE']);
 const conditions = new Set(['always', 'exists_not_agent_owned', 'exists']);
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const string = (v) => typeof v === 'string' && v.length > 0;
+const string = (v) => typeof v === 'string';
+const nullableString = (v) => v === null || string(v);
+const number = (v) => typeof v === 'number' && Number.isFinite(v);
+const strings = (v, keys) => keys.every((key) => string(v[key]));
 const principal = (v) => object(v) && ['user', 'service_principal', 'group'].includes(v.type) && string(v.name);
+const singleton = (v, item) => Array.isArray(v) && v.length === 1 && v[0] === item;
 function ucStep(s) {
   return object(s) && securables.has(s.securable) && string(s.full_name) && principal(s.principal) && conditions.has(s.only_if)
     && (s.action === 'set_owner' ? ['volume', 'table'].includes(s.securable)
-      : ['grant', 'revoke'].includes(s.action) && Array.isArray(s.privileges) && s.privileges.length > 0 && s.privileges.every((p) => privileges.has(p)));
+      : ['grant', 'revoke'].includes(s.action) && Array.isArray(s.privileges) && s.privileges.every((p) => privileges.has(p)));
 }
-function revokeStep(s, oldSp = s?.principal?.name) {
-  if (!object(s) || s.only_if !== 'exists' || !principal(s.principal) || s.principal.type !== 'service_principal' || s.principal.name !== oldSp) return false;
-  const base = ['object', 'action', 'principal', 'only_if'];
-  if (s.action === 'revoke') return exact(s, [...base, 'securable', 'full_name', 'privileges']) && ucStep(s)
-    && ({ catalog: 'catalog', schema: 'schema', results_table: 'table', provider_service: 'model_provider_service' })[s.object] === s.securable;
-  if (s.action === 'manifest_table_revoke') return exact(s, [...base, 'route_key', 'eval_folder', 'privileges'])
-    && s.object === 'cases_table' && string(s.route_key) && s.route_key.trim().length > 0 && folder(s.eval_folder) && singleton(s.privileges, 'SELECT');
-  if (s.action === 'secret_acl_delete') return exact(s, [...base, 'scope']) && s.object === 'secret_scope' && string(s.scope);
-  if (s.action === 'job_acl_remove') return exact(s, [...base, 'job_id']) && ['agent_job', 'eval_job'].includes(s.object) && string(s.job_id);
-  if (s.action === 'endpoint_acl_remove') return exact(s, [...base, 'endpoint_name']) && s.object === 'serving_endpoint' && string(s.endpoint_name);
-  if (s.action === 'folder_acl_remove') return exact(s, [...base, 'path']) && s.object === 'eval_folder' && folder(s.path);
+function revokeStep(s) {
+  if (!object(s) || !principal(s.principal)) return false;
+  if (s.action === 'revoke') return ucStep(s) && ['catalog', 'schema', 'results_table', 'provider_service'].includes(s.object);
+  if (s.only_if !== 'exists') return false;
+  if (s.action === 'manifest_table_revoke') return s.object === 'cases_table'
+    && strings(s, ['route_key', 'eval_folder']) && singleton(s.privileges, 'SELECT');
+  if (s.action === 'secret_acl_delete') return s.object === 'secret_scope' && string(s.scope);
+  if (s.action === 'job_acl_remove') return ['agent_job', 'eval_job'].includes(s.object) && string(s.job_id);
+  if (s.action === 'endpoint_acl_remove') return s.object === 'serving_endpoint' && string(s.endpoint_name);
+  if (s.action === 'folder_acl_remove') return s.object === 'eval_folder' && string(s.path);
   return false;
 }
-
-const exact = (v, keys) => Object.keys(v).length === keys.length && keys.every((key) => Object.hasOwn(v, key));
-const folder = (v) => string(v) && v.startsWith('/') && !v.includes('\\') && !v.includes('\0')
-  && !v.split('/').slice(1).some((p) => !p || p === '.' || p === '..');
-const singleton = (v, item) => Array.isArray(v) && v.length === 1 && v[0] === item;
 function grantStep(s) {
-  if (!object(s) || !principal(s.principal) || s.principal.type !== 'service_principal') return false;
-  const base = ['object', 'action', 'principal', 'only_if'];
-  if (s.action === 'grant') return exact(s, [...base, 'securable', 'full_name', 'privileges']) && ucStep(s)
-    && s.object === 'provider_service' && s.securable === 'model_provider_service' && singleton(s.privileges, 'MANAGE');
+  if (!object(s) || !principal(s.principal)) return false;
+  if (s.action === 'grant') return ucStep(s) && s.object === 'provider_service'
+    && s.securable === 'model_provider_service' && singleton(s.privileges, 'MANAGE');
   if (s.only_if !== 'exists') return false;
-  if (s.action === 'endpoint_acl_add') return exact(s, [...base, 'endpoint_name', 'permission'])
-    && s.object === 'serving_endpoint' && string(s.endpoint_name) && s.permission === 'CAN_MANAGE';
-  if (s.action === 'folder_acl_add') return exact(s, [...base, 'path', 'permission'])
-    && s.object === 'eval_folder' && folder(s.path) && s.permission === 'CAN_READ';
-  if (!folder(s.eval_folder) || !string(s.route_key) || !s.route_key.trim()) return false;
-  if (s.action === 'manifest_table_grant') return exact(s, [...base, 'eval_folder', 'route_key', 'privileges'])
-    && s.object === 'cases_table' && singleton(s.privileges, 'SELECT');
-  if (s.action === 'manifest_secret_acl_put') return exact(s, [...base, 'eval_folder', 'route_key', 'permission'])
-    && s.object === 'secret_scope' && s.permission === 'READ';
+  if (s.action === 'endpoint_acl_add') return s.object === 'serving_endpoint' && string(s.endpoint_name) && s.permission === 'CAN_MANAGE';
+  if (s.action === 'folder_acl_add') return s.object === 'eval_folder' && string(s.path) && s.permission === 'CAN_READ';
+  if (!strings(s, ['eval_folder', 'route_key'])) return false;
+  if (s.action === 'manifest_table_grant') return s.object === 'cases_table' && singleton(s.privileges, 'SELECT');
+  if (s.action === 'manifest_secret_acl_put') return s.object === 'secret_scope' && s.permission === 'READ';
   return false;
 }
 
 const cleanupKinds = new Set(['job', 'secret_scope', 'serving_endpoint', 'provider_service', 'volume', 'agent_service_principal']);
 function cleanupStep(s) {
-  if (!object(s) || !string(s.id) || !string(s.binding_id) || !string(s.instruction)) return false;
-  const base = ['kind', 'id', 'binding_id', 'reason', 'actor', 'command', 'instruction'];
-  if (s.kind === 'grant' || s.kind === 'revoke') return exact(s, [...base, s.kind])
-    && s.reason === 'agent_sp_replaced' && s.actor === 'workspace_admin' && s.command === null
+  if (!object(s) || !strings(s, ['id', 'binding_id', 'instruction'])) return false;
+  if (s.kind === 'grant' || s.kind === 'revoke') return s.reason === 'agent_sp_replaced'
+    && s.actor === 'workspace_admin' && s.command === null
     && (s.kind === 'grant' ? grantStep(s.grant) : revokeStep(s.revoke));
-  return cleanupKinds.has(s.kind) && exact(s, base)
-    && (s.command === null || typeof s.command === 'string')
-    && ['agent_sp_replaced', 'binding_force_closed'].includes(s.reason)
-    && s.actor === (s.kind === 'agent_service_principal' ? 'account_admin' : 'workspace_admin');
+  return cleanupKinds.has(s.kind) && nullableString(s.command)
+    && ['agent_sp_replaced', 'binding_force_closed', 'binding_disconnected'].includes(s.reason)
+    && ['account_admin', 'workspace_admin'].includes(s.actor);
 }
-export function validateCleanup(steps) {
-  if (!Array.isArray(steps) || !steps.every(cleanupStep)
-      || new Set(steps.map((s) => JSON.stringify([s.binding_id, s.kind, s.id]))).size !== steps.length) {
-    throw new Error('BenchRouter returned invalid cleanup steps.');
+// DTO principals are broad. SP replacement plans must only act on the intended SP.
+function validateSpPrincipal(step, kind, currentSp, context, previousSp) {
+  const p = step.principal;
+  if (!string(currentSp) || !currentSp || p.type !== 'service_principal'
+      || (kind === 'grant' ? p.name !== currentSp : p.name === currentSp || (previousSp !== undefined && p.name !== previousSp))) {
+    const expected = kind === 'grant' ? 'the current agent service principal'
+      : previousSp === undefined ? 'a service principal other than the current agent' : 'the previous agent service principal, other than the current agent';
+    throw new Error(`BenchRouter returned ${context}: contract error; ${kind} principal must be ${expected}.`);
   }
+}
+function validateCleanupPrincipals(steps, currentSp, bindingId, context) {
+  // Reads also include earlier closed bindings, whose plans name their own SPs.
+  for (const item of steps) if (item.binding_id === bindingId && (item.kind === 'grant' || item.kind === 'revoke')) {
+    validateSpPrincipal(item[item.kind], item.kind, currentSp, `${context} (${item.kind} ${item.id})`);
+  }
+}
+export function validateCleanup(steps, currentSp, bindingId) {
+  if (!Array.isArray(steps) || !steps.every(cleanupStep)) throw new Error('BenchRouter returned invalid cleanup steps.');
+  validateCleanupPrincipals(steps, currentSp, bindingId, 'invalid cleanup steps');
   return steps;
 }
 
-/**
- * Validate the response from the shared H1/H2 contract.
- * @param {unknown} value
- * @returns {DatabricksConnectResponse}
- */
-export function parseDatabricksConnectResponse(value) {
+/** @param {unknown} value @param {string} currentSp @returns {DatabricksConnectResponse} */
+export function parseDatabricksConnectResponse(value, currentSp) {
   const a = value?.agent;
   const schedule = value?.agent_schedule;
-  if (!object(value) || !['binding_id', 'account_id', 'poll_key'].every((key) => string(value[key]))
-      || !['connecting', 'verified', 'agent_silent'].includes(value.state)
-      || !Number.isSafeInteger(value.cadence_seconds) || value.cadence_seconds <= 0
-      || !object(schedule) || schedule.cadence_seconds !== value.cadence_seconds
+  if (!object(value) || !strings(value, ['binding_id', 'account_id', 'poll_key'])
+      || !['connecting', 'verified', 'agent_silent'].includes(value.state) || !number(value.cadence_seconds)
+      || !object(schedule) || !number(schedule.cadence_seconds)
       || !string(schedule.quartz_cron_expression) || schedule.timezone_id !== 'UTC'
-      || !object(a) || !string(a.secret_scope) || a.poll_key_secret !== 'poll-key'
+      || !object(a) || !strings(a, ['secret_scope', 'poll_key_secret'])
       || a.package !== 'benchrouter_databricks' || a.entry_point !== 'agent' || a.max_concurrent_runs !== 1
-      || !object(a.environment) || !object(a.job_parameters)
-      || !['api_base', 'scope', 'poll_key_name', 'job_id'].every((key) => string(a.job_parameters[key]))
-      || a.job_parameters.scope !== a.secret_scope || a.job_parameters.poll_key_name !== a.poll_key_secret
-      || a.job_parameters.job_id !== '{{job.id}}'
-      || !Array.isArray(value.grants) || !value.grants.every((s) => ucStep(s) && s.only_if === 'always')
+      || !jsonObject(a.environment) || !object(a.job_parameters)
+      || !strings(a.job_parameters, ['api_base', 'scope', 'poll_key_name', 'job_id'])
+      || !Array.isArray(value.grants) || !value.grants.every(ucStep)
       || !Array.isArray(value.heal) || !value.heal.every(ucStep)
       || !Array.isArray(value.cleanup_pending) || !value.cleanup_pending.every(cleanupStep)
-      || new Set(value.cleanup_pending.map((s) => JSON.stringify([s.binding_id, s.kind, s.id]))).size !== value.cleanup_pending.length
       || !(value.sp_change === null || (object(value.sp_change) && string(value.sp_change.previous_agent_sp_application_id)
-        && exact(value.sp_change, ['previous_agent_sp_application_id', 'grant', 'revoke'])
         && Array.isArray(value.sp_change.grant) && value.sp_change.grant.every(grantStep)
-        && Array.isArray(value.sp_change.revoke) && value.sp_change.revoke.every((s) => revokeStep(s, value.sp_change.previous_agent_sp_application_id))))) {
-    throw new Error('BenchRouter returned an invalid Databricks Connect response. Check the H1/H2 contract.');
+        && Array.isArray(value.sp_change.revoke) && value.sp_change.revoke.every(revokeStep)))) {
+    throw new Error('BenchRouter returned an invalid Databricks Connect response. Check the server Databricks DTO.');
   }
+  const context = 'an invalid Databricks Connect response';
+  if (value.sp_change) {
+    for (const step of value.sp_change.grant) validateSpPrincipal(step, 'grant', currentSp, `${context} (sp_change.grant)`);
+    for (const step of value.sp_change.revoke) validateSpPrincipal(step, 'revoke', currentSp, `${context} (sp_change.revoke)`, value.sp_change.previous_agent_sp_application_id);
+  }
+  validateCleanupPrincipals(value.cleanup_pending, currentSp, value.binding_id, `${context} cleanup_pending`);
   return /** @type {DatabricksConnectResponse} */ (value);
 }
+function jsonValue(v) {
+  return v === null || string(v) || typeof v === 'boolean' || number(v)
+    || (Array.isArray(v) ? v.every(jsonValue) : jsonObject(v));
+}
+function jsonObject(v) { return object(v) && Object.values(v).every(jsonValue); }
 
-/**
- * Validate the setup_items array on a binding read before deciding completion.
- * @param {unknown} value
- * @returns {DatabricksSetupItemView[]}
- */
+export const bindingStates = ['connecting', 'verified', 'agent_silent', 'disconnected', 'archived'];
+export const bindingStateLabel = {
+  connecting: 'Connecting', verified: 'Connected', agent_silent: 'Agent silent',
+  disconnected: 'Disconnected', archived: 'Disconnected'
+};
+export const databricksFailure = (v) => object(v) && strings(v, ['code', 'title', 'message'])
+  && ['customer', 'unknown'].includes(v.owner) && nullableString(v.failed_at);
+const nullableFailure = (v) => v === null || databricksFailure(v);
+const grantKinds = ['folder_read', 'table_select', 'secret_scope_read', 'secret_key_missing', 'volume_read'];
+function grantNeeded(v) {
+  return v === null || (object(v) && v.owner === 'customer' && strings(v, ['title', 'message'])
+    && nullableString(v.since) && Array.isArray(v.grants) && v.grants.every((g) => object(g)
+      && grantKinds.includes(g.kind) && strings(g, ['missing', 'fix']) && nullableString(g.command)));
+}
+export function parseDatabricksEval(v) {
+  if (!object(v) || !strings(v, ['id', 'route_key', 'binding_id', 'eval_folder', 'updated_at'])
+      || !number(v.desired_revision) || !(v.active_revision === null || number(v.active_revision))
+      || !nullableString(v.active_digest) || !['attached', 'detached'].includes(v.state) || !grantNeeded(v.grant_needed)) {
+    throw new Error('BenchRouter returned an invalid Databricks eval.');
+  }
+  return v;
+}
+
+/** @param {unknown} value @returns {DatabricksSetupItemView[]} */
 export function parseDatabricksSetupItems(value) {
-  const instant = (v) => string(v) && Number.isFinite(Date.parse(v));
-  const failure = (v) => object(v) && ['code', 'title', 'message'].every((key) => string(v[key]))
-    && ['customer', 'unknown'].includes(v.owner) && (v.failed_at === null || instant(v.failed_at));
   if (!Array.isArray(value) || !value.every((item) => object(item)
       && ['volume', 'results_table', 'experiment', 'eval_job', 'serving_endpoint'].includes(item.kind)
-      && string(item.target) && ['pending', 'done', 'failed'].includes(item.state) && instant(item.queued_at)
-      && (item.state === 'failed' ? failure(item.failure) : item.failure === null))
-      || new Set(value.map((item) => JSON.stringify([item.kind, item.target]))).size !== value.length) {
-    throw new Error('BenchRouter returned invalid Databricks setup_items. Check the H1/H2 contract.');
+      && strings(item, ['target', 'queued_at']) && ['pending', 'done', 'failed'].includes(item.state)
+      && nullableFailure(item.failure))) {
+    throw new Error('BenchRouter returned invalid Databricks setup_items. Check the server Databricks DTO.');
   }
   return /** @type {DatabricksSetupItemView[]} */ (value);
+}
+
+export function validateDatabricksBinding(v) {
+  if (!object(v) || !strings(v, ['id', 'account_id', 'host', 'workspace_id', 'agent_sp_application_id', 'catalog', 'schema', 'created_at', 'updated_at'])
+      || !['databricks_account_id', 'warehouse_id', 'results_group', 'manage_group', 'agent_job_id', 'eval_job_id', 'secret_scope', 'last_poll_at', 'last_agent_version', 'disconnect_requested_at'].every((k) => nullableString(v[k]))
+      || !bindingStates.includes(v.state) || !number(v.cadence_seconds)
+      || ![null, 'connecting_expired', 'workspace_admin_reclaimed', 'forced'].includes(v.closed_reason)) {
+    throw new Error('BenchRouter returned an invalid binding.');
+  }
+  return v;
+}
+export function validateDatabricksRead(value) {
+  if (!object(value) || !Array.isArray(value.evals) || !Array.isArray(value.routes) || !Array.isArray(value.exposures)
+      || !value.routes.every((r) => object(r) && strings(r, ['route_key', 'name', 'model']) && [null, 'databricks', 'repo', 'hosted'].includes(r.eval_source))
+      || !value.exposures.every((e) => object(e) && strings(e, ['route_key', 'endpoint_name', 'provider_service_name', 'updated_at'])
+        && ['exposing', 'exposed', 'retiring'].includes(e.state) && nullableFailure(e.failure))
+      || !nullableFailure(value.setup_failure) || !nullableFailure(value.disconnect_failure)) {
+    throw new Error('BenchRouter returned an invalid binding read.');
+  }
+  validateDatabricksBinding(value.binding);
+  value.evals.forEach(parseDatabricksEval);
+  parseDatabricksSetupItems(value.setup_items);
+  validateCleanup(value.cleanup_pending, value.binding.agent_sp_application_id, value.binding.id);
+  return value;
 }
 
 export const spStepTarget = (step) => step.full_name ?? step.scope ?? step.job_id ?? step.endpoint_name ?? step.path ?? `${step.eval_folder}#${step.route_key}`;

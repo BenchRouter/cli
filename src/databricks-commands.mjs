@@ -3,27 +3,22 @@ import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, uc, encode } from './databricks.mjs';
 import { databricksControl, secretRedaction, exits, refusal, workspaceAdmin, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
-import { parseDatabricksSetupItems } from './databricks-contract.mjs';
+import { bindingStates, parseDatabricksEval, validateDatabricksBinding, validateDatabricksRead } from './databricks-contract.mjs';
 import { readWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
 import { isSpStep, runPendingSpSteps } from './databricks-sp-steps.mjs';
-import { validateCleanup, objectExists, deleteRecorded, recordedObjects, objectKey } from './databricks-cleanup.mjs';
+import { objectExists, deleteRecorded, recordedObjects, objectKey } from './databricks-cleanup.mjs';
 import { renderDatabricksRead, renderDatabricksEval, renderDatabricksDisconnect } from './render.mjs';
 
 const closed = (b) => ['archived', 'disconnected'].includes(b.state);
 function bindingRead(value) {
-  if (!value?.binding?.id || !Array.isArray(value.evals) || !Array.isArray(value.routes) || !Array.isArray(value.exposures)) throw new Error('BenchRouter returned an invalid binding read.');
-  const b = value.binding;
-  workspaceHost(`https://${b.host}`);
-  if (!['connecting', 'verified', 'agent_silent', 'archived', 'disconnected'].includes(b.state)
-      || !['agent_sp_application_id', 'catalog', 'schema'].every((k) => typeof b[k] === 'string' && b[k])
-      || !['agent_job_id', 'eval_job_id', 'secret_scope'].every((k) => b[k] === null || (typeof b[k] === 'string' && b[k]))) throw new Error('BenchRouter returned an invalid binding.');
-  parseDatabricksSetupItems(value.setup_items);
-  validateCleanup(value.cleanup_pending);
+  validateDatabricksRead(value);
+  workspaceHost(`https://${value.binding.host}`);
   return value;
 }
 async function listBindings(br, host) {
   const answer = await br(customerPaths.databricksBindings());
   if (!Array.isArray(answer.bindings)) throw new Error('BenchRouter returned an invalid binding list.');
+  answer.bindings.forEach(validateDatabricksBinding);
   return answer.bindings.filter((b) => !host || b.host === new URL(host).hostname);
 }
 function selectBinding(bindings) {
@@ -70,6 +65,7 @@ export async function runDatabricksCommand(ctx) {
       // AUTH-012 / DATA-001: only the fresh downscoped proof reaches BenchRouter.
       const answer = await br(customerPaths.databricksReclaim({ workspace_url: host, workspace_id: workspaceId, workspace_proof: await ws.proof() }));
       validateClosedExposures(answer);
+      if (!(answer.closed_binding_id === null || typeof answer.closed_binding_id === 'string')) throw new Error('BenchRouter returned an invalid reclaim response.');
       const remaining = [];
       const deleted = [];
       const absent = [];
@@ -93,7 +89,7 @@ export async function runDatabricksCommand(ctx) {
           if (login) {
             const done = [];
             for (const step of detail.cleanup_pending) {
-              if (step.kind === 'agent_service_principal' || isSpStep(step)) continue;
+              if (step.kind === 'agent_service_principal' || step.actor === 'account_admin' || isSpStep(step)) continue;
               try { if (!await objectExists(ws, step)) done.push({ kind: step.kind, id: step.id }); } catch (error) {
                 if (!(error instanceof DatabricksError)) throw error;
               }
@@ -134,6 +130,7 @@ export async function runDatabricksCommand(ctx) {
           const { directory, grants } = await readWorkspaceEvalGrants(ws, folder, route);
           const aclPath = `/api/2.0/permissions/directories/${numericId(directory.object_id)}`;
           const answer = await br(customerPaths.databricksAddEval(b.id, { route_key: route, eval_folder: folder }));
+          parseDatabricksEval(answer?.eval);
           try {
             await ws.call('PATCH', aclPath, { access_control_list: [{ service_principal_name: b.agent_sp_application_id, permission_level: 'CAN_READ' }] });
           } catch (error) {
@@ -191,6 +188,7 @@ export async function runDatabricksCommand(ctx) {
           const skipped = [];
           const remaining = [];
           const visited = new Set();
+          const accountAdmin = new Set(final.cleanup_pending.filter((s) => s.actor === 'account_admin').map(objectKey));
           // AUTH-012: snapshot other open inventories once before deleting recorded ids.
           const held = new Set();
           for (const other of await listBindings(br, `https://${b.host}`)) {
@@ -202,6 +200,7 @@ export async function runDatabricksCommand(ctx) {
             const key = objectKey(step);
             if (visited.has(key) || step.kind === 'agent_service_principal' || isSpStep(step)) continue;
             visited.add(key);
+            if (accountAdmin.has(key)) { remaining.push({ kind: step.kind, id: step.id }); continue; }
             if (held.has(key)) { skipped.push({ kind: step.kind, id: step.id }); continue; }
             const outcome = await deleteRecorded(ws, step);
             const item = { kind: step.kind, id: step.id };
@@ -232,17 +231,16 @@ function shellWord(value) {
 
 function validateClosedExposures(answer) {
   if (answer?.ok !== true || !Array.isArray(answer.closed_exposures) || answer.closed_exposures.some((e) => !e
-      || !['endpoint_name', 'provider_service_name'].every((k) => typeof e[k] === 'string' && e[k]))) {
+      || !['endpoint_name', 'provider_service_name'].every((k) => typeof e[k] === 'string'))) {
     throw new Error('BenchRouter returned an invalid closed exposure list.');
   }
 }
 
 function validateDisconnect(answer) {
   validateClosedExposures(answer);
-  if (!['connecting', 'verified', 'agent_silent', 'disconnected', 'archived'].includes(answer.state)
+  if (!bindingStates.includes(answer.state)
       || !['queued', 'none'].includes(answer.cleanup)
-      || !(answer.disconnect_requested_at === null || (typeof answer.disconnect_requested_at === 'string' && Number.isFinite(Date.parse(answer.disconnect_requested_at))))
-      || (answer.cleanup === 'queued' && answer.closed_exposures.length)) {
+      || !(answer.disconnect_requested_at === null || typeof answer.disconnect_requested_at === 'string')) {
     throw new Error('BenchRouter returned an invalid disconnect response.');
   }
 }
