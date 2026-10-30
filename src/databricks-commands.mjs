@@ -179,6 +179,11 @@ export async function runDatabricksCommand(ctx) {
             await delay(2000);
           }
           if (!closed(final.binding)) throw new Error('Timed out waiting for disconnect. Run status, or disconnect --force.');
+          // AUTH-012: the archive adds revokes of the agent SP. A refused one stays pending with its owner.
+          const earlier = new Set(pending_steps.map((s) => `${s.kind}:${s.id}`));
+          const later = await runPendingSpSteps(ws, br, final.cleanup_pending.filter((s) => s.kind === 'revoke' && !earlier.has(`${s.kind}:${s.id}`)), final.binding, admin,
+            (line) => process.stderr.write(clean(`${line}\n`)));
+          pending_steps.push(...later.pending_steps);
           const steps = ctx.args.force && disconnectSent ? final.cleanup_pending.filter((s) => s.binding_id === b.id) : [
             ...recordedObjects({ ...final, exposures: [...detail.exposures, ...final.exposures] }, answer?.closed_exposures ?? []), ...final.cleanup_pending.filter((s) => s.binding_id === b.id)
           ];
