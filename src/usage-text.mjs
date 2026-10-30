@@ -15,6 +15,8 @@ Uses your local Databricks OAuth login and BenchRouter control-token login.
 Supports user (U2M) and service principal (M2M) OAuth logins.
 The Databricks login token stays in memory on this machine. PAT logins are refused.
 Connect writes the poll key, applies REST grants and heal, and starts the agent job.
+It waits for this Connect's non-serving setup items and binding verification.
+Human output lists each setup item. JSON includes setup_items (kind, target, state).
 
 Options:
   --host <url>                 HTTPS Databricks workspace URL.
@@ -26,7 +28,7 @@ Options:
   --manage-group <group>       Account group that can manage serving objects.
 ${ACCOUNT_FLAGS}
 Exit codes:
-  0  Agent run succeeded and binding verified (full setup status is not exposed).
+  0  Agent run succeeded, binding verified, and this Connect's non-serving setup items done.
   1  Other error, unsupported Databricks auth type, invalid arguments, or verification timeout.
   3  Grant or heal refused. The error names the catalog, schema, and known object owners.
   4  workspace_admin_required. Log in as a Databricks workspace admin.

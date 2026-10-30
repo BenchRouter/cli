@@ -7,10 +7,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { parseDatabricksSetupItems } from '../src/databricks-contract.mjs';
 
 const fixtureDir = new URL('./fixtures/databricks/', import.meta.url);
 const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureDir), 'utf8'));
 const [me, sp, sp2, ruleset, run, settings, responseTemplate, metadata] = await Promise.all(['me.json', 'p1-create.json', 'p5-sp3.json', 'p1-ruleset-put.json', 'p2-run.json', 'settings.json', 'connect.json', 'databricks-config.json'].map(fixture));
+const setupTemplate = await fixture('binding-read.json');
 const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const host = 'https://fixture.cloud.databricks.com';
 const account = '00000000-0000-4000-8000-000000000001';
@@ -42,7 +44,8 @@ function plan(options = {}) {
   if (options.newSp) c.sp_change = { previous_agent_sp_application_id: sp.applicationId, revoke: options.change ?? [] };
   if (options.invalid) c.agent.job_parameters.job_id = 'wrong';
   const calls = [];
-  const add = (method, path, body = {}, status = 200, check) => calls.push({ method, path, body, status, check });
+  let queuedAt;
+  const add = (method, path, body = {}, status = 200, check, headers) => calls.push({ method, path, body, status, check, headers });
   let m2mToken;
   if (options.m2m) {
     for (const stale of options.m2mRefresh ? [true, false] : [false]) {
@@ -63,7 +66,8 @@ function plan(options = {}) {
     add('GET', '/api/2.0/sql/warehouses', { warehouses: options.warehouses ?? [{ id: 'f7cf158c6784dd06', name: 'Serverless', enable_serverless_compute: true }] });
     if (options.warehouses) return { calls, c };
   }
-  add('GET', '/v1/databricks/bindings', { bindings: existing ? [existing] : [] });
+  const bindingsDate = Object.hasOwn(options, 'bindingsDate') ? options.bindingsDate : new Date().toUTCString();
+  add('GET', '/v1/databricks/bindings', { bindings: existing ? [existing] : [] }, 200, undefined, { date: bindingsDate });
   if (existing?.agent_job_id) add('GET', '/api/2.2/jobs/get', options.jobMissing ? { error_code: 'RESOURCE_DOES_NOT_EXIST' } : { job_id: Number(existing.agent_job_id), settings: { run_as: { service_principal_name: existing.agent_sp_application_id } } }, options.jobMissing ? 404 : 200);
   if (existing) {
     add('GET', `${scim}/ServicePrincipals`, { Resources: options.spMissing ? [] : [sp], totalResults: options.spMissing ? 0 : 1 }, 200, (r) => assert.equal(r.query.get('filter'), `applicationId eq ${JSON.stringify(sp.applicationId)}`));
@@ -97,6 +101,7 @@ function plan(options = {}) {
     assert.equal(r.form.get('grant_type'), 'urn:ietf:params:oauth:grant-type:token-exchange');
   });
   add('POST', '/v1/databricks/bindings', options.apiError ? { error: { code: options.apiError, message: `${loginMarker} ${pollMarker}` } } : c, options.apiError ? ({ workspace_unreachable: 502, workspace_connected_elsewhere: 409, binding_disconnecting: 409 })[options.apiError] ?? 403 : existing ? 200 : 201, (r) => {
+    queuedAt = options.queuedAt ?? new Date().toISOString();
     assert.deepEqual(Object.keys(r.body).sort(), ['agent_sp_application_id', 'catalog', 'databricks_account_id', 'manage_group', 'results_group', 'schema', 'warehouse_id', 'workspace_id', 'workspace_proof', 'workspace_url'].sort());
     assert.equal(r.body.workspace_url, host);
     assert.equal(r.body.workspace_id, metadata.workspace_id);
@@ -152,8 +157,15 @@ function plan(options = {}) {
     : [{ service_principal_name: agent.applicationId, permission_level: 'IS_OWNER' }]));
   add('POST', '/v1/databricks/bindings/dbxb_recorded/agent', { ok: true }, 200, (r) => assert.deepEqual(r.body, { agent_job_id: jobId, secret_scope: scope }));
   add('POST', '/api/2.2/jobs/run-now', { run_id: run.run_id });
-  add('GET', '/api/2.2/jobs/runs/get', options.runFailed ? { state: { life_cycle_state: 'TERMINATED', result_state: 'FAILED' } } : run);
-  add('GET', '/v1/databricks/bindings/dbxb_recorded', { binding: binding(agent, jobId), evals: [], exposures: [], setup_failure: options.setupFailed ? { code: 'setup_refused' } : null });
+  for (const snapshot of options.setupReads ?? [{}]) {
+    add('GET', '/api/2.2/jobs/runs/get', options.runFailed ? { state: { life_cycle_state: 'TERMINATED', result_state: 'FAILED' } } : run);
+    add('GET', '/v1/databricks/bindings/dbxb_recorded', () => {
+      const items = structuredClone(setupTemplate.setup_items).map((item) => ({ ...item, queued_at: queuedAt }));
+      snapshot.items?.(items, queuedAt);
+      if (options.setupFailed) Object.assign(items[2], { state: 'failed', failure: setupTemplate.failure });
+      return { binding: { ...binding(agent, jobId), ...snapshot.binding }, evals: [], exposures: snapshot.exposures ?? [], setup_items: items, setup_failure: snapshot.setupFailure ?? null };
+    });
+  }
   return { calls, c };
 }
 
@@ -187,8 +199,10 @@ async function replay(t, calls) {
         assert.ok([sp, sp2].some((agent) => url.searchParams.get('name') === `accounts/${account}/servicePrincipals/${agent.applicationId}/ruleSets/default`));
       }
       expected.check?.(request);
-      res.writeHead(expected.status, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(expected.body));
+      if (expected.headers?.date === null) res.sendDate = false;
+      const headers = Object.fromEntries(Object.entries(expected.headers ?? {}).filter(([, value]) => value !== null));
+      res.writeHead(expected.status, { 'content-type': 'application/json', ...headers });
+      res.end(JSON.stringify(typeof expected.body === 'function' ? expected.body() : expected.body));
     } catch (error) {
       errors.push(error.message);
       res.writeHead(500, { 'content-type': 'application/json' });
@@ -256,7 +270,12 @@ for (const [name, options, expectedStatus] of [
     }
     if (options.healRefused) assert.match(result.stderr, /Object owner: previous-owner/);
     if (options.warehouses) { assert.match(result.stderr, /First/); assert.match(result.stderr, /Second/); }
-    if (expectedStatus === 0) assert.equal(JSON.parse(result.stdout).state, 'verified');
+    if (expectedStatus === 0) {
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.state, 'verified');
+      assert.deepEqual(output.setup_items, setupTemplate.setup_items.map(({ kind, target, state }) => ({ kind, target, state })));
+      assert.ok(!Object.hasOwn(output, 'setup_confirmation'));
+    }
     else assert.equal(result.stdout, '');
   });
 }
@@ -267,11 +286,118 @@ test('two Connect runs create one SP and one job; human logs show all eight step
     const result = await runCli(server);
     assert.equal(result.status, 0, result.stderr);
     for (let step = 1; step <= 8; step++) assert.ok(result.stdout.includes(`${step}/8 `));
+    for (const item of setupTemplate.setup_items) assert.ok(result.stdout.includes(`${item.kind} ${item.target}: ${item.state}\n`));
     noSecrets(result);
   }
   server.assertDone();
   assert.equal(server.requests.filter((r) => r.method === 'POST' && r.path === `${scim}/ServicePrincipals`).length, 1);
   assert.equal(server.requests.filter((r) => r.path === '/api/2.2/jobs/create').length, 1);
+});
+
+for (const [name, setupReads, status, reads] of [
+  ['all non-serving rows done after Connect started succeed without eval_job_id or exposure checks', [{ binding: { eval_job_id: null }, exposures: [{ state: 'exposing', failure: setupTemplate.failure }], setupFailure: setupTemplate.failure }], 0, 1],
+  ['a done row from before Connect waits until a newer row is done', [{ items: (items, queuedAt) => { items[2].queued_at = new Date(Date.parse(queuedAt) - 86400000).toISOString(); } }, {}], 0, 2],
+  ['a fresh pending row waits until done', [{ items: (items) => { items[2].state = 'pending'; } }, {}], 0, 2],
+  ['done rows still wait for binding verification', [{ binding: { state: 'connecting' } }, {}], 0, 2],
+  ['queue times with a UTC offset compare as instants', [{ items: (items, queuedAt) => {
+    const offsetTime = new Date(Date.parse(queuedAt) - 5 * 3600000).toISOString().slice(0, -1) + '-05:00';
+    for (const item of items) item.queued_at = offsetTime;
+  } }], 0, 1],
+  ['a failed results_table stops with its title, message, and customer owner', [{ items: (items) => { Object.assign(items[2], { state: 'failed', failure: setupTemplate.failure }); } }], 1, 1],
+  ['a pending serving_endpoint does not block success', [{ items: (items, queuedAt) => { items.push({ ...setupTemplate.serving_endpoint, queued_at: queuedAt }); } }], 0, 1],
+  ['a failed serving_endpoint stops Connect even when core items are done', [{ items: (items, queuedAt) => { items.push({ ...setupTemplate.serving_endpoint, queued_at: queuedAt, state: 'failed', failure: { ...setupTemplate.failure, owner: 'unknown' } }); } }], 1, 1],
+  ['a failed core row from before Connect waits for a newer done row', [{ items: (items, queuedAt) => { Object.assign(items[2], { queued_at: new Date(Date.parse(queuedAt) - 86400000).toISOString(), state: 'failed', failure: setupTemplate.failure }); } }, {}], 0, 2],
+  ['a failed serving_endpoint from before Connect does not block success', [{ items: (items, queuedAt) => { items.push({ ...setupTemplate.serving_endpoint, queued_at: new Date(Date.parse(queuedAt) - 86400000).toISOString(), state: 'failed', failure: setupTemplate.failure }); } }], 0, 1],
+  ['a binding that closed during Connect fails', [{ binding: { state: 'disconnected' } }], 1, 1],
+  ['a binding that requested disconnect during Connect fails', [{ binding: { disconnect_requested_at: setupTemplate.setup_items[0].queued_at } }], 1, 1],
+  ['a binding that changed SP during Connect fails', [{ binding: { agent_sp_application_id: sp2.applicationId } }], 1, 1]
+]) test(name, { timeout: 4900 }, async (t) => {
+  const server = await replay(t, plan({ setupReads }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, status, result.stderr);
+  noSecrets(result);
+  server.assertDone();
+  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, reads);
+  if (status === 0) {
+    const output = JSON.parse(result.stdout);
+    assert.ok(!Object.hasOwn(output, 'setup_confirmation'));
+    assert.ok(output.setup_items.every((item) => Object.keys(item).sort().join(',') === 'kind,state,target'));
+    assert.ok(output.setup_items.filter((item) => item.kind !== 'serving_endpoint').every((item) => item.state === 'done'));
+    if (name.startsWith('a pending serving_endpoint')) assert.deepEqual(output.setup_items.at(-1), { kind: 'serving_endpoint', target: setupTemplate.serving_endpoint.target, state: 'pending' });
+  } else {
+    assert.equal(result.stdout, '');
+    if (name.includes('failed')) {
+      const message = JSON.parse(result.stderr).error.message;
+      assert.ok(message.includes(setupTemplate.failure.title));
+      assert.ok(message.includes(setupTemplate.failure.message));
+      assert.ok(message.includes(`owner: ${name.includes('serving_endpoint') ? 'unknown' : 'customer'}`));
+      assert.equal(message.includes('A workspace admin must fix it.'), !name.includes('serving_endpoint'));
+    } else assert.match(result.stderr, /binding changed or closed/);
+  }
+});
+
+for (const offset of [0, 1000]) test(`Connect succeeds with a local clock ahead of the server and items queued ${offset} ms after its Date header`, { timeout: 4900 }, async (t) => {
+  const bindingsDate = new Date(Date.now() - 30000).toUTCString();
+  const queuedAt = new Date(Date.parse(bindingsDate) + offset).toISOString();
+  assert.ok(Date.parse(queuedAt) < Date.now());
+  const server = await replay(t, plan({ bindingsDate, queuedAt }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).state, 'verified');
+  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 1);
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('an item queued before the server Date header keeps Connect waiting for a fresh item', { timeout: 4900 }, async (t) => {
+  const bindingsDate = new Date(Date.now() - 30000).toUTCString();
+  const queuedAt = new Date(Date.parse(bindingsDate) + 1000).toISOString();
+  const setupReads = [{ items: (items) => { items[2].queued_at = new Date(Date.parse(bindingsDate) - 1).toISOString(); } }, {}];
+  const server = await replay(t, plan({ bindingsDate, queuedAt, setupReads }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).state, 'verified');
+  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 2);
+  noSecrets(result);
+  server.assertDone();
+});
+
+for (const bindingsDate of [null, 'invalid']) test(`Connect fails before registration when the server Date header is ${bindingsDate === null ? 'missing' : 'invalid'}`, { timeout: 4900 }, async (t) => {
+  const { calls } = plan({ bindingsDate });
+  const listIndex = calls.findIndex((call) => call.method === 'GET' && call.path === '/v1/databricks/bindings');
+  const server = await replay(t, calls.slice(0, listIndex + 1));
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.match(JSON.parse(result.stderr).error.message, /missing or invalid HTTP Date header.*requires the server clock/);
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('setup-item failure text redacts credentials in human output', { timeout: 4900 }, async (t) => {
+  const p = plan({ m2m: true, setupReads: [{ items: (items) => {
+    Object.assign(items[2], { state: 'failed', failure: { ...setupTemplate.failure, message: [...tokens, clientSecret, basic, pollMarker].join(' ') } });
+  } }] });
+  const tokens = p.calls.filter((call) => call.path === '/oidc/v1/token').map((call) => call.body.access_token);
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, [], { BR_FIXTURE_AUTH: 'm2m' });
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.includes(setupTemplate.failure.title));
+  assert.match(result.stderr, /owner: customer/);
+  assert.match(result.stderr, /\[redacted\]/);
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('setup_items parser accepts the contract and rejects malformed fields', { timeout: 4900 }, () => {
+  assert.deepEqual(parseDatabricksSetupItems(setupTemplate.setup_items), setupTemplate.setup_items);
+  assert.deepEqual(parseDatabricksSetupItems([]), []);
+  const validFailure = { ...setupTemplate.setup_items[2], state: 'failed', failure: setupTemplate.failure };
+  assert.deepEqual(parseDatabricksSetupItems([validFailure]), [validFailure]);
+  for (const value of [undefined, null, {}, [null], [setupTemplate.setup_items[0], setupTemplate.setup_items[0]],
+    ...[{ kind: 'grant_check' }, { target: '' }, { state: 'cancelled' }, { queued_at: 'invalid' }, { queued_at: null }, { failure: undefined }, { failure: setupTemplate.failure }, { state: 'failed', failure: null }].map((fields) => [{ ...setupTemplate.setup_items[0], ...fields }]),
+    ...[{ owner: 'admin' }, { code: '' }, { title: null }, { message: undefined }, { failed_at: 'invalid' }, { failed_at: undefined }].map((fields) => [{ ...validFailure, failure: { ...setupTemplate.failure, ...fields } }])
+  ]) assert.throws(() => parseDatabricksSetupItems(value), /invalid Databricks setup_items/);
 });
 
 for (const [auth, status, code] of [['pat', 5, 'pat_login'], ['unsupported', 1, 'databricks_auth_unsupported'], ['child-error', 1, 'databricks_login_required']]) test(`OAuth login refusal: ${auth} never calls auth token or leaks child output (AUTH-012 / DATA-001)`, { timeout: 4900 }, async (t) => {

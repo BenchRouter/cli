@@ -1,4 +1,4 @@
-// H1/H2 headless-contract.ts: this is the single Connect response parser.
+// H1/H2 headless-contract.ts: shared Connect response and setup-item parsers.
 // AUTH-012: validate the complete plan before any workspace write using its fields.
 /**
  * @typedef {{type: 'user'|'service_principal'|'group', name: string}} DatabricksPrincipal
@@ -20,6 +20,9 @@
  *     max_concurrent_runs: 1, environment: Record<string, unknown>},
  *   grants: DatabricksUcStep[], heal: DatabricksUcStep[],
  *   sp_change: {previous_agent_sp_application_id: string, revoke: DatabricksRevokeStep[]}|null}} DatabricksConnectResponse
+ * @typedef {{code: string, failed_at: string|null, owner: 'customer'|'unknown', title: string, message: string}} DatabricksFailure
+ * @typedef {{kind: 'volume'|'results_table'|'experiment'|'eval_job'|'serving_endpoint', target: string,
+ *   state: 'pending'|'done'|'failed', queued_at: string, failure: DatabricksFailure|null}} DatabricksSetupItemView
  */
 const securables = new Set(['catalog', 'schema', 'volume', 'table', 'model_provider_service']);
 const privileges = new Set(['USE_CATALOG', 'USE_SCHEMA', 'CREATE_TABLE', 'CREATE_VOLUME', 'CREATE_SERVICE', 'SELECT', 'MODIFY', 'READ_VOLUME', 'WRITE_VOLUME', 'MANAGE', 'EXECUTE']);
@@ -68,4 +71,23 @@ export function parseDatabricksConnectResponse(value) {
     throw new Error('BenchRouter returned an invalid Databricks Connect response. Check the H1/H2 contract.');
   }
   return /** @type {DatabricksConnectResponse} */ (value);
+}
+
+/**
+ * Validate the setup_items array on a binding read before deciding completion.
+ * @param {unknown} value
+ * @returns {DatabricksSetupItemView[]}
+ */
+export function parseDatabricksSetupItems(value) {
+  const instant = (v) => string(v) && Number.isFinite(Date.parse(v));
+  const failure = (v) => object(v) && ['code', 'title', 'message'].every((key) => string(v[key]))
+    && ['customer', 'unknown'].includes(v.owner) && (v.failed_at === null || instant(v.failed_at));
+  if (!Array.isArray(value) || !value.every((item) => object(item)
+      && ['volume', 'results_table', 'experiment', 'eval_job', 'serving_endpoint'].includes(item.kind)
+      && string(item.target) && ['pending', 'done', 'failed'].includes(item.state) && instant(item.queued_at)
+      && (item.state === 'failed' ? failure(item.failure) : item.failure === null))
+      || new Set(value.map((item) => JSON.stringify([item.kind, item.target]))).size !== value.length) {
+    throw new Error('BenchRouter returned invalid Databricks setup_items. Check the H1/H2 contract.');
+  }
+  return /** @type {DatabricksSetupItemView[]} */ (value);
 }
