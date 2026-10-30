@@ -1,3 +1,4 @@
+import { spStepTarget } from './databricks-contract.mjs';
 export function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -1047,6 +1048,10 @@ function databricksLeftoverLines(steps) {
     lines.push(`  ${step.kind}: ${step.id}`, `    Binding ${step.binding_id}; actor ${step.actor}; reason ${step.reason}`);
     // Add display indentation to each line without changing the server text.
     lines.push(...dbxIndentedLines(step.instruction));
+    if (step.kind === 'grant' || step.kind === 'revoke') {
+      const action = step[step.kind];
+      lines.push(`    Action: ${action.action}; target: ${spStepTarget(action)}`);
+    }
     if (step.command !== null) lines.push(...dbxIndentedLines(step.command));
   }
   return lines;

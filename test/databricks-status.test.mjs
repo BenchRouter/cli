@@ -79,6 +79,23 @@ test('status filters hosts without a workspace login', { timeout: 4900 }, async 
   server.assertDone();
 });
 
+for (const all of [false, true]) for (const json of [false, true]) test(`status selects open and closed-with-leftovers bindings (${all ? '--all' : 'default'}, ${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
+  const details = [
+    { ...reads.verified, binding: { ...reads.verified.binding, id: 'dbxb_open' }, cleanup_pending: [] },
+    { ...reads.archived, binding: { ...reads.archived.binding, id: 'dbxb_leftovers' } },
+    { ...reads.archived, binding: { ...reads.archived.binding, id: 'dbxb_archived_clean' }, cleanup_pending: [] },
+    { ...reads.disconnected, binding: { ...reads.disconnected.binding, id: 'dbxb_disconnected_clean' }, cleanup_pending: [] }
+  ];
+  const server = await replay(t, [list(details.map((d) => d.binding)), ...details.map((d) => call('GET', `${base}/${d.binding.id}`, d))]);
+  const result = await runCli(server, ['status', '--host', host, ...(all ? ['--all'] : []), ...(json ? ['--json'] : [])], { BR_FIXTURE_AUTH: 'child-error' });
+  assert.equal(result.status, 0, result.stderr);
+  const expected = all ? details : details.slice(0, 2);
+  if (json) assert.deepEqual(JSON.parse(result.stdout), { bindings: expected });
+  else for (const d of details) assert.equal(result.stdout.includes(d.binding.id), expected.includes(d));
+  assert.equal(result.authCalls.length, expected.length);
+  server.assertDone();
+});
+
 test('status clears gone leftovers, keeps refused reads, and never treats absent workspace SP membership as account deletion', { timeout: 4900 }, async (t) => {
   const detail = structuredClone(reads.disconnected);
   detail.cleanup_pending = detail.cleanup_pending.filter((s) => ['job', 'secret_scope', 'agent_service_principal'].includes(s.kind));
@@ -376,6 +393,7 @@ for (const command of ['status', 'add-eval', 'disconnect']) test(`${command} hel
   const result = await runCli(server, [command, '--help']);
   assert.equal(result.status, 0, result.stderr);
   for (const s of ['--json', 'Exit codes:', '3 ', '4 ', '5 ']) assert.ok(result.stdout.includes(s));
+  if (command === 'status') assert.ok(result.stdout.includes('--all'));
   server.assertDone();
 });
 
@@ -426,9 +444,10 @@ test('status M2M login clears a missing object with no credential disclosure (AU
   const detail = { ...reads.disconnected, cleanup_pending: [reads.disconnected.cleanup_pending[2]] };
   const after = { ...detail, cleanup_pending: [] };
   const token = m2mToken();
-  const server = await replay(t, [list([detail.binding]), read(detail), m2mCall(token), missing('/api/2.2/jobs/get'), call('POST', `${bindingPath}/cleanup`, { ok: true, cleanup_pending: [] }), read(after), jobAcl()]);
+  const server = await replay(t, [list([detail.binding]), read(detail), m2mCall(token), missing('/api/2.2/jobs/get'), call('POST', `${bindingPath}/cleanup`, { ok: true, cleanup_pending: [] }), read(after)]);
   const result = await runCli(server, ['status', '--json'], { BR_FIXTURE_AUTH: 'm2m' });
   assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { bindings: [] });
   noSecrets(result);
   assert.ok(!JSON.stringify(result).includes(token));
   server.assertDone();
@@ -601,5 +620,109 @@ test('add-eval reports an absent agent job without claiming it was started', { t
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.includes('Eval registered. Folder and cases-table grants applied.'));
   assert.ok(result.stdout.includes('No agent job was started.'));
+  server.assertDone();
+});
+
+const persisted = await fixture('sp-change.json');
+for (const [content, reason] of [
+  ['routes: [', 'eval manifest is invalid'],
+  [manifest.replace('support/triage', 'other/route'), 'route_key is no longer declared exactly once in the eval manifest'],
+  [manifest.replace('support-evals', 'benchrouter-private'), 'eval manifest is invalid']
+]) test(`disconnect continues with grant and revoke pending for ${reason}${content.includes('benchrouter-private') ? ' (reserved scope)' : ''}`, { timeout: 4900 }, async (t) => {
+  const p = disconnectPlan({ force: true });
+  const grant = persisted.cleanup_pending.find((s) => s.kind === 'grant' && s.grant.action === 'manifest_table_grant');
+  const revoke = { ...grant, kind: 'revoke', id: 'manifest-revoke', revoke: { ...grant.grant, action: 'manifest_table_revoke', principal: { type: 'service_principal', name: reads.verified.binding.agent_sp_application_id }, only_if: 'exists' } };
+  delete revoke.grant;
+  p.calls[1].body.cleanup_pending = [revoke, grant];
+  const changes = [grant, revoke].flatMap((item) => [
+    call('GET', '/api/2.0/workspace/get-status', { object_id: 999 }, 200, (r) => assert.equal(r.query.get('path'), item[item.kind].eval_folder)),
+    call('GET', '/api/2.0/workspace/export', { content: Buffer.from(content).toString('base64') })
+  ]);
+  for (const c of p.calls) if (c.path === bindingPath && c.body.binding && ['archived', 'disconnected'].includes(c.body.binding.state)) {
+    c.body.cleanup_pending = [...c.body.cleanup_pending, grant, revoke];
+  }
+  p.calls.splice(3, 0, ...changes);
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['disconnect', '--force', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  const answer = JSON.parse(result.stdout);
+  assert.equal(answer.disconnect_sent, true);
+  assert.deepEqual(answer.pending_steps, [grant, revoke].map((item) => ({ kind: item.kind, id: item.id, action: item[item.kind].action, object: item[item.kind].object, target: `${item[item.kind].eval_folder}#${item[item.kind].route_key}`, reason })));
+  for (const item of [grant, revoke]) assert.ok(result.stderr.includes(`Warning: Pending ${item.kind} ${item.id}:`));
+  assert.equal(answer.cleanup_pending.filter((s) => ['grant', 'revoke'].includes(s.kind)).length, 2);
+  assert.ok(server.requests.filter((r) => r.path.endsWith('/cleanup')).every((r) => r.body.done.every((s) => !['grant', 'revoke'].includes(s.kind))));
+  server.assertDone();
+});
+
+for (const json of [false, true]) test(`status shows pending grants and revokes and exposure failure without running or acknowledging steps (${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
+  const detail = structuredClone(reads.verified);
+  detail.cleanup_pending = structuredClone(persisted.cleanup_pending);
+  // rotate_key can fail while an exposure remains exposed.
+  detail.exposures[0].state = 'exposed';
+  detail.exposures[0].failure = (await fixture('binding-read.json')).failure;
+  const server = await replay(t, [list(), read(detail), jobAcl()]);
+  const result = await runCli(server, ['status', ...(json ? ['--json'] : [])]);
+  assert.equal(result.status, 0, result.stderr);
+  if (json) assert.deepEqual(JSON.parse(result.stdout), { bindings: [detail] });
+  else {
+    assert.ok(result.stdout.includes('Leftovers'));
+    assert.ok(result.stdout.includes(detail.exposures[0].failure.title));
+    assert.ok(result.stdout.includes(detail.exposures[0].failure.message));
+    for (const item of detail.cleanup_pending) {
+      const step = item[item.kind];
+      const target = step.full_name ?? step.endpoint_name ?? step.path ?? `${step.eval_folder}#${step.route_key}`;
+      assert.ok(result.stdout.includes(item.instruction));
+      assert.ok(result.stdout.includes(`Action: ${step.action}; target: ${target}`));
+    }
+  }
+  assert.ok(server.requests.every((r) => r.method === 'GET'));
+  noSecrets(result);
+  server.assertDone();
+});
+
+for (const force of [false, true]) for (const refused of [false, true]) test(`disconnect runs pending grants then revokes before closure (${force ? 'force' : 'default'}, ${refused ? 'refused' : 'done'})`, { timeout: 4900 }, async (t) => {
+  const p = disconnectPlan({ force, immediate: true });
+  const grant = persisted.cleanup_pending[0];
+  const revoke = persisted.cleanup_pending.at(-1);
+  // Include a prior binding's step to prove it cannot run under this binding's acknowledgement.
+  const inherited = { ...grant, binding_id: 'dbxb_older', id: 'inherited' };
+  p.calls[1].body.cleanup_pending = [revoke, inherited, grant];
+  const changes = [];
+  for (const item of [grant, revoke]) {
+    const step = item[item.kind];
+    changes.push(call('GET', `${uc}/model-provider-services/${step.full_name}`, { owner: 'service-owner' }),
+      call('PATCH', `${uc}/permissions/model_provider_service/${step.full_name}`, refused ? { error_code: 'PERMISSION_DENIED' } : {}, refused ? 403 : 200,
+        checkBody({ changes: [{ principal: step.principal.name, [item.kind === 'grant' ? 'add' : 'remove']: step.privileges }] })));
+    if (refused) changes.push(call('GET', `${uc}/catalogs/workspace`, { owner: 'catalog-owner' }), call('GET', `${uc}/schemas/workspace.br_design`, { owner: 'schema-owner' }));
+  }
+  if (refused) {
+    for (const c of p.calls) if (c.path === bindingPath && c.body.binding && ['archived', 'disconnected'].includes(c.body.binding.state)) {
+      c.body.cleanup_pending = [...c.body.cleanup_pending, grant, revoke];
+    }
+  } else changes.push(call('POST', `${bindingPath}/cleanup`, { ok: true, cleanup_pending: [inherited] }, 200,
+    checkBody({ done: [key(grant), key(revoke)] })));
+  p.calls.splice(3, 0, ...changes);
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['disconnect', ...(force ? ['--force'] : []), '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  const answer = JSON.parse(result.stdout);
+  assert.equal(answer.disconnect_sent, true);
+  assert.equal(answer.pending_steps.length, refused ? 2 : 0);
+  if (refused) {
+    assert.equal(answer.cleanup_pending.filter((s) => ['grant', 'revoke'].includes(s.kind)).length, 2);
+    assert.equal(result.stderr.split('\n').filter((l) => l.includes('Owner: service-owner')).length, 2);
+    assert.ok(result.stderr.includes('Re-run benchrouter databricks connect as that owner or a metastore admin'));
+  }
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('binding reads reject malformed persisted grant steps before workspace authentication', { timeout: 4900 }, async (t) => {
+  const detail = { ...reads.verified, cleanup_pending: [{ ...persisted.cleanup_pending[0], command: 'unexpected' }] };
+  const server = await replay(t, [list(), read(detail)]);
+  const result = await runCli(server, ['disconnect', '--json']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /invalid cleanup steps/);
+  assert.deepEqual(result.authCalls, []);
   server.assertDone();
 });

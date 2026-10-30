@@ -29,6 +29,11 @@ const jwt = (scope, { seconds = 3500, marker = 'proof-signature', sub = 'admin@e
 const binding = (agent = sp, job = '127620839936386') => ({ id: 'dbxb_recorded', account_id: 'acct_fixture', host: new URL(host).hostname, workspace_id: '7474660687257254', databricks_account_id: account, agent_sp_application_id: agent.applicationId, agent_job_id: job, eval_job_id: '55', state: 'verified', disconnect_requested_at: null });
 const direct = (name, level, inherited = false) => ({ service_principal_name: name, all_permissions: [{ permission_level: level, inherited }] });
 
+function pendingStep(kind, step, id) {
+  return { kind, id, binding_id: 'dbxb_recorded', reason: 'agent_sp_replaced', actor: 'workspace_admin', command: null,
+    instruction: `Complete ${kind} ${id}.`, [kind]: step };
+}
+
 function plan(options = {}) {
   const agent = options.newSp ? sp2 : sp;
   const admin = options.m2m ? { service_principal_name: clientId } : { user_name: 'admin@example.com' };
@@ -39,7 +44,11 @@ function plan(options = {}) {
   c.agent.secret_scope = c.agent.job_parameters.scope = scope;
   c.grants = [step('grant', 'catalog', 'workspace', ['USE_CATALOG'], 'always', agent.applicationId), step('grant', 'schema', 'workspace.br_design', ['USE_SCHEMA', 'CREATE_TABLE', 'CREATE_VOLUME', 'CREATE_SERVICE'], 'always', agent.applicationId)];
   c.heal = [step('set_owner', 'volume', 'workspace.br_design.benchrouter_artifacts', null, 'exists_not_agent_owned', agent.applicationId), step('set_owner', 'volume', 'workspace.br_design.benchrouter_results', null, 'exists_not_agent_owned', agent.applicationId), step('grant', 'table', 'workspace.br_design.benchrouter_eval_results', ['SELECT', 'MODIFY'], 'exists_not_agent_owned', agent.applicationId)];
-  if (options.newSp) c.sp_change = { previous_agent_sp_application_id: sp.applicationId, revoke: options.change ?? [] };
+  if (options.newSp) c.sp_change = { previous_agent_sp_application_id: sp.applicationId, grant: options.grants ?? [], revoke: options.change ?? [] };
+  c.cleanup_pending = options.pending ?? [
+    ...(c.sp_change?.grant ?? []).map((s, i) => pendingStep('grant', s, `grant-${i}`)),
+    ...(c.sp_change?.revoke ?? []).map((s, i) => pendingStep('revoke', s, `revoke-${i}`))
+  ];
   if (options.invalid) c.agent.job_parameters.job_id = 'wrong';
   const calls = [];
   let queuedAt;
@@ -139,6 +148,9 @@ function plan(options = {}) {
     }
   }
   if (options.changeCalls) calls.push(...options.changeCalls);
+  const completed = options.done ?? c.cleanup_pending.filter((s) => s.binding_id === c.binding_id).map(({ kind, id }) => ({ kind, id }));
+  if (completed.length) add('POST', `/v1/databricks/bindings/${c.binding_id}/cleanup`, { ok: true, cleanup_pending: [] }, 200,
+    (r) => assert.deepEqual(r.body, { done: completed }));
   const hasJob = existing?.agent_job_id && !options.jobMissing && !options.jobDeleted;
   const jobId = hasJob ? existing.agent_job_id : '127620839936386';
   add('POST', `/api/2.2/jobs/${hasJob ? 'reset' : 'create'}`, { job_id: Number(jobId) }, 200, (r) => {
@@ -248,6 +260,9 @@ for (const [name, options, expectedStatus] of [
     const server = await replay(t, p.calls);
     const result = await runCli(server, ['--json', ...(options.warehouseFlag ? ['--warehouse', 'f7cf158c6784dd06'] : [])]);
     assert.equal(result.status, expectedStatus, result.stderr);
+    if (options.existing && options.noRole && !options.newSp) {
+      assert.equal(server.requests.filter((r) => r.path === rulePath).length, 1);
+    }
     noSecrets(result);
     server.assertDone();
     if (options.refused) {
@@ -589,7 +604,7 @@ for (const [name, options, reason] of [
 ]) for (const json of [false, true]) test(`SP change skips ${name} and Connect succeeds (${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
   const change = manifestRevoke();
   const changeCalls = manifestRevokeCalls(change, options);
-  const server = await replay(t, plan({ existing: binding(), spMissing: true, newSp: true, change: [change], changeCalls }).calls);
+  const server = await replay(t, plan({ existing: binding(), spMissing: true, newSp: true, change: [change], changeCalls, ...(!['eval folder is missing', 'eval manifest is missing', 'cases table is missing'].includes(reason) ? { done: [] } : {}) }).calls);
   const result = await runCli(server, json ? ['--json'] : []);
   assert.equal(result.status, 0, result.stderr);
   if (json) {
@@ -597,6 +612,8 @@ for (const [name, options, reason] of [
     assert.equal(output.ok, true);
     assert.equal(output.state, 'verified');
     assert.deepEqual(output.skipped, [{ object: change.object, action: change.action, route_key: change.route_key, eval_folder: change.eval_folder, reason }]);
+    const pending = !['eval folder is missing', 'eval manifest is missing', 'cases table is missing'].includes(reason);
+    assert.deepEqual(output.pending_steps, pending ? [{ kind: 'revoke', id: 'revoke-0', action: change.action, object: change.object, target: `${change.eval_folder}#${change.route_key}`, reason }] : []);
   } else {
     assert.deepEqual(result.stdout.split('\n').filter((line) => line.startsWith('Skipped ')), [`Skipped cases table revoke for support/triage: ${reason}.`]);
   }
@@ -604,21 +621,18 @@ for (const [name, options, reason] of [
   server.assertDone();
 });
 
-for (const status of [400, 403]) test(`SP change cases table revoke PERMISSION_DENIED (${status}) names owners and exits 3`, { timeout: 4900 }, async (t) => {
+for (const status of [400, 403]) test(`SP change cases table revoke PERMISSION_DENIED (${status}) names owners and continues with exit 0`, { timeout: 4900 }, async (t) => {
   const change = manifestRevoke();
   const changeCalls = [...manifestRevokeCalls(change, { status, code: 'PERMISSION_DENIED' }),
     { method: 'GET', path: `${uc}/catalogs/main`, status: 200, body: { owner: 'cases-catalog-owner' } },
     { method: 'GET', path: `${uc}/schemas/main.evals`, status: 200, body: { owner: 'cases-schema-owner' } }];
-  const p = plan({ existing: binding(), spMissing: true, newSp: true, change: [change], changeCalls });
-  p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.2/jobs/reset'));
+  const p = plan({ existing: binding(), spMissing: true, newSp: true, change: [change], changeCalls, done: [] });
   const server = await replay(t, p.calls);
   const result = await runCli(server, ['--json']);
-  assert.equal(result.status, 3, result.stderr);
-  assert.equal(result.stdout, '');
-  assert.equal(JSON.parse(result.stderr).error.code, 'grant_refused');
-  assert.match(result.stderr, /refused revoke on main.evals.cases/);
-  assert.match(result.stderr, /Catalog owner: cases-catalog-owner/);
-  assert.match(result.stderr, /Schema owner: cases-schema-owner/);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).pending_steps[0].owner, 'cases-schema-owner');
+  assert.match(result.stderr, /Pending revoke.*manifest_table_revoke/);
+  assert.match(result.stderr, /Owner: cases-schema-owner.*Re-run benchrouter databricks connect/);
   noSecrets(result);
   server.assertDone();
 });
@@ -638,7 +652,7 @@ test('SP change rejects the former UC cases_table revoke before the scope or key
 
 test('SP change manifest revoke parser validates the route, folder, previous SP, SELECT and exists condition', { timeout: 4900 }, () => {
   const change = manifestRevoke();
-  const response = { ...structuredClone(responseTemplate), sp_change: { previous_agent_sp_application_id: sp.applicationId, revoke: [change] } };
+  const response = { ...structuredClone(responseTemplate), sp_change: { previous_agent_sp_application_id: sp.applicationId, grant: [], revoke: [change] } };
   assert.deepEqual(parseDatabricksConnectResponse(response), response);
   for (const fields of [
     { object: 'results_table' }, { action: 'grant' }, { route_key: '' }, { route_key: ' ' }, { route_key: null },
@@ -647,4 +661,279 @@ test('SP change manifest revoke parser validates the route, folder, previous SP,
     ...[undefined, [], ['MODIFY'], ['SELECT', 'MODIFY'], ['SELECT', 'SELECT']].map((privileges) => ({ privileges })),
     { only_if: 'always' }, { only_if: 'exists_not_agent_owned' }, { only_if: undefined }
   ]) assert.throws(() => parseDatabricksConnectResponse({ ...response, sp_change: { ...response.sp_change, revoke: [{ ...change, ...fields }] } }), /invalid Databricks Connect response/);
+});
+
+const persistedChange = await fixture('sp-change.json');
+const call = (method, path, body = {}, status = 200, check) => ({ method, path, body, status, check });
+const bodyIs = (body) => (r) => assert.deepEqual(r.body, body);
+function grantCalls(grant, { sameSchema = false } = {}) {
+  const id = grant.principal.name;
+  if (grant.action === 'grant') return [
+    call('GET', `${uc}/model-provider-services/${grant.full_name}`, { owner: 'service-owner' }),
+    call('PATCH', `${uc}/permissions/model_provider_service/${grant.full_name}`, {}, 200, bodyIs({ changes: [{ principal: id, add: ['MANAGE'] }] }))
+  ];
+  if (grant.action === 'endpoint_acl_add' || grant.action === 'folder_acl_add') {
+    const endpoint = grant.action === 'endpoint_acl_add';
+    return [call('GET', endpoint ? `/api/2.0/serving-endpoints/${grant.endpoint_name}` : '/api/2.0/workspace/get-status', endpoint ? { id: 'endpoint-id' } : { object_id: 999 }, 200,
+      endpoint ? undefined : (r) => assert.equal(r.query.get('path'), grant.path)),
+    call('PATCH', `/api/2.0/permissions/${endpoint ? 'serving-endpoints/endpoint-id' : 'directories/999'}`, {}, 200,
+      bodyIs({ access_control_list: [{ service_principal_name: id, permission_level: grant.permission }] }))];
+  }
+  const table = sameSchema ? 'workspace.br_design.cases' : 'main.evals.cases';
+  const content = sameSchema ? manifest.replace('main.evals.cases', table) : manifest;
+  const calls = [
+    call('GET', '/api/2.0/workspace/get-status', { object_id: 999 }, 200, (r) => assert.equal(r.query.get('path'), grant.eval_folder)),
+    call('GET', '/api/2.0/workspace/export', { content: Buffer.from(content).toString('base64') }, 200,
+      (r) => assert.deepEqual([...r.query], [['path', `${grant.eval_folder}/.benchrouter/benchrouter.yml`], ['format', 'AUTO']]))
+  ];
+  if (grant.action === 'manifest_secret_acl_put') calls.push(call('POST', '/api/2.0/secrets/acls/put', {}, 200,
+    bodyIs({ scope: 'support-evals', principal: id, permission: 'READ' })));
+  else {
+    calls.push(call('GET', `${uc}/tables/${table}`, { owner: 'cases-owner' }));
+    const steps = sameSchema ? [] : [['catalog', 'main', ['USE_CATALOG']], ['schema', 'main.evals', ['USE_SCHEMA']]];
+    steps.push(['table', table, ['SELECT']]);
+    for (const [securable, name, privileges] of steps) calls.push(call('PATCH', `${uc}/permissions/${securable}/${name}`, {}, 200,
+      bodyIs({ changes: [{ principal: id, add: privileges }] })));
+  }
+  return calls;
+}
+const ucRevokeCalls = (s) => [call('GET', `${uc}/model-provider-services/${s.full_name}`, { owner: 'service-owner' }),
+  call('PATCH', `${uc}/permissions/model_provider_service/${s.full_name}`, {}, 200, bodyIs({ changes: [{ principal: s.principal.name, remove: s.privileges }] }))];
+
+for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manifest_table_revoke']) for (const [content, reason] of [
+  ['routes: [', 'eval manifest is invalid'],
+  [manifest.replace('support/triage', 'other/route'), 'route_key is no longer declared exactly once in the eval manifest'],
+  [manifest.replace('support-evals', 'benchrouter-private'), 'eval manifest is invalid']
+]) test(`Connect keeps ${action} pending for ${reason}${content.includes('benchrouter-private') ? ' (reserved scope)' : ''}`, { timeout: 4900 }, async (t) => {
+  const kind = action === 'manifest_table_revoke' ? 'revoke' : 'grant';
+  const step = kind === 'revoke' ? manifestRevoke() : persistedChange.sp_change.grant.find((s) => s.action === action);
+  const item = pendingStep(kind, step, 'manifest-pending');
+  const success = persistedChange.sp_change.revoke[0];
+  const changeCalls = [
+    ...manifestRevokeCalls(step, { content, table: null }),
+    ...ucRevokeCalls(success)
+  ];
+  const server = await replay(t, plan({ pending: [item, pendingStep('revoke', success, 'successful-revoke')], changeCalls, done: [{ kind: 'revoke', id: 'successful-revoke' }] }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).pending_steps, [{ kind, id: item.id, action, object: step.object, target: `${step.eval_folder}#${step.route_key}`, reason }]);
+  assert.ok(result.stderr.includes(`Warning: Pending ${kind} ${item.id}:`));
+  assert.ok(result.stderr.includes(`Reason: ${reason}.`));
+  assert.ok(server.requests.some((r) => r.path === '/api/2.2/jobs/create'));
+  assert.ok(server.requests.some((r) => r.path === '/api/2.2/jobs/run-now'));
+  server.assertDone();
+});
+
+for (const retry of [false, true]) test(`Connect runs all persisted grants before revokes and acknowledges once (${retry ? 'retry with sp_change null' : 'SP change'})`, { timeout: 4900 }, async (t) => {
+  const { sp_change: change, cleanup_pending: steps } = persistedChange;
+  // Put revokes first on the wire to prove that grant-first execution is deliberate.
+  const pending = [...steps].reverse();
+  const grants = pending.filter((s) => s.kind === 'grant').map((s) => s.grant);
+  const changeCalls = [...grants.flatMap((g) => grantCalls(g)), ...change.revoke.flatMap(ucRevokeCalls)];
+  const p = plan({ existing: binding(), ...(retry ? {} : { newSp: true, spMissing: true, grants: change.grant, change: change.revoke }),
+    pending, changeCalls, done: [...pending.filter((s) => s.kind === 'grant'), ...pending.filter((s) => s.kind === 'revoke')].map(({ kind, id }) => ({ kind, id })) });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(p.c.sp_change === null, retry);
+  assert.deepEqual(JSON.parse(result.stdout).pending_steps, []);
+  assert.equal(server.requests.filter((r) => r.path.endsWith('/cleanup')).length, 1);
+  noSecrets(result);
+  server.assertDone();
+});
+
+for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manifest_table_revoke']) test(`Connect fails on unexpected ${action} export errors without acknowledgement`, { timeout: 4900 }, async (t) => {
+  const kind = action === 'manifest_table_revoke' ? 'revoke' : 'grant';
+  const step = kind === 'revoke' ? manifestRevoke() : persistedChange.sp_change.grant.find((s) => s.action === action);
+  const changeCalls = manifestRevokeCalls(step, { table: null });
+  changeCalls[1] = { ...changeCalls[1], status: 500, body: { error_code: 'INTERNAL_ERROR' } };
+  const p = plan({ pending: [pendingStep(kind, step, 'failed-export')], changeCalls, done: [] });
+  p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.0/workspace/export') + 1);
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(!server.requests.some((r) => r.path.endsWith('/cleanup') || r.path === '/api/2.2/jobs/create'));
+  server.assertDone();
+});
+
+for (const json of [false, true]) test(`refused provider grant and revoke stay pending while Connect creates and runs the job (${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
+  const grant = persistedChange.sp_change.grant[0];
+  const revoke = persistedChange.sp_change.revoke[0];
+  const success = persistedChange.sp_change.grant[1];
+  const pending = [pendingStep('revoke', revoke, 'refused-revoke'), pendingStep('grant', grant, 'refused-grant'), pendingStep('grant', success, 'successful-grant')];
+  const changeCalls = [];
+  for (const [s, kind, status] of [[grant, 'add', 403], [success, null, 200], [revoke, 'remove', 400]]) {
+    if (!kind) { changeCalls.push(...grantCalls(s)); continue; }
+    changeCalls.push(call('GET', `${uc}/model-provider-services/${s.full_name}`, { owner: 'service-owner' }),
+      call('PATCH', `${uc}/permissions/model_provider_service/${s.full_name}`, { error_code: 'PERMISSION_DENIED', message: `${loginMarker} ${pollMarker}` }, status,
+        bodyIs({ changes: [{ principal: s.principal.name, [kind]: s.privileges }] })),
+      call('GET', `${uc}/catalogs/workspace`, { owner: 'catalog-owner' }), call('GET', `${uc}/schemas/workspace.br_design`, { owner: 'schema-owner' }));
+  }
+  const p = plan({ newSp: true, grants: [grant, success], change: [revoke], pending, changeCalls, done: [{ kind: 'grant', id: 'successful-grant' }] });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, json ? ['--json'] : []);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr.split('\n').filter((l) => l.startsWith('Warning:')).length, 2);
+  for (const kind of ['grant', 'revoke']) assert.match(result.stderr, new RegExp(`Pending ${kind}.*Owner: service-owner.*Re-run benchrouter databricks connect as that owner or a metastore admin`));
+  if (json) assert.deepEqual(JSON.parse(result.stdout).pending_steps, [
+    { kind: 'grant', id: 'refused-grant', action: 'grant', object: 'provider_service', target: grant.full_name, owner: 'service-owner' },
+    { kind: 'revoke', id: 'refused-revoke', action: 'revoke', object: 'provider_service', target: revoke.full_name, owner: 'service-owner' }
+  ]);
+  assert.ok(server.requests.some((r) => r.path === '/api/2.2/jobs/create'));
+  assert.ok(server.requests.some((r) => r.path === '/api/2.2/jobs/run-now'));
+  noSecrets(result);
+  server.assertDone();
+});
+
+for (const grant of persistedChange.sp_change.grant) test(`missing ${grant.action} target is acknowledged`, { timeout: 4900 }, async (t) => {
+  const calls = grantCalls(grant);
+  calls[0] = { ...calls[0], body: { error_code: 'RESOURCE_DOES_NOT_EXIST' }, status: 404 };
+  const p = plan({ pending: [pendingStep('grant', grant, 'absent')], changeCalls: calls.slice(0, 1) });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  server.assertDone();
+});
+
+for (const action of ['manifest_table_grant', 'manifest_secret_acl_put']) test(`${action} missing manifest is acknowledged`, { timeout: 4900 }, async (t) => {
+  const grant = persistedChange.sp_change.grant.find((s) => s.action === action);
+  const calls = grantCalls(grant).slice(0, 2);
+  calls[1] = { ...calls[1], body: { error_code: 'NOT_FOUND' }, status: 404 };
+  const server = await replay(t, plan({ pending: [pendingStep('grant', grant, 'absent-manifest')], changeCalls: calls }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  server.assertDone();
+});
+
+test('manifest table grant in the binding schema applies SELECT without extra namespace grants', { timeout: 4900 }, async (t) => {
+  const grant = persistedChange.sp_change.grant.find((s) => s.action === 'manifest_table_grant');
+  const server = await replay(t, plan({ pending: [pendingStep('grant', grant, 'same-schema')], changeCalls: grantCalls(grant, { sameSchema: true }) }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  server.assertDone();
+});
+
+for (const method of ['GET', 'PUT']) for (const [status, code] of [[403, 'OTHER'], [400, 'PERMISSION_DENIED']]) test(`new SP rule-set ${method} succeeds on try six after ${status} ${code}`, { timeout: 4900 }, async (t) => {
+  const p = plan();
+  const index = p.calls.findIndex((c) => c.method === method && c.path === rulePath);
+  p.calls.splice(index, 0, ...Array.from({ length: 5 }, () => call(method, rulePath, { error_code: code, message: 'Not authorized to perform this operation' }, status)));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], { BENCHROUTER_DATABRICKS_TEST_RULE_RETRY_MS: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(server.requests.filter((r) => r.path === rulePath && r.method === method).length, 6);
+  server.assertDone();
+});
+
+for (const method of ['GET', 'PUT']) test(`new SP rule-set ${method} stops after six denied tries`, { timeout: 4900 }, async (t) => {
+  const p = plan();
+  const index = p.calls.findIndex((c) => c.method === method && c.path === rulePath);
+  p.calls.splice(index, p.calls.length, ...Array.from({ length: 6 }, () => call(method, rulePath, { error_code: 'PERMISSION_DENIED' }, 403)));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], { BENCHROUTER_DATABRICKS_TEST_RULE_RETRY_MS: '1' });
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(server.requests.filter((r) => r.path === rulePath && r.method === method).length, 6);
+  server.assertDone();
+});
+
+for (const method of ['GET', 'PUT']) for (const [status, code] of [[401, 'UNAUTHORIZED'], [500, 'INTERNAL_ERROR']]) test(`new SP rule-set ${method} does not retry ${status} ${code}`, { timeout: 4900 }, async (t) => {
+  const p = plan();
+  const index = p.calls.findIndex((c) => c.method === method && c.path === rulePath);
+  p.calls.splice(index, p.calls.length, call(method, rulePath, { error_code: code }, status));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], { BENCHROUTER_DATABRICKS_TEST_RULE_RETRY_MS: '1' });
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(server.requests.filter((r) => r.path === rulePath && r.method === method).length, 1);
+  server.assertDone();
+});
+
+test('new SP shares a bounded retry budget between rule-set GET and PUT', { timeout: 4900 }, async (t) => {
+  const p = plan();
+  const get = p.calls.findIndex((c) => c.method === 'GET' && c.path === rulePath);
+  const denied = (method) => call(method, rulePath, { error_code: 'PERMISSION_DENIED' }, 403);
+  p.calls.splice(get, 0, denied('GET'), denied('GET'));
+  const put = p.calls.findIndex((c) => c.method === 'PUT' && c.path === rulePath);
+  p.calls.splice(put, p.calls.length, denied('PUT'), denied('PUT'), denied('PUT'), denied('PUT'));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], { BENCHROUTER_DATABRICKS_TEST_RULE_RETRY_MS: '1' });
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(server.requests.filter((r) => r.path === rulePath).length, 7);
+  server.assertDone();
+});
+
+test('Connect parser rejects malformed grant and cleanup union fields before any workspace write', { timeout: 4900 }, () => {
+  const response = { ...structuredClone(responseTemplate), ...structuredClone(persistedChange) };
+  assert.deepEqual(parseDatabricksConnectResponse(response), response);
+  for (const grant of response.sp_change.grant) for (const fields of [
+    { object: 'job' }, { action: 'unknown' }, { principal: { type: 'user', name: 'admin' } },
+    { only_if: 'unknown' }, { permission: 'MANAGE' }, { privileges: ['MODIFY'] }, { extra: true }
+  ]) assert.throws(() => parseDatabricksConnectResponse({ ...response, sp_change: { ...response.sp_change, grant: [{ ...grant, ...fields }] } }), /invalid Databricks Connect response/);
+  for (const value of [undefined, null, {}, [null], [{ kind: 'grant' }], [...response.cleanup_pending, response.cleanup_pending[0]]]) {
+    assert.throws(() => parseDatabricksConnectResponse({ ...response, cleanup_pending: value }), /invalid Databricks Connect response/);
+  }
+  for (const kind of ['grant', 'revoke']) {
+    const item = response.cleanup_pending.find((s) => s.kind === kind);
+    for (const fields of [{ reason: 'binding_force_closed' }, { actor: 'account_admin' }, { command: 'run me' }, { id: '' },
+      { binding_id: '' }, { instruction: '' }, { [kind]: null }, { [kind]: { ...item[kind], only_if: 'unknown' } }, { extra: true }]) {
+      assert.throws(() => parseDatabricksConnectResponse({ ...response, cleanup_pending: [{ ...item, ...fields }] }), /invalid Databricks Connect response/);
+    }
+  }
+});
+
+for (const action of ['endpoint_acl_add', 'folder_acl_add', 'manifest_secret_acl_put']) test(`refused ${action} stays pending and reports its ACL owner`, { timeout: 4900 }, async (t) => {
+  const grant = persistedChange.sp_change.grant.find((s) => s.action === action);
+  const calls = grantCalls(grant);
+  const update = calls.at(-1);
+  calls[calls.length - 1] = { ...update, status: 403, body: { error_code: 'PERMISSION_DENIED' } };
+  const path = action === 'manifest_secret_acl_put' ? '/api/2.0/secrets/acls/list'
+    : action === 'folder_acl_add' ? '/api/2.0/permissions/directories/999' : '/api/2.0/permissions/serving-endpoints/endpoint-id';
+  calls.push(call('GET', path, action === 'manifest_secret_acl_put' ? { items: [{ principal: 'acl-owner', permission: 'MANAGE' }] }
+    : { access_control_list: [{ user_name: 'acl-owner', all_permissions: [{ permission_level: 'IS_OWNER' }] }] }, 200,
+  action === 'manifest_secret_acl_put' ? (r) => assert.equal(r.query.get('scope'), 'support-evals') : undefined));
+  const server = await replay(t, plan({ pending: [pendingStep('grant', grant, 'acl-refused')], changeCalls: calls, done: [] }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).pending_steps[0].owner, 'acl-owner');
+  assert.match(result.stderr, /Owner: acl-owner/);
+  server.assertDone();
+});
+
+for (const status of [404, 500]) test(`manifest_table_grant table read ${status} ${status === 404 ? 'counts as done' : 'still fails'}`, { timeout: 4900 }, async (t) => {
+  const grant = persistedChange.sp_change.grant.find((s) => s.action === 'manifest_table_grant');
+  const calls = grantCalls(grant).slice(0, 3);
+  calls[2] = { ...calls[2], status, body: { error_code: status === 404 ? 'RESOURCE_DOES_NOT_EXIST' : 'INTERNAL_ERROR' } };
+  const p = plan({ pending: [pendingStep('grant', grant, 'table-read')], changeCalls: calls });
+  if (status === 500) p.calls.splice(p.calls.findIndex((c) => c.path.endsWith('/cleanup')));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, status === 404 ? 0 : 1, result.stderr);
+  server.assertDone();
+});
+
+test('Connect executes and acknowledges only this binding\'s pending steps', { timeout: 4900 }, async (t) => {
+  const pending = persistedChange.cleanup_pending.map((s) => ({ ...s, binding_id: 'dbxb_older' }));
+  const server = await replay(t, plan({ pending, done: [] }).calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!server.requests.some((r) => r.path.endsWith('/cleanup')));
+  server.assertDone();
+});
+
+test('Connect rejects a malformed cleanup_pending response before the poll-key write', { timeout: 4900 }, async (t) => {
+  const p = plan();
+  p.c.cleanup_pending = [{ ...persistedChange.cleanup_pending[0], command: 'not allowed' }];
+  p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.0/secrets/scopes/create'));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /invalid Databricks Connect response/);
+  server.assertDone();
+});
+
+test('provider grants accept the UC conditions defined by the shared contract', { timeout: 4900 }, () => {
+  for (const only_if of ['always', 'exists', 'exists_not_agent_owned']) {
+    const response = { ...structuredClone(responseTemplate), ...structuredClone(persistedChange) };
+    response.sp_change.grant[0].only_if = only_if;
+    response.cleanup_pending[0].grant.only_if = only_if;
+    assert.deepEqual(parseDatabricksConnectResponse(response), response);
+  }
 });

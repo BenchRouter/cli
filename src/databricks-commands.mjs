@@ -5,6 +5,7 @@ import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, uc, encode }
 import { databricksControl, secretRedaction, exits, refusal, workspaceAdmin, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
 import { parseDatabricksSetupItems } from './databricks-contract.mjs';
 import { readWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
+import { isSpStep, runPendingSpSteps } from './databricks-sp-steps.mjs';
 import { validateCleanup, objectExists, deleteRecorded, recordedObjects, objectKey } from './databricks-cleanup.mjs';
 import { renderDatabricksRead, renderDatabricksEval, renderDatabricksDisconnect } from './render.mjs';
 
@@ -48,7 +49,7 @@ export async function runDatabricksCommand(ctx) {
   try {
     const br = databricksControl(ctx);
     const sub = ctx.args._[1];
-    for (const flag of ['force', 'reclaim', 'json']) {
+    for (const flag of ['force', 'reclaim', 'json', 'all']) {
       if (ctx.args[flag] !== undefined && typeof ctx.args[flag] !== 'boolean') return ctx.usage(1, `databricks ${sub}`, `Pass --${flag} as a boolean flag.`);
     }
     if (ctx.args['results-owner'] !== undefined && !ctx.stringArg('results-owner')) return ctx.usage(1, 'databricks disconnect', 'Pass --results-owner <group>.');
@@ -84,6 +85,7 @@ export async function runDatabricksCommand(ctx) {
         const reads = [];
         for (const b of bindings) {
           let detail = bindingRead(await br(customerPaths.databricksBinding(b.id)));
+          if (!ctx.args.all && closed(detail.binding) && !detail.cleanup_pending.length) continue;
           const ws = workspace(`https://${b.host}`);
           let login = false;
           // Missing, unsupported or PAT logins never prevent an account member's status read.
@@ -91,7 +93,7 @@ export async function runDatabricksCommand(ctx) {
           if (login) {
             const done = [];
             for (const step of detail.cleanup_pending) {
-              if (step.kind === 'agent_service_principal') continue;
+              if (step.kind === 'agent_service_principal' || isSpStep(step)) continue;
               try { if (!await objectExists(ws, step)) done.push({ kind: step.kind, id: step.id }); } catch (error) {
                 if (!(error instanceof DatabricksError)) throw error;
               }
@@ -105,6 +107,7 @@ export async function runDatabricksCommand(ctx) {
                 if (!(error instanceof DatabricksError && error.code === 'forbidden')) throw error;
               }
             }
+            if (!ctx.args.all && closed(detail.binding) && !detail.cleanup_pending.length) continue;
             if (detail.binding.agent_job_id) {
               try {
                 const acl = await ws.optional('GET', `/api/2.0/permissions/jobs/${encode(detail.binding.agent_job_id)}`);
@@ -158,7 +161,9 @@ export async function runDatabricksCommand(ctx) {
           result = { ...answer, secret_acl_commands, agent_started };
           render = renderDatabricksEval;
         } else {
-          await requireAdmin(ws);
+          const admin = await requireAdmin(ws);
+          const { pending_steps } = !closed(b) ? await runPendingSpSteps(ws, br, detail.cleanup_pending, b, admin,
+            (line) => process.stderr.write(clean(`${line}\n`))) : { pending_steps: [] };
           const body = {};
           if (ctx.args.force) body.force = true;
           const group = ctx.stringArg('results-owner');
@@ -195,7 +200,7 @@ export async function runDatabricksCommand(ctx) {
           }
           for (const step of steps) {
             const key = objectKey(step);
-            if (visited.has(key) || step.kind === 'agent_service_principal') continue;
+            if (visited.has(key) || step.kind === 'agent_service_principal' || isSpStep(step)) continue;
             visited.add(key);
             if (held.has(key)) { skipped.push({ kind: step.kind, id: step.id }); continue; }
             const outcome = await deleteRecorded(ws, step);
@@ -207,7 +212,7 @@ export async function runDatabricksCommand(ctx) {
           }
           if (done.length) await br(customerPaths.databricksCleanup(b.id, { done }));
           final = bindingRead(await br(customerPaths.databricksBinding(b.id)));
-          result = { ...(answer ?? {}), disconnect_sent: disconnectSent, ...final, state: final.binding.state, deleted, absent, skipped, remaining };
+          result = { ...(answer ?? {}), disconnect_sent: disconnectSent, ...final, state: final.binding.state, deleted, absent, skipped, remaining, pending_steps };
           render = renderDatabricksDisconnect;
         }
       }

@@ -40,7 +40,7 @@ to Databricks before grants. A repeated Connect reuses the recorded SP and job i
 It resets the job ACL. Under `restrict_workspace_admins`, the connecting admin
 owns the job and the agent SP gets `CAN_MANAGE`. Removing that admin can stop the job.
 
-Exit codes: `3` means a refused grant or heal and names the owners, `4` means
+Exit codes: `3` means a refused initial grant or heal and names the owners, `4` means
 `workspace_admin_required`, and `5` means a PAT login. Use OAuth to replace a PAT.
 Other errors exit with `1`. Connect waits up to three minutes for a successful agent
 run, binding verification, and five expected setup rows to exist and be done:
@@ -59,6 +59,18 @@ admin to fix it. A timeout names the expected rows that are missing or incomplet
 The JSON result includes `setup_items`, with `kind`, `target`, and `state` for each
 item. Human output prints one line per item.
 
+After grants and heal, Connect runs every pending SP-change grant, then every
+pending revoke from the server's `cleanup_pending`. It acknowledges completed or
+absent steps once. A refused SP-change step stays pending. Missing folders, manifests,
+objects and tables count as done. An invalid manifest, reserved secret scope or
+undeclared route keeps the grant or revoke pending with a warning. Its `pending_steps`
+entry includes the reason. Fix the manifest and run Connect again.
+Connect continues through job creation and verification and exits `0` when setup succeeds.
+Permission warnings name the step and its owner. Re-run `benchrouter databricks connect` as that owner or a
+metastore admin. JSON includes refused steps in `pending_steps`, with `kind`, `id`,
+`action`, `object`, `target`, and `owner`. A retry resumes steps even when
+`sp_change` is null.
+
 Read workspace state, attach an eval, or disconnect:
 
 ```bash
@@ -70,8 +82,11 @@ benchrouter databricks disconnect --host https://<workspace>.cloud.databricks.co
 ```
 
 All four commands support `--json`. Status is available to any account member.
-It lists every matching binding, with state, check-in, cadence, agent SP, routes,
-exposures, eval folders, grants, setup items, failures and the server's exact cleanup
+By default, it lists open bindings and closed bindings with nonempty `cleanup_pending`.
+Pass `--all` to show every matching binding, including archived and disconnected
+bindings without leftovers. Text and JSON use the same selection. Each binding includes
+state, check-in, cadence, agent SP, routes, exposures, eval folders, grants, setup items,
+failures and the server's exact cleanup
 instructions and commands. JSON always has the shape `{bindings: [<server read>, ...]}`.
 Each entry is the full server read after any cleanup acknowledgement. With no
 matching bindings, it returns `{bindings: []}`. Text shows agent and eval job
@@ -81,7 +96,8 @@ Status needs no Databricks login. When an OAuth login is available, status check
 pending workspace objects. It reports objects that are gone to the cleanup endpoint
 and reads the binding again. An account member can still read status if the server
 refuses that acknowledgement. Account-console SP steps stay pending; a workspace
-SCIM read cannot prove that an account SP was deleted. Status never reads secret values.
+SCIM read cannot prove that an account SP was deleted. Status shows pending
+grant/revoke instructions, actions and targets in Leftovers. It never runs or acknowledges those steps. Status never reads secret values.
 With a login, status also reads the agent job ACL. If its owner is a user, status
 warns on stderr that removing that user stops the job under
 `restrict_workspace_admins`. This warning does not change the JSON server reads.
@@ -96,6 +112,8 @@ for the manifest fields it reads. It prints one `databricks secrets put-acl ... 
 command for each declared scope and starts the recorded agent job. No secret value is
 accepted. The server refuses routes with repository or hosted evals.
 
+Before requesting closure, Disconnect runs pending SP-change grants and revokes
+for the open binding, including with `--force`. Refusals warn and stay pending.
 Disconnect requests closure and starts the recorded agent job. It waits up to three
 minutes for `archived` or `disconnected`, then checks and deletes the closed binding's
 recorded objects. It polls the binding every two seconds. Before deleting, it
@@ -120,6 +138,12 @@ with the agent SP. The server rejects string principals with `invalid_results_ow
 These commands require the H1/H2 headless server contract.
 For local replay tests only, `BENCHROUTER_DATABRICKS_API_BASE` redirects Databricks
 REST calls to a loopback HTTP server. Keep it unset for real workspace setup.
+New SP rule-set GET and PUT requests retry permission propagation failures with
+up to six tries with 2, 4, 8, 16 and 30 second waits shared across both calls (60 seconds total).
+Only 403 or `PERMISSION_DENIED` failures retry, and only for an SP created in the current run.
+Recorded SP reads do not retry.
+For tests only, `BENCHROUTER_DATABRICKS_TEST_RULE_RETRY_MS` (0 to 100) shortens
+those waits when the loopback replay override is active.
 If workspace discovery does not return the Databricks account id, set
 `DATABRICKS_ACCOUNT_ID` to that id and retry.
 

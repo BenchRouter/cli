@@ -18,6 +18,9 @@ Connect writes the poll key, applies REST grants and heal, and starts the agent 
 It waits for the agent run to succeed, binding verification, and all five expected
 setup rows to exist and be done: two volumes, the results table, experiment, and eval job.
 Any failed setup row stops Connect. Pending serving endpoints do not block completion.
+Pending SP-change grants run before revokes. Refused steps stay pending and warn;
+setup continues and exits 0 on success. Re-run benchrouter databricks connect as
+that owner or a metastore admin. JSON includes refused steps in pending_steps.
 Human output lists each setup item. JSON includes setup_items (kind, target, state).
 
 Options:
@@ -32,7 +35,7 @@ ${ACCOUNT_FLAGS}
 Exit codes:
   0  Agent run succeeded, binding verified, and all five expected setup rows exist and are done.
   1  Other error, unsupported Databricks auth type, invalid arguments, or verification timeout.
-  3  Grant or heal refused. The error names the catalog, schema, and known object owners.
+  3  Initial grant or heal refused. The error names the catalog, schema, and known object owners.
   4  workspace_admin_required. Log in as a Databricks workspace admin.
   5  PAT login. Run databricks auth login --host <url>.
 `;
@@ -45,15 +48,19 @@ const DATABRICKS_EXITS = `Exit codes:
   5  PAT login. Run databricks auth login --host <url>.
 `;
 const DATABRICKS_STATUS_USAGE = `Usage:
-  benchrouter databricks status [--host <url>] [--json]
+  benchrouter databricks status [--host <url>] [--all] [--json]
 
 Any account member can read matching bindings, setup items, routes, evals, failures and leftovers.
+By default, show open bindings and closed bindings with cleanup pending.
 JSON always returns {bindings: [<server read>, ...]}.
 With an available OAuth login, check the agent job owner and leftovers.
 Warn if removing the user who owns the job will stop it. Acknowledge objects that are gone.
+Pending grant/revoke steps show instructions, actions and targets in Leftovers.
+Status never runs or acknowledges those steps.
 A missing Databricks login does not prevent status. Cleanup acknowledgement needs owner/admin.
 Options:
   --host <url>                 Filter by HTTPS Databricks workspace URL.
+  --all                        Show every matching binding, including closed bindings without leftovers.
 ${ACCOUNT_FLAGS}
 ${DATABRICKS_EXITS}`;
 const DATABRICKS_EVAL_USAGE = `Usage:
@@ -74,6 +81,8 @@ const DATABRICKS_DISCONNECT_USAGE = `Usage:
 Needs a BenchRouter owner/admin and a Databricks workspace-admin OAuth login.
 Start the agent, wait up to three minutes for archive/closure, then delete only its recorded
 objects. Preserve ids held by an open binding. Keep the agent SP for account-console cleanup.
+Before closure (also with --force), run pending grants then revokes and acknowledge done steps.
+Refused steps warn, stay pending and do not stop Disconnect. JSON includes pending_steps.
 For a closed binding, resume cleanup without sending another disconnect request.
 Without --results-owner, the results table and experiment stay with the agent SP.
 Options:
@@ -859,7 +868,7 @@ export function resolveControlUsageName(positional) {
 export function topLevelControlUsageLines() {
   return `  benchrouter login [--name text] [--expires-in-days 90]
   benchrouter databricks connect --host <url> --catalog <catalog> --schema <schema> [--json]
-  benchrouter databricks status [--host <url>] [--json]
+  benchrouter databricks status [--host <url>] [--all] [--json]
   benchrouter databricks add-eval <route> <folder> [--host <url>] [--json]
   benchrouter databricks disconnect [--host <url>] [--force] [--reclaim] [--results-owner <group>] [--json]
   benchrouter account show|token save [--json]
