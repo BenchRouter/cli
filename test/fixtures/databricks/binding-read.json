@@ -1,0 +1,53 @@
+{
+  "setup_items": [
+    {
+      "kind": "volume",
+      "target": "workspace.br_design.benchrouter_artifacts",
+      "state": "done",
+      "queued_at": "2026-10-30T12:00:00.000Z",
+      "failure": null
+    },
+    {
+      "kind": "volume",
+      "target": "workspace.br_design.benchrouter_results",
+      "state": "done",
+      "queued_at": "2026-10-30T12:00:00.000Z",
+      "failure": null
+    },
+    {
+      "kind": "results_table",
+      "target": "workspace.br_design.benchrouter_eval_results",
+      "state": "done",
+      "queued_at": "2026-10-30T12:00:00.000Z",
+      "failure": null
+    },
+    {
+      "kind": "experiment",
+      "target": "/Shared/BenchRouter/evals",
+      "state": "done",
+      "queued_at": "2026-10-30T12:00:00.000Z",
+      "failure": null
+    },
+    {
+      "kind": "eval_job",
+      "target": "BenchRouter eval",
+      "state": "done",
+      "queued_at": "2026-10-30T12:00:00.000Z",
+      "failure": null
+    }
+  ],
+  "failure": {
+    "code": "results_setup_http_403",
+    "failed_at": "2026-10-30T12:00:01.000Z",
+    "owner": "customer",
+    "title": "Results table setup failed",
+    "message": "Grant CREATE TABLE on the schema to the agent service principal."
+  },
+  "serving_endpoint": {
+    "kind": "serving_endpoint",
+    "target": "benchrouter-fixture-endpoint",
+    "state": "pending",
+    "queued_at": "2026-10-30T12:00:00.000Z",
+    "failure": null
+  }
+}

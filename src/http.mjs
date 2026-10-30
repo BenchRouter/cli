@@ -52,7 +52,8 @@ export async function apiRequest({
   body,
   label,
   timeoutMs = 30000,
-  signal
+  signal,
+  includeHeaders = false
 }) {
   const headers = {
     accept: "application/json",
@@ -95,7 +96,8 @@ export async function apiRequest({
   if (parsed === null && text.trim().length > 0) {
     throw new Error(`BenchRouter ${label} returned invalid JSON.`);
   }
-  return parsed ?? {};
+  const data = parsed ?? {};
+  return includeHeaders ? { body: data, headers: response.headers } : data;
 }
 
 /** Encode a route key for dashboard paths (preserve "/"). */

@@ -21,6 +21,12 @@ It is not a live H1/H2 response. Its scope and principal fields are filled from
 that test's SP. The fake wheel digest is never downloaded. Live H1/H2 integration
 and two real workspace Connect runs remain a deployment check.
 
+`binding-read.json` contains setup-item contract fixtures from the final
+`DatabricksSetupItemView` and `DatabricksFailure` types (2026-10-30). These are
+not live server recordings. The replay sets fresh queue timestamps when it
+receives the register POST. Scenario variants preserve old timestamps or change
+item state and failure to prove that Connect waits for its own setup items.
+
 `auth-describe.json` and `databricks-config.json` use the live wire shapes supplied
 in the 2026-10-30 round 2 review (Databricks CLI v1.22.1 and the anonymous workspace
 configuration document). Identifiers are synthetic. The replay varies auth type,

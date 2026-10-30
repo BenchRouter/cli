@@ -42,10 +42,14 @@ owns the job and the agent SP gets `CAN_MANAGE`. Removing that admin can stop th
 
 Exit codes: `3` means a refused grant or heal and names the owners, `4` means
 `workspace_admin_required`, and `5` means a PAT login. Use OAuth to replace a PAT.
-Other errors exit with `1`. Connect waits up to three minutes for the agent run
-and binding verification. The current binding contract does not expose every
-setup item's completion. The result identifies that limit with
-`setup_confirmation: "not_exposed"`.
+Other errors exit with `1`. Connect waits up to three minutes for a successful agent
+run, binding verification, and all non-serving setup items to finish. Each item
+must have been queued at or after this Connect started. Pending serving endpoints
+do not block completion. A failed item queued during this Connect stops the command
+and reports its title, message, and owner. A `customer` owner requires a workspace
+admin to fix it. A timeout names the items still waiting for completion.
+The JSON result includes `setup_items`, with `kind`, `target`, and `state` for each
+item. Human output prints one line per item.
 
 This command requires the H1/H2 headless Connect server contract.
 For local replay tests only, `BENCHROUTER_DATABRICKS_API_BASE` redirects Databricks
