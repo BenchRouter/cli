@@ -4,8 +4,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { parseDatabricksConnectResponse, parseDatabricksSetupItems } from './databricks-contract.mjs';
-import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, encode } from './databricks.mjs';
+import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, encode, isMissing } from './databricks.mjs';
 import { databricksControl, secretRedaction, exits, proofErrors, refusal, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
+import { readWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
 import { renderDatabricksConnected } from './render.mjs';
 
 function aclPrincipal(p) {
@@ -95,7 +96,14 @@ export async function runDatabricksConnect(ctx) {
     for (const step of connected.grants) await runUcStep(workspace, step, spId, catalog, schema);
     log('6/8 Heal existing objects and revoke the previous agent service principal.');
     for (const step of connected.heal) await runUcStep(workspace, step, spId, catalog, schema);
-    for (const step of connected.sp_change?.revoke ?? []) await runRevoke(workspace, step, admin, spId, catalog, schema);
+    const skipped = [];
+    for (const step of connected.sp_change?.revoke ?? []) {
+      const reason = await runRevoke(workspace, step, admin, spId, catalog, schema);
+      if (reason) {
+        skipped.push({ object: step.object, action: step.action, route_key: step.route_key, eval_folder: step.eval_folder, reason });
+        log(clean(`Skipped cases table revoke for ${step.route_key}: ${reason}.`));
+      }
+    }
 
     log('7/8 Create or reset the recorded agent job and replace its direct ACL.');
     const jobSettings = agentSettings(connected);
@@ -120,7 +128,7 @@ export async function runDatabricksConnect(ctx) {
     log('8/8 Start the agent job and wait for its run, setup items, and workspace verification.');
     const started = await workspace.call('POST', '/api/2.2/jobs/run-now', { job_id: jobId });
     const final = await waitForAgent(workspace, br, connected.binding_id, numericId(started.run_id), spId, connectStartedAt);
-    const result = { ok: true, binding_id: connected.binding_id, account_id: connected.account_id, state: final.binding.state, agent_job_id: String(jobId), agent_sp_application_id: spId, job_owner: restricted ? 'connecting_admin' : 'agent', setup_items: final.setup_items.map(({ kind, target, state }) => ({ kind, target, state })) };
+    const result = { ok: true, binding_id: connected.binding_id, account_id: connected.account_id, state: final.binding.state, agent_job_id: String(jobId), agent_sp_application_id: spId, job_owner: restricted ? 'connecting_admin' : 'agent', setup_items: final.setup_items.map(({ kind, target, state }) => ({ kind, target, state })), skipped };
     return emit(ctx, result, () => renderDatabricksConnected(result));
   } catch (error) {
     const code = error instanceof DatabricksError ? (Object.hasOwn(exits, error.code) || Object.hasOwn(proofErrors, error.code) ? error.code : 'databricks_request_failed') : 'command_failed';
@@ -219,6 +227,19 @@ async function removeAcl(workspace, path, principal, admin) {
 }
 async function runRevoke(workspace, step, admin, spId, catalog, schema) {
   if (step.action === 'revoke') return runUcStep(workspace, step, spId, catalog, schema);
+  if (step.action === 'manifest_table_revoke') {
+    const { grants, reason } = await readWorkspaceEvalGrants(workspace, step.eval_folder, step.route_key, { skipUnavailable: true });
+    if (reason) return reason;
+    const [casesCatalog, casesSchema] = grants.casesTable.split('.');
+    try {
+      // The PATCH itself checks existence. Reuse UC owner diagnostics on refusal.
+      await runUcStep(workspace, { action: 'revoke', securable: 'table', full_name: grants.casesTable, principal: step.principal, privileges: ['SELECT'], only_if: 'always' }, spId, casesCatalog, casesSchema);
+    } catch (error) {
+      if (isMissing(error)) return 'cases table is missing';
+      throw error;
+    }
+    return;
+  }
   if (step.action === 'secret_acl_delete') {
     const found = await workspace.optional('GET', `/api/2.0/secrets/acls/get?${new URLSearchParams({ scope: step.scope, principal: step.principal.name })}`);
     if (found) await workspace.call('POST', '/api/2.0/secrets/acls/delete', { scope: step.scope, principal: step.principal.name });

@@ -4,7 +4,7 @@ import { customerPaths } from './control-api.mjs';
 import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, uc, encode } from './databricks.mjs';
 import { databricksControl, secretRedaction, exits, refusal, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
 import { parseDatabricksSetupItems } from './databricks-contract.mjs';
-import { readEvalGrants } from './databricks-eval-manifest.mjs';
+import { readWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
 import { validateCleanup, objectExists, deleteRecorded, recordedObjects, objectKey } from './databricks-cleanup.mjs';
 import { renderDatabricksRead, renderDatabricksEval, renderDatabricksDisconnect } from './render.mjs';
 
@@ -128,10 +128,7 @@ export async function runDatabricksCommand(ctx) {
           if (!route || !folder || !folder.startsWith('/') || folder.includes('\\') || folder.includes('\0')
               || folder.split('/').slice(1).some((p) => !p || p === '.' || p === '..')) return ctx.usage(1, 'databricks add-eval', 'Pass a route and an absolute, normalized workspace folder.');
           await requireAdmin(ws);
-          const directory = await ws.call('GET', `/api/2.0/workspace/get-status?${new URLSearchParams({ path: folder })}`);
-          const exported = await ws.call('GET', `/api/2.0/workspace/export?${new URLSearchParams({ path: `${folder}/.benchrouter/benchrouter.yml`, format: 'AUTO' })}`);
-          if (typeof exported.content !== 'string') throw refusal('Databricks did not export the manifest.', 'manifest_invalid');
-          const grants = readEvalGrants(Buffer.from(exported.content, 'base64').toString('utf8'), route);
+          const { directory, grants } = await readWorkspaceEvalGrants(ws, folder, route);
           const aclPath = `/api/2.0/permissions/directories/${numericId(directory.object_id)}`;
           const answer = await br(customerPaths.databricksAddEval(b.id, { route_key: route, eval_folder: folder }));
           try {
