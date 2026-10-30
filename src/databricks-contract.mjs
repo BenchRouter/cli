@@ -77,7 +77,8 @@ function grantStep(s) {
 const cleanupKinds = new Set(['job', 'secret_scope', 'serving_endpoint', 'provider_service', 'volume', 'agent_service_principal']);
 function cleanupStep(s) {
   if (!object(s) || !strings(s, ['id', 'binding_id', 'instruction'])) return false;
-  if (s.kind === 'grant' || s.kind === 'revoke') return s.reason === 'agent_sp_replaced'
+  // A normal Disconnect adds revokes of the agent SP itself, with reason binding_disconnected (AUTH-012).
+  if (s.kind === 'grant' || s.kind === 'revoke') return (s.reason === 'agent_sp_replaced' || (s.kind === 'revoke' && s.reason === 'binding_disconnected'))
     && s.actor === 'workspace_admin' && s.command === null
     && (s.kind === 'grant' ? grantStep(s.grant) : revokeStep(s.revoke));
   return cleanupKinds.has(s.kind) && nullableString(s.command)
@@ -97,7 +98,15 @@ function validateSpPrincipal(step, kind, currentSp, context, previousSp) {
 function validateCleanupPrincipals(steps, currentSp, bindingId, context) {
   // Reads also include earlier closed bindings, whose plans name their own SPs.
   for (const item of steps) if (item.binding_id === bindingId && (item.kind === 'grant' || item.kind === 'revoke')) {
-    validateSpPrincipal(item[item.kind], item.kind, currentSp, `${context} (${item.kind} ${item.id})`);
+    const step = item[item.kind];
+    if (item.reason === 'binding_disconnected') {
+      // The agent SP is being retired with its binding, so the revoke names the current SP.
+      if (!string(currentSp) || !currentSp || step.principal.type !== 'service_principal' || step.principal.name !== currentSp) {
+        throw new Error(`BenchRouter returned ${context} (${item.kind} ${item.id}): contract error; revoke principal must be the agent service principal being disconnected.`);
+      }
+      continue;
+    }
+    validateSpPrincipal(step, item.kind, currentSp, `${context} (${item.kind} ${item.id})`);
   }
 }
 export function validateCleanup(steps, currentSp, bindingId) {

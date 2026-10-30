@@ -1033,3 +1033,63 @@ test('disconnect preserves a DTO account-admin object even when it is in the rec
   assert.deepEqual(JSON.parse(result.stdout).remaining, detail.cleanup_pending.map(key));
   server.assertDone();
 });
+
+// AUTH-012: a normal Disconnect archives first, then the server lists revokes of the agent SP.
+const disconnectRevoke = (id, fields) => ({
+  kind: 'revoke', id: `${reads.disconnected.binding.agent_sp_application_id}|${id}`, binding_id: 'dbxb_recorded', reason: 'binding_disconnected', actor: 'workspace_admin', command: null,
+  instruction: `Revoke the agent service principal on ${id}.`,
+  revoke: { principal: { type: 'service_principal', name: reads.disconnected.binding.agent_sp_application_id }, only_if: 'exists', ...fields }
+});
+const catalogRevoke = () => disconnectRevoke('catalog|workspace', { object: 'catalog', action: 'revoke', securable: 'catalog', full_name: 'workspace', privileges: ['USE_CATALOG'] });
+const schemaRevoke = () => disconnectRevoke('schema|workspace.br_design', { object: 'schema', action: 'revoke', securable: 'schema', full_name: 'workspace.br_design', privileges: ['USE_SCHEMA'] });
+const revokeCalls = (refusedSchema) => {
+  const sp = reads.disconnected.binding.agent_sp_application_id;
+  const patch = (securable, name, privilege, status = 200) => call('PATCH', `${uc}/permissions/${securable}/${name}`, status === 200 ? {} : { error_code: 'PERMISSION_DENIED', message: 'fake-login-token-must-not-leak' }, status, checkBody({ changes: [{ principal: sp, remove: [privilege] }] }));
+  return [
+    call('GET', `${uc}/catalogs/workspace`, { owner: 'catalog-owner' }), patch('catalog', 'workspace', 'USE_CATALOG'),
+    call('GET', `${uc}/schemas/workspace.br_design`, { owner: 'schema-owner' }),
+    ...(refusedSchema ? [patch('schema', 'workspace.br_design', 'USE_SCHEMA', 403), call('GET', `${uc}/catalogs/workspace`, { owner: 'catalog-owner' }), call('GET', `${uc}/schemas/workspace.br_design`, { owner: 'schema-owner' })]
+      : [patch('schema', 'workspace.br_design', 'USE_SCHEMA')])
+  ];
+};
+
+test('normal disconnect runs the revokes the archive adds, keeps a refused one pending with its owner and exits 0', { timeout: 4900 }, async (t) => {
+  const p = disconnectPlan();
+  const final = p.calls.find((c) => c.method === 'GET' && c.path === bindingPath && c.body.binding.state === 'archived').body;
+  final.cleanup_pending.unshift(catalogRevoke(), schemaRevoke());
+  const at = p.calls.indexOf(p.calls.find((c) => c.body === final)) + 1;
+  p.calls.splice(at, 0, ...revokeCalls(true), call('POST', `${bindingPath}/cleanup`, { ok: true, cleanup_pending: [] }, 200, checkBody({ done: [key(catalogRevoke())] })));
+  // The planned leftovers walk skips grant and revoke steps, so only the final re-read sees them.
+  const tail = p.calls.at(-1);
+  tail.body = { ...tail.body, cleanup_pending: [schemaRevoke(), ...tail.body.cleanup_pending] };
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['disconnect', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.deepEqual(output.pending_steps, [{ kind: 'revoke', id: schemaRevoke().id, action: 'revoke', object: 'schema', target: 'workspace.br_design', owner: 'schema-owner' }]);
+  assert.match(result.stderr, /Pending revoke.*schema-owner/);
+  noSecrets(result);
+  server.assertDone();
+});
+
+test('disconnect resumed on an already closed binding runs its pending revokes without a disconnect call', { timeout: 4900 }, async (t) => {
+  const closedDetail = structuredClone(reads.disconnected);
+  const b = closedDetail.binding;
+  Object.assign(b, { eval_job_id: null, agent_job_id: null, secret_scope: null });
+  closedDetail.exposures = [];
+  const volumes = ['benchrouter_artifacts', 'benchrouter_results'].map((n) => ({ kind: 'volume', id: `${b.catalog}.${b.schema}.${n}` }));
+  closedDetail.cleanup_pending = [catalogRevoke(), ...volumes.map((v) => ({ ...v, binding_id: b.id, reason: 'binding_disconnected', actor: 'workspace_admin', command: null, instruction: 'Delete the volume.' }))];
+  const after = { ...closedDetail, cleanup_pending: [] };
+  const server = await replay(t, [
+    list([b]), read(closedDetail), admin(),
+    revokeCalls(false)[0], revokeCalls(false)[1], call('POST', `${bindingPath}/cleanup`, { ok: true, cleanup_pending: closedDetail.cleanup_pending.slice(1) }, 200, checkBody({ done: [key(catalogRevoke())] })),
+    list([b]), ...volumes.map((v) => cleanupRead(v, false)),
+    call('POST', `${bindingPath}/cleanup`, { ok: true, cleanup_pending: [] }, 200, checkBody({ done: volumes })), read(after)
+  ]);
+  const result = await runCli(server, ['disconnect', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!server.requests.some((r) => r.path.endsWith('/disconnect')));
+  assert.deepEqual(JSON.parse(result.stdout).pending_steps, []);
+  noSecrets(result);
+  server.assertDone();
+});
