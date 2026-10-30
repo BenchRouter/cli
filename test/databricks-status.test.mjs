@@ -8,6 +8,7 @@ const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureD
 const states = ['connecting', 'verified', 'agent_silent', 'disconnecting', 'disconnected', 'archived'];
 const reads = Object.fromEntries(await Promise.all(states.map(async (s) => [s, await fixture(`binding-${s}.json`)])));
 const [me, metadata, run] = await Promise.all(['me.json', 'databricks-config.json', 'p2-run.json'].map(fixture));
+const deletedJob = await fixture('job-deleted.json');
 const manifest = await readFile(new URL('eval-manifest.yml', fixtureDir), 'utf8');
 const host = 'https://fixture.cloud.databricks.com';
 const base = '/v1/databricks/bindings';
@@ -220,6 +221,55 @@ function disconnectPlan({ force = false, immediate = false, protect = false, cas
   calls.push(call('POST', `${bindingPath}/cleanup`, { ok: true, cleanup_pending: after.cleanup_pending }, 200, checkBody({ done })), read(after));
   return { calls, after, done };
 }
+
+test('disconnect acknowledges both jobs removed by the agent after the live 400 response and continues cleanup', { timeout: 4900 }, async (t) => {
+  const p = disconnectPlan();
+  const at = p.calls.findIndex((c) => c.path === base && c.body.bindings[0]?.state === 'archived');
+  for (let i = p.calls.length - 1; i > at; i--) {
+    if (p.calls[i].path === '/api/2.2/jobs/get' && p.calls[i].status === 200) {
+      p.calls.splice(i, 3, call('GET', '/api/2.2/jobs/get', deletedJob, 400, p.calls[i].check));
+    }
+  }
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['disconnect', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  const answer = JSON.parse(result.stdout);
+  assert.deepEqual(answer.absent, p.done.filter((s) => s.kind === 'job'));
+  assert.deepEqual(answer.cleanup_pending, p.after.cleanup_pending);
+  assert.ok(!server.requests.some((r) => r.path === '/api/2.2/jobs/delete'));
+  assert.ok(server.requests.some((r) => r.path === '/api/2.0/secrets/scopes/delete'));
+  server.assertDone();
+});
+
+test('disconnect acknowledges a job deleted between its read and cleanup delete', { timeout: 4900 }, async (t) => {
+  const p = disconnectPlan({ force: true });
+  const at = p.calls.findIndex((c) => c.path === '/api/2.2/jobs/delete');
+  const job = p.calls[at - 1];
+  p.calls.splice(at, 2, call('POST', '/api/2.2/jobs/delete', deletedJob, 400, p.calls[at].check));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['disconnect', '--force', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).absent, [{ kind: 'job', id: job.body.id }]);
+  assert.deepEqual(JSON.parse(result.stdout).cleanup_pending, p.after.cleanup_pending);
+  server.assertDone();
+});
+
+for (const [path, method, body] of [
+  ['/api/2.2/jobs/get', 'GET', { ...deletedJob, error_code: 'BAD_REQUEST' }],
+  ['/api/2.2/jobs/delete', 'POST', { ...deletedJob, error_code: 'BAD_REQUEST' }],
+  ['/api/2.0/secrets/acls/list', 'GET', deletedJob],
+  ['/api/2.0/secrets/scopes/delete', 'POST', deletedJob]
+]) test(`disconnect keeps other 400 errors fatal: ${method} ${path}`, { timeout: 4900 }, async (t) => {
+  const p = disconnectPlan({ force: true });
+  const at = p.calls.findIndex((c) => c.path === path && c.method === method);
+  p.calls.splice(at, p.calls.length, call(method, path, body, 400));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['disconnect', '--force', '--json']);
+  assert.equal(result.status, 1);
+  assert.ok(JSON.parse(result.stderr).error.message.includes(`${method} ${path} answered 400 ${body.error_code}.`));
+  server.assertDone();
+});
+
 for (const [name, options] of [
   ['default waits for archive before deleting recorded objects', {}],
   ['default never deletes an id held by a newer open binding (AUTH-012)', { protect: true }],
@@ -414,11 +464,14 @@ for (const force of [false, true]) test(`disconnect cleanup none skips agent sta
 
 test('remote Databricks error codes cannot reflect a credential into JSON errors (AUTH-012 / DATA-001)', { timeout: 4900 }, async (t) => {
   const p = evalPlan();
-  p.splice(3, p.length, call('GET', '/api/2.0/workspace/get-status', { error_code: 'fake-login-token-must-not-leak', message: 'fake-login-token-must-not-leak' }, 500));
+  let token;
+  p.splice(3, p.length, call('GET', '/api/2.0/workspace/get-status', () => ({ error_code: token, message: token }), 500,
+    (r) => { token = r.headers.authorization.slice('Bearer '.length); }));
   const server = await replay(t, p);
   const result = await runCli(server, ['add-eval', 'support/triage', '/Shared/eval', '--json']);
   assert.equal(result.status, 1);
   assert.equal(JSON.parse(result.stderr).error.code, 'databricks_request_failed');
+  assert.equal(JSON.parse(result.stderr).error.message, 'Databricks request failed: GET /api/2.0/workspace/get-status answered 500. [redacted]');
   noSecrets(result);
   server.assertDone();
 });
