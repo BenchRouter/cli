@@ -30,7 +30,7 @@
  *   grants: DatabricksUcStep[], heal: DatabricksUcStep[],
  *   sp_change: {previous_agent_sp_application_id: string, grant: DatabricksGrantStep[], revoke: DatabricksRevokeStep[]}|null, cleanup_pending: object[]}} DatabricksConnectResponse
  * @typedef {{code: string, failed_at: string|null, owner: 'customer'|'unknown', title: string, message: string}} DatabricksFailure
- * @typedef {{kind: 'volume'|'results_table'|'experiment'|'eval_job'|'serving_endpoint', target: string,
+ * @typedef {{kind: 'volume'|'results_table'|'experiment'|'eval_job'|'serving_endpoint'|'provider_service', target: string,
  *   state: 'pending'|'done'|'failed', queued_at: string, failure: DatabricksFailure|null}} DatabricksSetupItemView
  */
 const securables = new Set(['catalog', 'schema', 'volume', 'table', 'model_provider_service']);
@@ -82,7 +82,7 @@ function cleanupStep(s) {
     && s.actor === 'workspace_admin' && s.command === null
     && (s.kind === 'grant' ? grantStep(s.grant) : revokeStep(s.revoke));
   return cleanupKinds.has(s.kind) && nullableString(s.command)
-    && ['agent_sp_replaced', 'binding_force_closed', 'binding_disconnected'].includes(s.reason)
+    && ['agent_sp_replaced', 'binding_force_closed', 'binding_disconnected', 'provider_service_unmanageable'].includes(s.reason)
     && ['account_admin', 'workspace_admin'].includes(s.actor);
 }
 // DTO principals are broad. SP replacement plans must only act on the intended SP.
@@ -175,7 +175,7 @@ export function parseDatabricksEval(v) {
 /** @param {unknown} value @returns {DatabricksSetupItemView[]} */
 export function parseDatabricksSetupItems(value) {
   if (!Array.isArray(value) || !value.every((item) => object(item)
-      && ['volume', 'results_table', 'experiment', 'eval_job', 'serving_endpoint'].includes(item.kind)
+      && ['volume', 'results_table', 'experiment', 'eval_job', 'serving_endpoint', 'provider_service'].includes(item.kind)
       && strings(item, ['target', 'queued_at']) && ['pending', 'done', 'failed'].includes(item.state)
       && nullableFailure(item.failure))) {
     throw new Error('BenchRouter returned invalid Databricks setup_items. Check the server Databricks DTO.');

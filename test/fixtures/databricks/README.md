@@ -160,3 +160,9 @@ condition, cleanup actor, state, reason, nullable failure and grant-needed union
 They also exercise the DTO's string and array fields without extra parser rules.
 These variants are contract fixtures, not live server recordings.
 The full comparison is in `docs/databricks-dto-audit-0.2.41.md`.
+
+`binding-live-provider-service.json` is the binding read `GET /v1/databricks/bindings/:id`
+from production on 2026-11-03, after BenchRouter #756 (one provider service per group).
+It holds `provider_service` setup items, one failed (`service_get_http_403`). The host,
+account and SP ids are replaced with test values. Route, exposure and setup item lists are
+trimmed to a few entries. The shapes are otherwise as served.
