@@ -41,7 +41,8 @@ built, or proof that still needs the service worktree.
 
 ## Notes
 
-- Repo-read commands keep using `br_setup_` / `BENCHROUTER_TOKEN`.
+- Repo-read commands use the setup key (`br_setup_`): `--setup-key`, then
+  `BENCHROUTER_SETUP_KEY`, then the key `init --save-token` saved.
 - Account commands use `--account-token`, then `BENCHROUTER_ACCOUNT_TOKEN`, then
   the private local config entry.
 - Admin/proposal commands use `--admin-token`, then `BENCHROUTER_ADMIN_TOKEN`,

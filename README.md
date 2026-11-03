@@ -244,9 +244,11 @@ BenchRouter Evals does not use a stored GitHub Actions key. The generated
 workflow uses GitHub OIDC with `id-token: write` to get a short-lived eval token.
 Do not create `BENCHROUTER_EVAL_API_KEY`.
 
-By default, `init` does not save the setup token. Pass `--save-token`, or approve
-the interactive prompt, to keep repo-scoped read access on the current computer.
-For non-interactive use, set `BENCHROUTER_TOKEN` instead.
+The read commands (`status`, `frontier`, `failures`, `explain`) use the same
+setup key as `init`. By default, `init` does not save it. Pass `--save-token`, or
+approve the interactive prompt, to keep it for this repository on the current
+computer. For non-interactive use, keep `BENCHROUTER_SETUP_KEY` set, or pass
+`--setup-key` to each read command.
 
 ```bash
 npx --yes benchrouter@latest init ... --save-token
@@ -415,9 +417,10 @@ All read commands accept `--json` for scripts and agents.
 
 Read commands resolve credentials in this order:
 
-1. `--token br_setup_...`
-2. `BENCHROUTER_TOKEN`
-3. the saved token for the detected or specified repository
+1. `--setup-key br_setup_...`
+2. `BENCHROUTER_SETUP_KEY`
+3. the setup key that `init --save-token` saved for the detected or specified
+   repository
 
 Saved credentials are isolated by repository (and account/admin files are
 owner-only mode `0600`). Set `BENCHROUTER_CONFIG_DIR` to move the entire

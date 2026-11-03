@@ -52,7 +52,7 @@ export async function saveRepoToken(repoFullName, token) {
 }
 
 export function resolveRepoToken(repoFullName, explicitToken) {
-  const environmentToken = process.env.BENCHROUTER_TOKEN?.trim();
+  const environmentToken = process.env.BENCHROUTER_SETUP_KEY?.trim();
   const candidate = explicitToken?.trim() || environmentToken;
   if (candidate) {
     assertRepoToken(candidate);
