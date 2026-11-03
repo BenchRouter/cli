@@ -183,6 +183,22 @@ export function parseDatabricksSetupItems(value) {
   return /** @type {DatabricksSetupItemView[]} */ (value);
 }
 
+export function validateClosedExposures(answer) {
+  if (answer?.ok !== true || !Array.isArray(answer.closed_exposures) || answer.closed_exposures.some((e) => !e
+      || !['endpoint_name', 'provider_service_name'].every((k) => typeof e[k] === 'string'))) {
+    throw new Error('BenchRouter returned an invalid closed exposure list.');
+  }
+}
+
+export function validateDisconnect(answer) {
+  validateClosedExposures(answer);
+  if (!bindingStates.includes(answer.state)
+      || !['queued', 'none'].includes(answer.cleanup)
+      || !(answer.disconnect_requested_at === null || typeof answer.disconnect_requested_at === 'string')) {
+    throw new Error('BenchRouter returned an invalid disconnect response.');
+  }
+}
+
 export function validateDatabricksBinding(v) {
   if (!object(v) || !strings(v, ['id', 'account_id', 'host', 'workspace_id', 'agent_sp_application_id', 'catalog', 'schema', 'created_at', 'updated_at'])
       || !['databricks_account_id', 'warehouse_id', 'results_group', 'manage_group', 'agent_job_id', 'eval_job_id', 'secret_scope', 'last_poll_at', 'last_agent_version', 'disconnect_requested_at'].every((k) => nullableString(v[k]))
