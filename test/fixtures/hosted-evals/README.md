@@ -13,3 +13,9 @@ The draft and approve responses in `test/hosted-evals.test.mjs` follow the shape
 `GET .../case-output?model_run_id=emrun_541d6bfe5b684ff6a1187503d7ed5347&case_id=additive_preserves_existing`
 responses, captured from api.benchrouter.com on 2026-10-28 (BenchRouter PR #654). The model
 fails every case, and its case outputs are archived.
+
+`results-pr-view.json` is a real
+`GET /v1/hosted-evals/iphonesize%2Fcomparison-copy/results?view=pr-99` response, captured from
+api.benchrouter.com on 2026-11-03 after BenchRouter #775 (view reads, `view_id` and
+`quality_tie`). It keeps the chain, the serving model, the incumbent, the models tied at the best
+quality, one other measured model and one unmeasured model of 124, and 2 of 74 untested models.

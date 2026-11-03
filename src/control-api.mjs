@@ -259,9 +259,9 @@ export const customerPaths = {
   }),
 
   /** GET /v1/hosted-evals/:routeKey/results — the best available model, the chain and per-model results (EVAL-016). */
-  evalsResults: (routeKey) => ({
+  evalsResults: (routeKey, viewId) => ({
     method: "GET",
-    path: `/v1/hosted-evals/${encodePathSegment(routeKey)}/results`,
+    path: `/v1/hosted-evals/${encodePathSegment(routeKey)}/results${viewId ? `?view=${encodeURIComponent(viewId)}` : ""}`,
     label: "evals results"
   }),
 
