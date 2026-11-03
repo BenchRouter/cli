@@ -445,7 +445,9 @@ export function renderEvalsStatus(payload) {
 
 /** EVAL-016: `benchrouter evals results`. Lists the measured models; the JSON output has every model. */
 export function renderEvalsResults(body) {
-  const out = [`${body.route_key} · ${body.label}`, ...searchLines(body)];
+  const out = [`${body.route_key} · ${body.label}`];
+  if (body.view_id) out.push(`View: ${body.view_id === "production" ? "production" : `${body.view_id} (pull request preview)`}`);
+  out.push(...searchLines(body));
   if (body.current_version && body.version !== body.current_version) {
     out.push(`These results measured ${body.version ?? "no version"}; version ${body.current_version} is being measured.`);
   }
@@ -453,6 +455,7 @@ export function renderEvalsResults(body) {
   out.push(`Best available: ${body.best_available ?? "none yet"}`);
   const chain = Array.isArray(body.chain) ? body.chain : [];
   if (chain.length > 0) out.push(`Chain: ${chain.join(" > ")}`);
+  if (body.quality_tie?.message) out.push(body.quality_tie.message);
   const models = Array.isArray(body.models) ? body.models : [];
   const measured = models.filter((model) => model.pass_rate !== null);
   if (measured.length > 0) {
@@ -465,6 +468,8 @@ export function renderEvalsResults(body) {
       ].filter(Boolean);
       out.push(
         `  ${model.model.padEnd(width)}  pass ${model.pass_count ?? "-"}/${model.cases ?? "-"} (${metric(model.pass_rate, (v) => v.toFixed(3))})` +
+        // The ranking uses quality_score: the mean case score, else the pass rate. Shown only when it differs.
+        (typeof model.quality_score === "number" && model.quality_score !== model.pass_rate ? `  quality ${model.quality_score.toFixed(3)}` : "") +
         `  cost ${metric(model.run_cost_usd, (v) => `$${v.toFixed(4)}`)}  p95 ${metric(model.p95_latency_ms, (v) => `${Math.round(v)}ms`)}` +
         `  ${model.outcome ?? "-"}${model.eligible_rank ? ` #${model.eligible_rank}` : ""}${notes.length > 0 ? ` [${notes.join(", ")}]` : ""}`
       );

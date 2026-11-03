@@ -13,6 +13,7 @@ const cliPath = path.resolve(testDir, "../bin/benchrouter.mjs");
 const overview = JSON.parse(await readFile(path.join(testDir, "fixtures/hosted-evals/overview.json"), "utf8"));
 const results = JSON.parse(await readFile(path.join(testDir, "fixtures/hosted-evals/results.json"), "utf8"));
 const modelLowPass = JSON.parse(await readFile(path.join(testDir, "fixtures/hosted-evals/model-low-pass.json"), "utf8"));
+const resultsPrView = JSON.parse(await readFile(path.join(testDir, "fixtures/hosted-evals/results-pr-view.json"), "utf8"));
 const caseOutput = JSON.parse(await readFile(path.join(testDir, "fixtures/hosted-evals/case-output-archived.json"), "utf8"));
 const token = ["--account-token", "br_ctrl_recorded_fixture"];
 const cardHash = "sha256:6c1f0e1d9a7b";
@@ -79,11 +80,49 @@ test("evals overview and results print the hosted-eval reads (MCP-001, EVAL-016)
   assert.ok(replay.requests.every((request) => request.client === "cli" && request.authorization === "Bearer br_ctrl_recorded_fixture"));
 });
 
+test("evals results --pr reads that pull request's view and prints its quality tie", async (t) => {
+  const replay = await startServer(t, {
+    "GET /v1/hosted-evals/iphonesize%2Fcomparison-copy/results?view=pr-99": resultsPrView
+  });
+  const human = await runCli(["evals", "results", "iphonesize/comparison-copy", "--pr", "99", "--api-url", replay.url, ...token]);
+  assert.equal(human.status, 0, human.stderr);
+  const lines = human.stdout.split("\n");
+  assert.equal(lines[1], "View: pr-99 (pull request preview)");
+  assert.ok(lines.includes("Best available: google/gemma-4-31b-it"), human.stdout);
+  assert.ok(lines.includes("Chain: google/gemma-4-31b-it > particle-ai/particle-1 > google/gemini-3.8-flash"), human.stdout);
+  assert.ok(lines.includes(resultsPrView.quality_tie.message), human.stdout);
+  assert.ok(lines.includes("Serving: inception/mercury-2.5; incumbent google/gemini-3.8-flash"), human.stdout);
+
+  const json = await runCli(["evals", "results", "iphonesize/comparison-copy", "--pr", "99", "--api-url", replay.url, ...token, "--json"]);
+  assert.equal(json.status, 0, json.stderr);
+  assert.deepEqual(JSON.parse(json.stdout), resultsPrView);
+  assert.deepEqual(replay.requests.map((request) => request.url), [
+    "/v1/hosted-evals/iphonesize%2Fcomparison-copy/results?view=pr-99",
+    "/v1/hosted-evals/iphonesize%2Fcomparison-copy/results?view=pr-99"
+  ]);
+});
+
+test("evals results and evals model refuse an answer for a different view than --pr asked for", async (t) => {
+  const replay = await startServer(t, {
+    "GET /v1/hosted-evals/timeywimey%2Fvoice-places/results?view=pr-5": { ...results, view_id: "production" },
+    "GET /v1/hosted-evals/timeywimey%2Fvoice-places/models/bytedance-seed%2Fseed-2.0-mini?view=pr-5": { ...modelLowPass, view_id: "pr-6" }
+  });
+  const wrongResults = await runCli(["evals", "results", "timeywimey/voice-places", "--pr", "5", "--api-url", replay.url, ...token]);
+  assert.equal(wrongResults.status, 1);
+  assert.equal(wrongResults.stdout, "");
+  assert.match(wrongResults.stderr, /Asked for evidence view pr-5, but the server answered production\./);
+  const wrongModel = await runCli(["evals", "model", "timeywimey/voice-places", "bytedance-seed/seed-2.0-mini", "--pr", "5", "--api-url", replay.url, ...token, "--json"]);
+  assert.equal(wrongModel.status, 1);
+  assert.equal(wrongModel.stdout, "");
+  assert.equal(JSON.parse(wrongModel.stderr).error.code, "view_mismatch");
+});
+
 test("evals model prints a model's failing cases and evals case-output prints an archived output as it is (MCP-001)", async (t) => {
   const run = "emrun_541d6bfe5b684ff6a1187503d7ed5347";
   const replay = await startServer(t, {
     "GET /v1/hosted-evals/timeywimey%2Fvoice-places/models/bytedance-seed%2Fseed-2.0-mini": modelLowPass,
-    "GET /v1/hosted-evals/timeywimey%2Fvoice-places/models/bytedance-seed%2Fseed-2.0-mini?view=pr-76": modelLowPass,
+    // The capture predates BenchRouter #775, which echoes the view read as view_id.
+    "GET /v1/hosted-evals/timeywimey%2Fvoice-places/models/bytedance-seed%2Fseed-2.0-mini?view=pr-76": { ...modelLowPass, view_id: "pr-76" },
     [`GET /v1/hosted-evals/timeywimey%2Fvoice-places/case-output?model_run_id=${run}&case_id=additive_preserves_existing`]: caseOutput
   });
   const human = await runCli(["evals", "model", "timeywimey/voice-places", "bytedance-seed/seed-2.0-mini", "--api-url", replay.url, ...token]);
@@ -104,7 +143,7 @@ test("evals model prints a model's failing cases and evals case-output prints an
     ""
   ]);
   const preview = await runCli(["evals", "model", "timeywimey/voice-places", "bytedance-seed/seed-2.0-mini", "--pr", "76", "--api-url", replay.url, ...token, "--json"]);
-  assert.deepEqual(JSON.parse(preview.stdout), modelLowPass);
+  assert.deepEqual(JSON.parse(preview.stdout), { ...modelLowPass, view_id: "pr-76" });
 
   const output = await runCli(["evals", "case-output", "timeywimey/voice-places", "--run", run, "--case", "additive_preserves_existing", "--api-url", replay.url, ...token]);
   assert.equal(output.status, 0, output.stderr);

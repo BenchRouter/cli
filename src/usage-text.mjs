@@ -534,7 +534,7 @@ ${ACCOUNT_FLAGS}`,
   evals: `Usage:
   benchrouter evals list <route-key>
   benchrouter evals status <route-key> [--pr <number>]
-  benchrouter evals results <route-key>
+  benchrouter evals results <route-key> [--pr <number>]
   benchrouter evals model <route-key> <model-id> [--pr <number>]
   benchrouter evals case-output <route-key> --run <model-run-id> --case <case-id>
   benchrouter evals overview
@@ -579,13 +579,17 @@ Options:
   --pr <number>
 ${ACCOUNT_FLAGS}`,
   "evals results": `Usage:
-  benchrouter evals results <route-key>
+  benchrouter evals results <route-key> [--pr <number>]
 
-Shows the route's eval results: the search status, the best available model, the
-best-available chain down to the incumbent, and each measured model's pass rate,
-run cost, p95 latency and verdict. --json returns every model.
+Shows the route's eval results: the view read, the search status, the best available
+model, the best-available chain down to the incumbent, a note when several models tie on
+quality, and each measured model's pass rate, run cost, p95 latency and verdict. --pr
+reads an open PR's preview: its own search and results, so you can judge candidate cases
+before merging. Without --pr it reads the route page's default view, which is the first
+PR's preview while production has no results. --json returns every model and view_id.
 
 Options:
+  --pr <number>
 ${ACCOUNT_FLAGS}`,
   "evals model": `Usage:
   benchrouter evals model <route-key> <model-id> [--pr <number>]
@@ -880,7 +884,7 @@ export function topLevelControlUsageLines() {
   benchrouter setup status|create|session show|approve|upgrade-token [--json]
   benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive [--json]
   benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]
-  benchrouter evals status|model <route-key> ... --pr <number>   (an open PR's preview)
+  benchrouter evals status|results|model <route-key> ... --pr <number>   (an open PR's preview)
   benchrouter blocks list|unblock [--json]
   benchrouter public status|frontier [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]

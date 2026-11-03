@@ -308,7 +308,7 @@ benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
 benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive
 benchrouter evals list|run
 benchrouter evals status <route-key> [--pr <number>]
-benchrouter evals results <route-key>
+benchrouter evals results <route-key> [--pr <number>]
 benchrouter evals model <route-key> <model-id> [--pr <number>]
 benchrouter evals case-output <route-key> --run <model-run-id> --case <case-id>
 benchrouter evals overview

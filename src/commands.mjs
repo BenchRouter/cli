@@ -557,7 +557,9 @@ async function runEvals(ctx) {
   if (sub === "results") {
     const routeKey = ctx.args._[2];
     if (!routeKey) return ctx.usage(1, "evals results", "Missing route key.");
-    const body = await accountRequest(ctx, customerPaths.evalsResults(routeKey));
+    const viewId = prViewId(prOption(ctx, "evals results"));
+    const body = await accountRequest(ctx, customerPaths.evalsResults(routeKey, viewId));
+    requireEchoedView(ctx, body, viewId);
     return emit(ctx, body, () => render.renderEvalsResults(body));
   }
   if (sub === "overview") {
@@ -568,8 +570,9 @@ async function runEvals(ctx) {
     const routeKey = ctx.args._[2];
     const modelId = ctx.args._[3];
     if (!routeKey || !modelId) return ctx.usage(1, "evals model", "Missing route key or model id.");
-    const prNumber = prOption(ctx, "evals model");
-    const body = await accountRequest(ctx, customerPaths.evalsModel(routeKey, modelId, prNumber === null ? null : `pr-${prNumber}`));
+    const viewId = prViewId(prOption(ctx, "evals model"));
+    const body = await accountRequest(ctx, customerPaths.evalsModel(routeKey, modelId, viewId));
+    requireEchoedView(ctx, body, viewId);
     return emit(ctx, body, () => render.renderEvalsModel(body));
   }
   if (sub === "case-output") {
@@ -662,6 +665,18 @@ function approvalIdOf(value) {
     return value;
   }
   return link.searchParams.get("approval");
+}
+
+/** A pull request's evidence view id is `pr-<number>`; null reads the route page's default view. */
+function prViewId(prNumber) {
+  return prNumber === null ? null : `pr-${prNumber}`;
+}
+
+/** A read with `--pr` must come back as that view, never as production or another PR's. */
+function requireEchoedView(ctx, body, viewId) {
+  if (viewId !== null && body?.view_id !== viewId) {
+    ctx.fail(`Asked for evidence view ${viewId}, but the server answered ${body?.view_id ?? "without a view"}.`, "view_mismatch");
+  }
 }
 
 /** `--pr <number>`: null when absent. A decimal PR number only: `0x4c` or `7.6e1` is not PR 76. */
