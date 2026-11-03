@@ -1098,10 +1098,10 @@ test('disconnect resumed on an already closed binding runs its pending revokes w
 // Recorded from production on 2026-11-03 after the group provider service change (BenchRouter #756):
 // provider_service setup items, one failed. Identities are replaced and the lists are trimmed.
 const liveProviderService = await fixture('binding-live-provider-service.json');
-const liveJobAcl = () => call('GET', `/api/2.0/permissions/jobs/${liveProviderService.binding.agent_job_id}`, { access_control_list: [{ service_principal_name: liveProviderService.binding.agent_sp_application_id, all_permissions: [{ permission_level: 'IS_OWNER' }] }] });
 test('status reads a live binding with provider_service setup items, one failed (text and JSON)', { timeout: 4900 }, async (t) => {
-  const detail = liveProviderService;
-  const server = await replay(t, [list([detail.binding]), call('GET', `${base}/${detail.binding.id}`, detail), liveJobAcl(), list([detail.binding]), call('GET', `${base}/${detail.binding.id}`, detail), liveJobAcl()]);
+  // No agent job id, so status makes no job ACL request: the replay holds only recorded answers.
+  const detail = { ...liveProviderService, binding: { ...liveProviderService.binding, agent_job_id: null } };
+  const server = await replay(t, [list([detail.binding]), call('GET', `${base}/${detail.binding.id}`, detail), list([detail.binding]), call('GET', `${base}/${detail.binding.id}`, detail)]);
   const json = await runCli(server, ['status', '--host', host, '--json']);
   const human = await runCli(server, ['status', '--host', host]);
   for (const r of [json, human]) { assert.equal(r.status, 0, r.stderr); noSecrets(r); }
