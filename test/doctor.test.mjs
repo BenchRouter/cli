@@ -427,7 +427,7 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   assert.match(result.stdout, /evaluation PR, eval evidence, scorer, calibration, and later activation/);
   assert.match(result.stdout, /Keep production code and host configuration unchanged in the evaluation PR/);
   assert.match(result.stdout, /BenchRouter Evals uses GitHub OIDC/);
-  assert.match(result.stdout, /npx --yes --package @benchrouter\/cli benchrouter doctor/);
+  assert.match(result.stdout, /npx --yes benchrouter@latest doctor/);
   assert.equal(await readFile(path.join(root, ".benchrouter/bootstrap.mjs"), "utf8"), signedKitFixture.get(".benchrouter/bootstrap.mjs"));
 
   assert.equal(existsSync(path.join(root, ".env.example")), false);
@@ -1117,7 +1117,7 @@ test("upgrade applies the exact signed kit while preserving canonical YAML", asy
   for (const file of files) {
     assert.equal(await readFile(path.join(root, file.path), "utf8"), file.content);
   }
-  assert.match(result.stdout, /npx --yes --package @benchrouter\/cli benchrouter doctor --repo example\/app/);
+  assert.match(result.stdout, /npx --yes benchrouter@latest doctor --repo example\/app/);
 });
 
 test("doctor fails when call_site.base_url_env is not referenced by route code_refs", async (t) => {
