@@ -66,20 +66,29 @@ export async function apiRequest({
     payload = JSON.stringify(body);
   }
 
-  let response;
-  let text;
-  try {
-    response = await fetch(`${apiUrl}${path}`, {
-      method,
-      headers,
-      body: payload,
-      signal: signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
-        : AbortSignal.timeout(timeoutMs)
-    });
-    text = await response.text();
-  } catch (error) {
-    throw new Error(`BenchRouter ${label} request failed: ${networkMessage(error)}`);
+  const send = async () => {
+    try {
+      const response = await fetch(`${apiUrl}${path}`, {
+        method,
+        headers,
+        body: payload,
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs)
+      });
+      return { response, text: await response.text() };
+    } catch (error) {
+      throw new Error(`BenchRouter ${label} request failed: ${networkMessage(error)}`);
+    }
+  };
+
+  let { response, text } = await send();
+  // A read the server could not serve for a moment (503 with Retry-After) is sent once more
+  // after the wait it names. A write is never repeated: it could take effect twice.
+  const waitMs = method === "GET" && response.status === 503 ? retryAfterMs(response.headers.get("retry-after")) : null;
+  if (waitMs !== null) {
+    await wait(waitMs, signal, label);
+    ({ response, text } = await send());
   }
 
   const parsed = parseJson(text);
@@ -130,6 +139,43 @@ function errorCode(parsed) {
   if (parsed.error && typeof parsed.error.code === "string") return parsed.error.code;
   if (typeof parsed.code === "string") return parsed.code;
   return null;
+}
+
+/**
+ * Retry-After in milliseconds when it asks for at most 10 seconds; null otherwise (absent,
+ * malformed or too long). It takes only the two forms HTTP defines: delta-seconds ("3") and an
+ * IMF-fixdate ("Sun, 06 Nov 1994 08:49:37 GMT"). Each must print back unchanged, so "+0", "0x0",
+ * "1e-6", "01" and "2020-01-01" are refused.
+ */
+function retryAfterMs(value) {
+  if (value === null) return null;
+  const text = value.trim();
+  const seconds = Number.parseInt(text, 10);
+  let ms = null;
+  if (String(seconds) === text && seconds >= 0) {
+    ms = seconds * 1000;
+  } else {
+    const date = Date.parse(text);
+    if (Number.isFinite(date) && new Date(date).toUTCString() === text) ms = date - Date.now();
+  }
+  if (ms === null || ms > 10000) return null;
+  return Math.max(0, ms);
+}
+
+/** Sleep for the Retry-After wait; the caller's signal ends it at once. */
+function wait(ms, signal, label) {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error(`BenchRouter ${label} request failed: ${networkMessage(signal.reason)}`));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function networkMessage(error) {
