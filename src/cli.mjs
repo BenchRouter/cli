@@ -9,6 +9,7 @@ import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 import { readRouteManifest } from "./route-manifest.mjs";
+import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
 import { applyUpgradePacket, prepareUpgradeFiles, preserveCustomerSetup, inspectSignedKit, preparePackageJson, preflightFileApplication, stageFileApplication, UPGRADE_GENERATED_PATHS, BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS } from "./generated-kit.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -40,7 +41,11 @@ const API_FAMILIES = new Set([
   "openai_responses"
 ]);
 
-if (isControlPlaneCommand(command)) {
+if (args.version === true && args._.length === 0) {
+  process.stdout.write(`${CLI_VERSION}\n`);
+  const notice = await newerVersionNotice("--version");
+  if (notice) process.stderr.write(`${notice}\n`);
+} else if (isControlPlaneCommand(command)) {
   await runControlCommand({
     args,
     command,
@@ -704,6 +709,8 @@ async function doctor() {
   const passed = [];
   const skipped = [];
   const notes = [];
+  const versionNotice = await newerVersionNotice("doctor");
+  if (versionNotice) notes.push(versionNotice);
   const requiredFiles = [
     ".benchrouter/benchrouter.yml", BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH,
     ".benchrouter/README.md", ".benchrouter/SETUP_README.md"
@@ -1698,6 +1705,7 @@ Options:
   benchrouter init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
   benchrouter upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
   benchrouter doctor
+  benchrouter --version
   benchrouter capture
   benchrouter calibrate
   benchrouter models [--json]
@@ -1706,6 +1714,8 @@ Options:
   benchrouter failures <route-key> [model] [--json]
   benchrouter explain <model> [--route product/route] [--json]
 ${topLevelControlUsageLines()}
+
+Run \`benchrouter <command> --help\` for its flags, for example \`benchrouter evals model --help\`.
 `);
   }
   process.exit(status);
