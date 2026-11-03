@@ -880,6 +880,7 @@ export function topLevelControlUsageLines() {
   benchrouter setup status|create|session show|approve|upgrade-token [--json]
   benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive [--json]
   benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]
+  benchrouter evals status|model <route-key> ... --pr <number>   (an open PR's preview)
   benchrouter blocks list|unblock [--json]
   benchrouter public status|frontier [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]

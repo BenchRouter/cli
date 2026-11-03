@@ -9,6 +9,10 @@ The package is `benchrouter`. It installs the `benchrouter` command.
 npx --yes benchrouter@latest --help
 ```
 
+`benchrouter --version` prints the installed version. It and `doctor` also say when
+npm has a newer `latest`. An installed copy does not update itself, so run
+`npx --yes benchrouter@latest <command>` to use the newest CLI.
+
 ## Connect Databricks
 
 Install the Databricks CLI and use an OAuth workspace-admin login:

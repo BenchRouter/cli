@@ -24,11 +24,14 @@ branch only checks the package.
 
 npm can take several minutes to show a new version after the workflow passes.
 
-## One-time setup on npmjs.com
+## Trusted publisher on npmjs.com
 
-Do this once, immediately before the first workflow release. A new trusted publisher expires if
-it has no successful publish within 2 days. After it expires, you cannot use or edit it: delete
-it, create a new one, and publish within 2 days.
+Done on 2026-11-03. The `benchrouter` package trusts GitHub Actions in `BenchRouter/cli` with
+workflow `publish.yml`, no environment, and `npm publish` allowed. The v0.2.45 release validated
+it. The `NPM_TOKEN` repository secret is deleted, and `@benchrouter/cli` is deprecated with a
+pointer to `benchrouter`.
+
+To set it up again (for example after the publisher is deleted):
 
 1. Sign in to npmjs.com as an owner of `benchrouter`.
 2. Open https://www.npmjs.com/package/benchrouter/access (package **Settings**).
@@ -39,16 +42,10 @@ it, create a new one, and publish within 2 days.
    - Environment name: leave empty
    - Allowed actions: enable `npm publish`. A new trusted publisher allows only
      `npm stage publish` by default, and then the workflow's `npm publish` fails.
-4. Save.
-5. After the first workflow release passes, delete the repository secret `NPM_TOKEN` in
-   https://github.com/BenchRouter/cli/settings/secrets/actions. The workflow no longer reads it.
-6. After the first workflow release passes, mark the old scoped package deprecated. Trusted
-   publishing cannot run this command, so run it signed in as an owner of `@benchrouter/cli`:
-
-   ```sh
-   npm deprecate @benchrouter/cli "Moved to benchrouter. Run: npx --yes benchrouter@latest"
-   ```
-7. Optional: in **Publishing access**, select **Require two-factor authentication and disallow
+4. Save, then publish a release within 2 days. A new trusted publisher expires if it has no
+   successful publish within 2 days. After it expires, you cannot use or edit it: delete it,
+   create a new one, and publish within 2 days.
+5. Optional: in **Publishing access**, select **Require two-factor authentication and disallow
    tokens**, then select **Update Package Settings**. Trusted publishing continues to work. A
    publish from a laptop with a token then stops working.
 
