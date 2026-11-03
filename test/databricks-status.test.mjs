@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { replay, runDatabricksCli as runCli, noSecrets } from './helpers/databricks-replay.mjs';
+import { validateDatabricksRead } from '../src/databricks-contract.mjs';
 
 const fixtureDir = new URL('./fixtures/databricks/', import.meta.url);
 const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureDir), 'utf8'));
@@ -1092,4 +1093,34 @@ test('disconnect resumed on an already closed binding runs its pending revokes w
   assert.deepEqual(JSON.parse(result.stdout).pending_steps, []);
   noSecrets(result);
   server.assertDone();
+});
+
+// Recorded from production on 2026-11-03 after the group provider service change (BenchRouter #756):
+// provider_service setup items, one failed. Identities are replaced and the lists are trimmed.
+const liveProviderService = await fixture('binding-live-provider-service.json');
+test('status reads a live binding with provider_service setup items, one failed (text and JSON)', { timeout: 4900 }, async (t) => {
+  // No agent job id, so status makes no job ACL request: the replay holds only recorded answers.
+  const detail = { ...liveProviderService, binding: { ...liveProviderService.binding, agent_job_id: null } };
+  const server = await replay(t, [list([detail.binding]), call('GET', `${base}/${detail.binding.id}`, detail), list([detail.binding]), call('GET', `${base}/${detail.binding.id}`, detail)]);
+  const json = await runCli(server, ['status', '--host', host, '--json']);
+  const human = await runCli(server, ['status', '--host', host]);
+  for (const r of [json, human]) { assert.equal(r.status, 0, r.stderr); noSecrets(r); }
+  assert.deepEqual(JSON.parse(json.stdout), { bindings: [detail] });
+  const failed = detail.setup_items.find((i) => i.kind === 'provider_service' && i.state === 'failed');
+  assert.ok(human.stdout.includes(failed.target) && human.stdout.includes(failed.failure.title));
+  server.assertDone();
+});
+test('add-eval reads a live binding with provider_service setup items before it needs the workspace admin', { timeout: 4900 }, async (t) => {
+  const detail = liveProviderService;
+  const server = await replay(t, [list([detail.binding]), call('GET', `${base}/${detail.binding.id}`, detail), admin(true)]);
+  const result = await runCli(server, ['add-eval', 'support/triage', '/Shared/eval', '--host', host, '--json']);
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(JSON.parse(result.stderr).error.code, 'workspace_admin_required');
+  server.assertDone();
+});
+test('binding read accepts a provider_service_unmanageable leftover and still refuses unknown reasons and kinds', { timeout: 4900 }, () => {
+  const leftover = { kind: 'provider_service', id: 'workspace.benchrouter.brg_spice_mx', binding_id: liveProviderService.binding.id, reason: 'provider_service_unmanageable', actor: 'workspace_admin', command: null, instruction: 'A metastore admin can drop the orphaned service.' };
+  assert.ok(validateDatabricksRead({ ...liveProviderService, cleanup_pending: [...liveProviderService.cleanup_pending, leftover] }));
+  assert.throws(() => validateDatabricksRead({ ...liveProviderService, cleanup_pending: [{ ...leftover, reason: 'unknown_reason' }] }), /invalid cleanup steps/);
+  assert.throws(() => validateDatabricksRead({ ...liveProviderService, setup_items: [{ ...liveProviderService.setup_items[0], kind: 'unknown_kind' }] }), /invalid Databricks setup_items/);
 });

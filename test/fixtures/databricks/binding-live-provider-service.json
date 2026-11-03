@@ -1,0 +1,211 @@
+{
+  "binding": {
+    "id": "dbxb_81b5aa4bbe2b4306a9c7a2fc08be8dc2",
+    "account_id": "acct_fixture",
+    "host": "fixture.cloud.databricks.com",
+    "workspace_id": "7474660687257254",
+    "databricks_account_id": "00000000-0000-4000-8000-0000000000a1",
+    "agent_sp_application_id": "00000000-0000-4000-8000-000000000002",
+    "catalog": "workspace",
+    "schema": "benchrouter",
+    "warehouse_id": "f7cf158c6784dd06",
+    "results_group": null,
+    "manage_group": null,
+    "closed_reason": null,
+    "agent_job_id": "617522425156154",
+    "eval_job_id": "343377769766203",
+    "secret_scope": "benchrouter-5b496cd56fde",
+    "state": "verified",
+    "cadence_seconds": 3600,
+    "last_poll_at": "2026-11-03T05:49:55.424Z",
+    "last_agent_version": "0.5.0",
+    "disconnect_requested_at": null,
+    "created_at": "2026-10-30T15:33:50.235Z",
+    "updated_at": "2026-11-03T05:49:55.424Z"
+  },
+  "evals": [
+    {
+      "id": "dbxe_41dde3f1d30b46ddb789cffa2f91da88",
+      "route_key": "support/ticket-triage",
+      "binding_id": "dbxb_81b5aa4bbe2b4306a9c7a2fc08be8dc2",
+      "eval_folder": "/Workspace/Shared/evals/ticket-triage-hard",
+      "desired_revision": 4,
+      "active_revision": 4,
+      "active_digest": "1dd0ac5b0025664d237180b7fdb94c71cb363f828e4b413dfb3720fc04aa9389",
+      "state": "attached",
+      "updated_at": "2026-11-02T19:14:52.976Z",
+      "grant_needed": null
+    },
+    {
+      "id": "dbxe_7bbb81353cfc4314b4fc482b8bb7953c",
+      "route_key": "support/ticket-triage-b",
+      "binding_id": "dbxb_81b5aa4bbe2b4306a9c7a2fc08be8dc2",
+      "eval_folder": "/Workspace/Shared/evals/ticket-triage-b",
+      "desired_revision": 4,
+      "active_revision": 4,
+      "active_digest": "7eadbfc8b86cb26d478be8e744637f634f91b6a73f2b87204099643a0a6171ec",
+      "state": "attached",
+      "updated_at": "2026-11-02T19:18:07.581Z",
+      "grant_needed": null
+    }
+  ],
+  "routes": [
+    {
+      "route_key": "argumend/audit",
+      "name": "audit",
+      "model": "sao10k/l3-lunaris-8b",
+      "eval_source": "repo"
+    },
+    {
+      "route_key": "argumend/bearing-label",
+      "name": "bearing label",
+      "model": "microsoft/phi-4",
+      "eval_source": "repo"
+    }
+  ],
+  "exposures": [
+    {
+      "route_key": "argumend/audit",
+      "endpoint_name": "br-argumend-audit",
+      "provider_service_name": "workspace.benchrouter.brg_argumend",
+      "state": "exposed",
+      "updated_at": "2026-11-03T05:42:41.760Z",
+      "failure": null
+    },
+    {
+      "route_key": "argumend/bearing-label",
+      "endpoint_name": "br-argumend-bearing-label",
+      "provider_service_name": "workspace.benchrouter.brg_argumend",
+      "state": "exposed",
+      "updated_at": "2026-11-03T05:42:41.760Z",
+      "failure": null
+    }
+  ],
+  "disconnect_failure": null,
+  "setup_failure": null,
+  "setup_items": [
+    {
+      "kind": "eval_job",
+      "target": "benchrouter-eval-dbxb_81b5aa4bbe2b4306a9c7a2fc08be8dc2",
+      "state": "done",
+      "queued_at": "2026-11-03T05:10:08.610Z",
+      "failure": null
+    },
+    {
+      "kind": "experiment",
+      "target": "/Shared/benchrouter/dbxb_81b5aa4bbe2b4306a9c7a2fc08be8dc2",
+      "state": "done",
+      "queued_at": "2026-10-30T15:33:50.235Z",
+      "failure": null
+    },
+    {
+      "kind": "results_table",
+      "target": "workspace.benchrouter.benchrouter_eval_results",
+      "state": "done",
+      "queued_at": "2026-10-30T15:33:50.235Z",
+      "failure": null
+    },
+    {
+      "kind": "volume",
+      "target": "workspace.benchrouter.benchrouter_artifacts",
+      "state": "done",
+      "queued_at": "2026-10-30T15:33:50.235Z",
+      "failure": null
+    },
+    {
+      "kind": "volume",
+      "target": "workspace.benchrouter.benchrouter_results",
+      "state": "done",
+      "queued_at": "2026-10-30T15:33:50.235Z",
+      "failure": null
+    },
+    {
+      "kind": "serving_endpoint",
+      "target": "br-argumend-audit",
+      "state": "done",
+      "queued_at": "2026-10-30T15:34:18.091Z",
+      "failure": null
+    },
+    {
+      "kind": "serving_endpoint",
+      "target": "br-argumend-bearing-label",
+      "state": "done",
+      "queued_at": "2026-10-30T15:34:18.091Z",
+      "failure": null
+    },
+    {
+      "kind": "provider_service",
+      "target": "workspace.benchrouter.brg_spice_mx",
+      "state": "failed",
+      "queued_at": "2026-11-03T05:42:33.989Z",
+      "failure": {
+        "code": "service_get_http_403",
+        "failed_at": "2026-11-03T05:42:46.989Z",
+        "owner": "customer",
+        "title": "Databricks refused the agent service principal",
+        "message": "The agent service principal lacks a permission it needs (service_get). Run `benchrouter databricks connect` again to grant the schema privileges. The agent job tries again at its next scheduled check, and applies the group provider service once the cause is fixed."
+      }
+    },
+    {
+      "kind": "provider_service",
+      "target": "workspace.benchrouter.brg_argumend",
+      "state": "done",
+      "queued_at": "2026-11-03T05:42:33.989Z",
+      "failure": null
+    },
+    {
+      "kind": "provider_service",
+      "target": "workspace.benchrouter.brg_benchrouter",
+      "state": "done",
+      "queued_at": "2026-11-03T05:42:33.989Z",
+      "failure": null
+    }
+  ],
+  "cleanup_pending": [
+    {
+      "kind": "agent_service_principal",
+      "id": "00000000-0000-4000-8000-0000000000b1",
+      "binding_id": "dbxb_d7676dacba2a45d0bc53978fd7b6b80e",
+      "reason": "agent_sp_replaced",
+      "actor": "account_admin",
+      "command": null,
+      "instruction": "Ask an account admin to delete agent service principal 00000000-0000-4000-8000-0000000000b1 in the Databricks account console."
+    },
+    {
+      "kind": "agent_service_principal",
+      "id": "00000000-0000-4000-8000-0000000000b2",
+      "binding_id": "dbxb_e73eaaef03a447bd82bc04ce9b804d5f",
+      "reason": "binding_force_closed",
+      "actor": "account_admin",
+      "command": null,
+      "instruction": "Ask an account admin to delete agent service principal 00000000-0000-4000-8000-0000000000b2 in the Databricks account console."
+    },
+    {
+      "kind": "agent_service_principal",
+      "id": "1292ec59-8b76-43b3-b3c8-25a52844e8d0",
+      "binding_id": "dbxb_3c632e3e2939494bbe093cc2fc11c79d",
+      "reason": "agent_sp_replaced",
+      "actor": "account_admin",
+      "command": null,
+      "instruction": "Ask an account admin to delete agent service principal 1292ec59-8b76-43b3-b3c8-25a52844e8d0 in the Databricks account console."
+    },
+    {
+      "kind": "agent_service_principal",
+      "id": "97c5a9d7-dfbe-42e7-8e38-8fe29a9a5d17",
+      "binding_id": "dbxb_3c632e3e2939494bbe093cc2fc11c79d",
+      "reason": "binding_disconnected",
+      "actor": "account_admin",
+      "command": null,
+      "instruction": "Ask an account admin to delete agent service principal 97c5a9d7-dfbe-42e7-8e38-8fe29a9a5d17 in the Databricks account console."
+    },
+    {
+      "kind": "agent_service_principal",
+      "id": "e82e3760-c8be-4db8-89ad-e2a0ecb5b8e0",
+      "binding_id": "dbxb_8e18c79d8ded4cdd908cf7d5613e6735",
+      "reason": "binding_disconnected",
+      "actor": "account_admin",
+      "command": null,
+      "instruction": "Ask an account admin to delete agent service principal e82e3760-c8be-4db8-89ad-e2a0ecb5b8e0 in the Databricks account console."
+    }
+  ]
+}
