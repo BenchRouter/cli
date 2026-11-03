@@ -3,10 +3,10 @@
 Use BenchRouter from a terminal. The CLI initializes a repository, checks its
 integration, upgrades the generated kit, and reads route evidence.
 
-The package is `@benchrouter/cli`. It installs the `benchrouter` command.
+The package is `benchrouter`. It installs the `benchrouter` command.
 
 ```bash
-npx @benchrouter/cli --help
+npx --yes benchrouter@latest --help
 ```
 
 ## Connect Databricks
@@ -152,7 +152,7 @@ If workspace discovery does not return the Databricks account id, set
 Run `init` from the repository that will use BenchRouter:
 
 ```bash
-npx @benchrouter/cli init \
+npx --yes benchrouter@latest init \
   --setup-key br_setup_... \
   --route-id product/route \
   --name "Route Name" \
@@ -249,7 +249,7 @@ the interactive prompt, to keep repo-scoped read access on the current computer.
 For non-interactive use, set `BENCHROUTER_TOKEN` instead.
 
 ```bash
-npx @benchrouter/cli init ... --save-token
+npx --yes benchrouter@latest init ... --save-token
 ```
 
 The generated files include `.benchrouter/SETUP_README.md`. Read that file

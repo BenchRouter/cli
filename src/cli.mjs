@@ -429,7 +429,7 @@ async function upgrade() {
 
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Review the diff. benchrouter.yml and route-owned cases, scorers, calibration fixtures, and app files must be unchanged.\n");
-  process.stdout.write(`- Run \`npx --yes --package @benchrouter/cli benchrouter doctor --repo ${repoFullName}\`.\n`);
+  process.stdout.write(`- Run \`npx --yes benchrouter@latest doctor --repo ${repoFullName}\`.\n`);
   process.stdout.write("- Open a PR titled \"Upgrade BenchRouter kit\".\n");
 }
 
@@ -526,7 +526,7 @@ function printInitNextSteps() {
   process.stdout.write("- Tell your coding agent: read .benchrouter/SETUP_README.md before editing. It explains the evaluation PR, eval evidence, scorer, calibration, and later activation.\n");
   process.stdout.write("- Keep production code and host configuration unchanged in the evaluation PR. Store the runtime key for later activation; it does not expire with the setup code.\n");
   process.stdout.write("- BenchRouter Evals uses GitHub OIDC. Do not add an eval API key to GitHub Actions.\n");
-  process.stdout.write("- Run relevant product tests/build and `npx --yes --package @benchrouter/cli benchrouter doctor --phase evaluation` before opening the PR.\n");
+  process.stdout.write("- Run relevant product tests/build and `npx --yes benchrouter@latest doctor --phase evaluation` before opening the PR.\n");
 }
 
 function callSiteBody(spec) {
@@ -959,7 +959,7 @@ function unsupportedIncumbentMessage(modelId) {
   return `BenchRouter did not accept the incumbent model: ${modelId}
 Do not substitute another model. Confirm the exact model ID.
 For a direct provider, also pass --provider-id and --provider-ref.
-List catalog IDs with: npx --yes --package @benchrouter/cli benchrouter models`;
+List catalog IDs with: npx --yes benchrouter@latest models`;
 }
 
 function modelReplacementMessage(error, routeSpec) {
