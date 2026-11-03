@@ -33,18 +33,18 @@ test("saved repo access is explicit, isolated by repository, and relocatable", a
   assert.equal(JSON.parse(await readFile(firstPath, "utf8")).repo_full_name, "example/first");
 });
 
-test("BENCHROUTER_TOKEN overrides saved repo access", async (t) => {
+test("BENCHROUTER_SETUP_KEY overrides saved repo access", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-env-token-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const previousDir = process.env.BENCHROUTER_CONFIG_DIR;
-  const previousToken = process.env.BENCHROUTER_TOKEN;
+  const previousToken = process.env.BENCHROUTER_SETUP_KEY;
   process.env.BENCHROUTER_CONFIG_DIR = root;
-  process.env.BENCHROUTER_TOKEN = "br_setup_environment_recorded";
+  process.env.BENCHROUTER_SETUP_KEY = "br_setup_environment_recorded";
   t.after(() => {
     if (previousDir === undefined) delete process.env.BENCHROUTER_CONFIG_DIR;
     else process.env.BENCHROUTER_CONFIG_DIR = previousDir;
-    if (previousToken === undefined) delete process.env.BENCHROUTER_TOKEN;
-    else process.env.BENCHROUTER_TOKEN = previousToken;
+    if (previousToken === undefined) delete process.env.BENCHROUTER_SETUP_KEY;
+    else process.env.BENCHROUTER_SETUP_KEY = previousToken;
   });
 
   const { resolveRepoToken, saveRepoToken } = await import("../src/config.mjs");

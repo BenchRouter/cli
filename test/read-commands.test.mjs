@@ -44,17 +44,17 @@ test("status, frontier, and failures replay unchanged recorded contracts end to 
   const replay = await startReplayServer(t);
   const common = ["--repo", "example/app", "--api-url", replay.url];
 
-  const statusHuman = await runCli(["status", ...common], { BENCHROUTER_TOKEN: repoToken });
+  const statusHuman = await runCli(["status", ...common], { BENCHROUTER_SETUP_KEY: repoToken });
   assert.equal(statusHuman.status, 0, statusHuman.stderr);
   assert.equal(
     statusHuman.stdout,
     "example/app\n- app/chat: best minimax/minimax-m2.7; incumbent minimax/minimax-m2.7; wired in production; latest eval decided; production evidence ers_recorded\n"
   );
-  const statusJson = await runCli(["status", ...common, "--json"], { BENCHROUTER_TOKEN: repoToken });
+  const statusJson = await runCli(["status", ...common, "--json"], { BENCHROUTER_SETUP_KEY: repoToken });
   assert.equal(statusJson.status, 0, statusJson.stderr);
   assert.deepEqual(JSON.parse(statusJson.stdout), fixtures.status);
 
-  const frontierHuman = await runCli(["frontier", "app/chat", ...common], { BENCHROUTER_TOKEN: repoToken });
+  const frontierHuman = await runCli(["frontier", "app/chat", ...common], { BENCHROUTER_SETUP_KEY: repoToken });
   assert.equal(frontierHuman.status, 0, frontierHuman.stderr);
   assert.equal(
     frontierHuman.stdout,
@@ -66,13 +66,13 @@ test("status, frontier, and failures replay unchanged recorded contracts end to 
       ""
     ].join("\n")
   );
-  const frontierJson = await runCli(["frontier", "app/chat", ...common, "--json"], { BENCHROUTER_TOKEN: repoToken });
+  const frontierJson = await runCli(["frontier", "app/chat", ...common, "--json"], { BENCHROUTER_SETUP_KEY: repoToken });
   assert.equal(frontierJson.status, 0, frontierJson.stderr);
   assert.deepEqual(JSON.parse(frontierJson.stdout), fixtures.frontier);
 
   const failuresHuman = await runCli(
     ["failures", "app/chat", "minimax/minimax-m2.7", ...common],
-    { BENCHROUTER_TOKEN: repoToken }
+    { BENCHROUTER_SETUP_KEY: repoToken }
   );
   assert.equal(failuresHuman.status, 0, failuresHuman.stderr);
   assert.equal(
@@ -83,7 +83,7 @@ test("status, frontier, and failures replay unchanged recorded contracts end to 
       ""
     ].join("\n")
   );
-  const failuresJson = await runCli(["failures", "app/chat", ...common, "--json"], { BENCHROUTER_TOKEN: repoToken });
+  const failuresJson = await runCli(["failures", "app/chat", ...common, "--json"], { BENCHROUTER_SETUP_KEY: repoToken });
   assert.equal(failuresJson.status, 0, failuresJson.stderr);
   assert.deepEqual(JSON.parse(failuresJson.stdout), fixtures.failures);
 
@@ -123,21 +123,27 @@ test("repo reads give actionable errors for missing and invalid access", async (
   const replay = await startReplayServer(t, { invalidToken: true });
   const common = ["--repo", "example/app", "--api-url", replay.url];
 
-  const missing = await runCli(["status", ...common], { BENCHROUTER_TOKEN: undefined });
+  const missing = await runCli(["status", ...common], { BENCHROUTER_SETUP_KEY: undefined });
   assert.equal(missing.status, 1);
   assert.equal(
     missing.stderr,
-    "Missing repo read token. Set BENCHROUTER_TOKEN, pass --token, or approve --save-token during init.\n"
+    "Missing the repository's setup key (br_setup_). Set BENCHROUTER_SETUP_KEY to the key you gave init, pass --setup-key, or rerun init with --save-token to keep it for this repository on this computer. With an account token from `benchrouter login`, `benchrouter routes show <route>` shows what a route serves and `benchrouter evals status <route>` shows its evaluation.\n"
   );
   assert.equal(replay.requests.length, 0);
 
-  const invalid = await runCli(["status", ...common], { BENCHROUTER_TOKEN: repoToken });
+  const invalid = await runCli(["status", ...common], { BENCHROUTER_SETUP_KEY: repoToken });
   assert.equal(invalid.status, 1);
   assert.equal(
     invalid.stderr,
     "BenchRouter repo access expired or is invalid. Open https://benchrouter.com/cli to create a new repo token.\n"
   );
   assert.equal(replay.requests.length, 1);
+
+  // --setup-key is the same key init takes; it reaches the server without the env.
+  const flag = await runCli(["status", ...common, "--setup-key", repoToken], { BENCHROUTER_SETUP_KEY: undefined });
+  assert.equal(flag.status, 1);
+  assert.equal(replay.requests.length, 2);
+  assert.equal(replay.requests[1].authorization, `Bearer ${repoToken}`);
 });
 
 async function startReplayServer(t, options = {}) {
@@ -182,8 +188,8 @@ function sendJson(response, status, body) {
 function runCli(cliArgs, envOverrides = {}) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, ...envOverrides };
-    if (Object.hasOwn(envOverrides, "BENCHROUTER_TOKEN") && envOverrides.BENCHROUTER_TOKEN === undefined) {
-      delete env.BENCHROUTER_TOKEN;
+    if (Object.hasOwn(envOverrides, "BENCHROUTER_SETUP_KEY") && envOverrides.BENCHROUTER_SETUP_KEY === undefined) {
+      delete env.BENCHROUTER_SETUP_KEY;
     }
     const child = spawn(process.execPath, [cliPath, ...cliArgs], {
       cwd: testDir,

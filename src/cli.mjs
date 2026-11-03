@@ -501,7 +501,7 @@ async function maybeSaveRepoReadToken(token, repoFullName) {
     approved = await confirmPrompt(`Save repo read access for ${repoFullName} on this computer? [y/N] `);
   }
   if (!approved) {
-    process.stdout.write("Repo token not saved. Use BENCHROUTER_TOKEN for read commands, or rerun init with --save-token.\n");
+    process.stdout.write("Setup key not saved. The read commands (status, frontier, failures, explain) need it: set BENCHROUTER_SETUP_KEY or pass --setup-key, or rerun init with --save-token.\n");
     return;
   }
   try {
@@ -629,12 +629,12 @@ async function readCommand(kind) {
   }
   let credential;
   try {
-    credential = resolveRepoToken(repoFullName, stringArg("token"));
+    credential = resolveRepoToken(repoFullName, stringArg("setup-key"));
   } catch (error) {
     fail(error instanceof Error ? error.message : "Could not read BenchRouter credentials.");
   }
   if (!credential) {
-    fail("Missing repo read token. Set BENCHROUTER_TOKEN, pass --token, or approve --save-token during init.");
+    fail("Missing the repository's setup key (br_setup_). Set BENCHROUTER_SETUP_KEY to the key you gave init, pass --setup-key, or rerun init with --save-token to keep it for this repository on this computer. With an account token from `benchrouter login`, `benchrouter routes show <route>` shows what a route serves and `benchrouter evals status <route>` shows its evaluation.");
   }
   try {
     await runRepoRead({
@@ -1688,10 +1688,10 @@ Options:
   ${commandUsage}
 
 Options:
-  --repo owner/repo       Defaults to the current git remote.
-  --token br_setup_...    Defaults to BENCHROUTER_TOKEN, then repo-scoped config.
-  --api-url <url>         Defaults to https://api.benchrouter.com.
-  --json                  Print machine-readable JSON.
+  --repo owner/repo         Defaults to the current git remote.
+  --setup-key br_setup_...  Defaults to BENCHROUTER_SETUP_KEY, then the key init --save-token saved.
+  --api-url <url>           Defaults to https://api.benchrouter.com.
+  --json                    Print machine-readable JSON.
 `);
   } else {
     stream.write(`Usage:
