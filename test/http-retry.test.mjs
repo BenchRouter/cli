@@ -11,6 +11,8 @@ const testDir = path.dirname(fileURLToPath(import.meta.url));
 const cliPath = path.resolve(testDir, "../bin/benchrouter.mjs");
 // A real public status read (see fixtures/reads/README.md).
 const status = JSON.parse(await readFile(path.join(testDir, "fixtures/reads/public-status.json"), "utf8"));
+// A recorded repo status read (see fixtures/repo-read/).
+const repoStatus = JSON.parse(await readFile(path.join(testDir, "fixtures/repo-read/status.json"), "utf8"));
 const token = ["--account-token", "br_ctrl_recorded_fixture"];
 const unavailable = { error: { message: "BenchRouter could not serve this request. Retry shortly.", code: "temporarily_unavailable" } };
 
@@ -67,6 +69,30 @@ test("the caller's signal ends the Retry-After wait at once", { timeout: 4900 },
   assert.deepEqual(replay.requests, ["GET /v1/status"]);
 });
 
+test("a repo read (status) retries a 503 with a short Retry-After the same way", { timeout: 4900 }, async (t) => {
+  const replay = await startServer(t, [
+    { status: 503, headers: { "retry-after": "0" }, body: unavailable },
+    { status: 200, body: repoStatus }
+  ]);
+  const result = await runCli(["status", "--repo", "example/app", "--setup-key", "br_setup_recorded_fixture", "--json", "--api-url", replay.url]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), repoStatus);
+  assert.deepEqual(replay.requests, ["GET /v1/repo/status", "GET /v1/repo/status"]);
+
+  const once = await startServer(t, [{ status: 503, body: { message: "Try again later." } }]);
+  const failed = await runCli(["status", "--repo", "example/app", "--setup-key", "br_setup_recorded_fixture", "--api-url", once.url]);
+  assert.equal(failed.status, 1);
+  assert.equal(failed.stderr, "BenchRouter status failed (503): Try again later.\n");
+  assert.deepEqual(once.requests, ["GET /v1/repo/status"]);
+});
+
+test("a repo read still refuses an empty successful body", { timeout: 4900 }, async (t) => {
+  const replay = await startServer(t, [{ status: 200, raw: "" }]);
+  const result = await runCli(["status", "--repo", "example/app", "--setup-key", "br_setup_recorded_fixture", "--api-url", replay.url]);
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "BenchRouter status returned invalid JSON.\n");
+});
+
 test("a write that gets 503 with Retry-After is never sent again", { timeout: 4900 }, async (t) => {
   const replay = await startServer(t, [{ status: 503, headers: { "retry-after": "0" }, body: unavailable }, { status: 200, body: {} }]);
   const result = await runCli(["routes", "create", "--name", "Triage", "--model", "openai/gpt-5.4-mini", "--group", "Support", "--yes", "--api-url", replay.url, ...token]);
@@ -83,7 +109,7 @@ async function startServer(t, replies) {
       requests.push(`${request.method} ${request.url}`);
       const reply = replies[requests.length - 1] ?? { status: 500, body: { error: { message: "unscripted request" } } };
       response.writeHead(reply.status, { "content-type": "application/json", ...reply.headers });
-      response.end(JSON.stringify(reply.body));
+      response.end(reply.raw ?? JSON.stringify(reply.body));
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

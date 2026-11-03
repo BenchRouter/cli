@@ -1,3 +1,5 @@
+import { apiRequest, ApiError } from "./http.mjs";
+
 /** Exact repo-read path construction for regression tests / request planning. */
 export function repoReadPath(kind, { routeKey, modelId } = {}) {
   if (kind === "status") return "/v1/repo/status";
@@ -61,25 +63,20 @@ async function onlyRoute(apiUrl, token) {
   return routes[0].route_key;
 }
 
+/** Repo reads go through the shared client, so a 503 with a short Retry-After is retried once like every other read. */
 async function fetchRepoJson(apiUrl, pathname, token, label) {
-  let response;
+  let body;
   try {
-    response = await fetch(`${apiUrl}${pathname}`, {
-      headers: { authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(30000)
-    });
+    body = await apiRequest({ apiUrl, token, path: pathname, label, requireBody: true });
   } catch (error) {
-    throw new Error(`BenchRouter ${label} request failed: ${networkMessage(error)}`);
-  }
-  const text = await response.text();
-  const body = parseJson(text);
-  if (!response.ok) {
-    if (["read_scope_expired", "read_token_invalid", "read_token_missing"].includes(body?.error)) {
-      const url = typeof body.authorize_url === "string" ? body.authorize_url : "https://benchrouter.com/cli";
+    if (!(error instanceof ApiError)) throw error;
+    const failed = error.body;
+    if (["read_scope_expired", "read_token_invalid", "read_token_missing"].includes(failed?.error)) {
+      const url = typeof failed.authorize_url === "string" ? failed.authorize_url : "https://benchrouter.com/cli";
       throw new Error(`BenchRouter repo access expired or is invalid. Open ${url} to create a new repo token.`);
     }
-    const message = typeof body?.message === "string" ? body.message : text.slice(0, 800);
-    throw new Error(`BenchRouter ${label} failed (${response.status}): ${message}`);
+    const message = typeof failed?.message === "string" ? failed.message : error.text.slice(0, 800);
+    throw new Error(`BenchRouter ${label} failed (${error.status}): ${message}`);
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error(`BenchRouter ${label} returned invalid JSON.`);
@@ -213,21 +210,6 @@ export function explanationDetail(body) {
 
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-}
-
-function parseJson(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-function networkMessage(error) {
-  if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-    return "request timed out";
-  }
-  return error instanceof Error ? error.message : "request failed";
 }
 
 export class CliUsageError extends Error {}

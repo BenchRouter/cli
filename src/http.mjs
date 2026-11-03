@@ -1,12 +1,13 @@
 import { resolveAccountToken, resolveAdminToken } from "./config.mjs";
 
 export class ApiError extends Error {
-  constructor(message, { status, code, body } = {}) {
+  constructor(message, { status, code, body, text } = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status ?? null;
     this.code = code ?? null;
     this.body = body ?? null;
+    this.text = text ?? "";
   }
 }
 
@@ -52,7 +53,9 @@ export async function apiRequest({
   body,
   label,
   timeoutMs = 30000,
-  signal
+  signal,
+  // A read whose answer must be a JSON body: an empty 2xx body is invalid JSON, not {}.
+  requireBody = false
 }) {
   const headers = {
     accept: "application/json",
@@ -98,10 +101,11 @@ export async function apiRequest({
     throw new ApiError(`BenchRouter ${label} failed (${response.status}): ${message}`, {
       status: response.status,
       code,
-      body: parsed
+      body: parsed,
+      text
     });
   }
-  if (parsed === null && text.trim().length > 0) {
+  if (parsed === null && (requireBody || text.trim().length > 0)) {
     throw new Error(`BenchRouter ${label} returned invalid JSON.`);
   }
   return parsed ?? {};
