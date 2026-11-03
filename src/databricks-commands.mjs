@@ -3,7 +3,7 @@ import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, uc, encode } from './databricks.mjs';
 import { databricksControl, secretRedaction, exits, refusal, workspaceAdmin, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
-import { bindingStates, parseDatabricksEval, validateDatabricksBinding, validateDatabricksRead } from './databricks-contract.mjs';
+import { parseDatabricksEval, validateClosedExposures, validateDatabricksBinding, validateDatabricksRead, validateDisconnect } from './databricks-contract.mjs';
 import { readWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
 import { isSpStep, runPendingSpSteps } from './databricks-sp-steps.mjs';
 import { objectExists, deleteRecorded, recordedObjects, objectKey } from './databricks-cleanup.mjs';
@@ -232,20 +232,4 @@ export async function runDatabricksCommand(ctx) {
 }
 function shellWord(value) {
   return [...value].every((c) => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-'.includes(c)) && value ? value : `'${value.split("'").join("'\\''")}'`;
-}
-
-function validateClosedExposures(answer) {
-  if (answer?.ok !== true || !Array.isArray(answer.closed_exposures) || answer.closed_exposures.some((e) => !e
-      || !['endpoint_name', 'provider_service_name'].every((k) => typeof e[k] === 'string'))) {
-    throw new Error('BenchRouter returned an invalid closed exposure list.');
-  }
-}
-
-function validateDisconnect(answer) {
-  validateClosedExposures(answer);
-  if (!bindingStates.includes(answer.state)
-      || !['queued', 'none'].includes(answer.cleanup)
-      || !(answer.disconnect_requested_at === null || typeof answer.disconnect_requested_at === 'string')) {
-    throw new Error('BenchRouter returned an invalid disconnect response.');
-  }
 }
