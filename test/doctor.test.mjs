@@ -209,6 +209,35 @@ test("activation doctor without an accepted env example file lists the names it 
   );
 });
 
+test("activation doctor names a required key left as a comment", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  await rm(path.join(root, ".env.example"));
+  await writeFile(
+    path.join(root, ".dev.vars.example"),
+    "# Secrets\n# BENCHROUTER_API_KEY=\n  ## OPENAI_BASE_URL = https://api.benchrouter.com/v1\n# NOT_AN_ASSIGNMENT\n"
+  );
+
+  const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
+  const output = result.stdout + result.stderr;
+
+  assert.notEqual(result.status, 0);
+  assert.ok(output.includes("found BENCHROUTER_API_KEY commented out in .dev.vars.example; uncomment it"), output);
+  assert.ok(output.includes("found OPENAI_BASE_URL commented out in .dev.vars.example; uncomment it"), output);
+  assert.ok(!output.includes(".dev.vars.example missing"), output);
+});
+
+test("activation doctor reads an uncommented key and still reports a missing one", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  await writeFile(path.join(root, ".env.example"), "BENCHROUTER_API_KEY=\n# OPENAI_BASE_URL_OLD=\n");
+
+  const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
+  const output = result.stdout + result.stderr;
+
+  assert.notEqual(result.status, 0);
+  assert.ok(output.includes(".env.example missing OPENAI_BASE_URL"), output);
+  assert.ok(!output.includes("BENCHROUTER_API_KEY commented out"), output);
+});
+
 test("doctor accepts a declared BENCHROUTER runtime base URL from the current generated kit", async (t) => {
   const root = await createTargetRepo(t, {
     codeRefText: "const baseURL = process.env.BENCHROUTER_DISPATCH_API_URL;"

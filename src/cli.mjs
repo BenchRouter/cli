@@ -786,13 +786,16 @@ async function doctor() {
   } else if (envTemplate) {
     const envExample = readFileSync(envTemplate.path, "utf8");
     const envKeys = parseEnvExampleKeys(envExample);
+    const commentedEnvKeys = parseCommentedEnvExampleKeys(envExample);
     const expectedRuntimeKeys = new Set([
       "BENCHROUTER_API_KEY",
       ...manifestRoutes.map((route) => route.callSiteBaseUrlEnv).filter(Boolean)
     ]);
     for (const key of phase === "activation" ? new Set(["BENCHROUTER_API_KEY", ...selectedRoutes.map((route) => route.callSiteBaseUrlEnv)]) : []) {
       if (!envKeys.includes(key)) {
-        failures.push(`${envTemplate.relativePath} missing ${key}`);
+        failures.push(commentedEnvKeys.includes(key)
+          ? `found ${key} commented out in ${envTemplate.relativePath}; uncomment it`
+          : `${envTemplate.relativePath} missing ${key}`);
       }
     }
     if (envKeys.includes("BENCHROUTER_EVAL_API_KEY")) {
@@ -1178,14 +1181,38 @@ function resolveRuntimeEnvTemplate(root) {
 }
 
 function parseEnvExampleKeys(text) {
-  const keys = [];
-  for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/);
-    if (match) {
-      keys.push(match[1]);
+  return envExampleLines(text).filter((line) => !line.commented).map((line) => line.key);
+}
+
+// Keys a reader left as comments, such as "# BENCHROUTER_API_KEY=" for a secret placeholder.
+function parseCommentedEnvExampleKeys(text) {
+  return envExampleLines(text).filter((line) => line.commented).map((line) => line.key);
+}
+
+// Reads each KEY= assignment in an env example file. A line whose text starts with one or more
+// "#" characters followed by an assignment is reported as commented.
+function envExampleLines(text) {
+  const lines = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    let rest = rawLine.trimStart();
+    let commented = false;
+    while (rest.startsWith("#")) {
+      commented = true;
+      rest = rest.slice(1).trimStart();
     }
+    const key = envAssignmentKey(rest);
+    if (key) lines.push({ key, commented });
   }
-  return keys;
+  return lines;
+}
+
+function envAssignmentKey(text) {
+  const isStart = (char) => char === "_" || (char >= "A" && char <= "Z") || (char >= "a" && char <= "z");
+  const isPart = (char) => isStart(char) || (char >= "0" && char <= "9");
+  if (!isStart(text[0] ?? "")) return null;
+  let end = 1;
+  while (end < text.length && isPart(text[end])) end += 1;
+  return text.slice(end).trimStart().startsWith("=") ? text.slice(0, end) : null;
 }
 
 function resolveDoctorRelativePath(root, relativePath) {

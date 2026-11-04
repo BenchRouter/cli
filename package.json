@@ -1,6 +1,6 @@
 {
   "name": "benchrouter",
-  "version": "0.2.50",
+  "version": "0.2.51",
   "description": "Command-line interface for BenchRouter",
   "type": "module",
   "scripts": {
