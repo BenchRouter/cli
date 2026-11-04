@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { normalizeRepoFullName, saveAccountToken, saveAdminToken } from "./config.mjs";
 import { adminPaths, adminKeysMintBrowserSessionRequired, customerPaths, publicPaths } from "./control-api.mjs";
 import {
+  accountClient,
   accountRequest,
   adminRequest,
   emit,
@@ -17,9 +18,11 @@ import { resolveControlUsageName } from "./usage-text.mjs";
 import { runLogin } from "./login.mjs";
 import { runDatabricksConnect } from "./databricks-connect.mjs";
 import { runDatabricksCommand } from "./databricks-commands.mjs";
+import { runFeedback } from "./feedback.mjs";
 
 export const CUSTOMER_ROOT_COMMANDS = new Set([
   "login",
+  "feedback",
   "databricks",
   "account",
   "billing",
@@ -66,6 +69,7 @@ export async function runControlCommand(ctx) {
     if (usageName) return ctx.usage(0, usageName);
   }
   try {
+    if (command === "feedback") return await runFeedback(ctx);
     if (command === "databricks") {
       if (ctx.args._[1] === "connect") return await runDatabricksConnect(ctx);
       if (["status", "add-eval", "disconnect"].includes(ctx.args._[1])) return await runDatabricksCommand(ctx);
@@ -519,6 +523,17 @@ async function runEvals(ctx) {
     }
     // A PR preview context is only on the route catalog read.
     const body = await accountRequest(ctx, customerPaths.routeCatalog(routeKey, "evals status"));
+    // A PR run that failed at setup has no preview evidence; name the failure instead of waiting.
+    const setupFailure = (Array.isArray(body.setup_failures) ? body.setup_failures : [])
+      .find((entry) => entry && entry.pr_number === prNumber);
+    if (setupFailure) {
+      // Never print a credential the server might have reflected (AUTH-012).
+      const token = accountClient(ctx).token;
+      const redact = (text) => (token ? text.split(token).join("[redacted]") : text);
+      const message = typeof setupFailure.message === "string" && setupFailure.message ? setupFailure.message : "no message";
+      const run = typeof setupFailure.github_run_url === "string" && setupFailure.github_run_url ? `\nGitHub run: ${setupFailure.github_run_url}` : "";
+      ctx.fail(redact(`PR #${prNumber} eval run failed at setup: ${message}${run}`), "pr_setup_failed");
+    }
     const viewId = `pr-${prNumber}`;
     const view = (Array.isArray(body.view_evidence) ? body.view_evidence : []).find((entry) => entry && entry.id === viewId);
     if (!view) ctx.fail(`No open PR #${prNumber} preview evidence on ${routeKey}.`, "view_not_found");

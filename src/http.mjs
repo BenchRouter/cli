@@ -1,13 +1,15 @@
 import { resolveAccountToken, resolveAdminToken } from "./config.mjs";
 
 export class ApiError extends Error {
-  constructor(message, { status, code, body, text } = {}) {
+  constructor(message, { status, code, body, text, requestId, retryAfter } = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status ?? null;
     this.code = code ?? null;
     this.body = body ?? null;
     this.text = text ?? "";
+    this.requestId = requestId ?? null;
+    this.retryAfter = retryAfter ?? null;
   }
 }
 
@@ -54,6 +56,7 @@ export async function apiRequest({
   label,
   timeoutMs = 30000,
   signal,
+  retry503 = method === "GET",
   // A read whose answer must be a JSON body: an empty 2xx body is invalid JSON, not {}.
   requireBody = false
 }) {
@@ -70,28 +73,45 @@ export async function apiRequest({
   }
 
   const send = async () => {
+    const timeout = AbortSignal.timeout(timeoutMs);
     try {
       const response = await fetch(`${apiUrl}${path}`, {
         method,
         headers,
         body: payload,
         signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
-          : AbortSignal.timeout(timeoutMs)
+          ? AbortSignal.any([signal, timeout])
+          : timeout
       });
       return { response, text: await response.text() };
     } catch (error) {
-      throw new Error(`BenchRouter ${label} request failed: ${networkMessage(error)}`);
+      const timedOut = timeout.aborted && !signal?.aborted;
+      const failure = new Error(timedOut
+        ? `BenchRouter ${label} request (${method} ${path}) timed out. Retry in a minute.`
+        : `BenchRouter ${label} request failed: ${networkMessage(error)}`);
+      failure.networkError = true;
+      failure.timedOut = timedOut;
+      throw failure;
     }
   };
 
-  let { response, text } = await send();
-  // A read the server could not serve for a moment (503 with Retry-After) is sent once more
-  // after the wait it names. A write is never repeated: it could take effect twice.
-  const waitMs = method === "GET" && response.status === 503 ? retryAfterMs(response.headers.get("retry-after")) : null;
+  let timeoutRetried = false;
+  const sendWithTimeoutRetry = async () => {
+    try {
+      return await send();
+    } catch (error) {
+      if (method !== "GET" || !error.timedOut || timeoutRetried || signal?.aborted) throw error;
+      timeoutRetried = true;
+      return send();
+    }
+  };
+  let { response, text } = await sendWithTimeoutRetry();
+  // Retry one short 503 wait for reads and explicitly opted-in commands (feedback).
+  // Other writes are never repeated: they could take effect twice.
+  const waitMs = retry503 && response.status === 503 ? retryAfterMs(response.headers.get("retry-after")) : null;
   if (waitMs !== null) {
     await wait(waitMs, signal, label);
-    ({ response, text } = await send());
+    ({ response, text } = await sendWithTimeoutRetry());
   }
 
   const parsed = parseJson(text);
@@ -100,8 +120,10 @@ export async function apiRequest({
     const code = errorCode(parsed);
     throw new ApiError(`BenchRouter ${label} failed (${response.status}): ${message}`, {
       status: response.status,
+      requestId: response.headers.get("x-request-id") || response.headers.get("cf-ray"),
       code,
       body: parsed,
+      retryAfter: response.headers.get("retry-after"),
       text
     });
   }

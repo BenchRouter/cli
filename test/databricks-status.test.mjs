@@ -10,6 +10,8 @@ const states = ['connecting', 'verified', 'agent_silent', 'disconnecting', 'disc
 const reads = Object.fromEntries(await Promise.all(states.map(async (s) => [s, await fixture(`binding-${s}.json`)])));
 const [me, metadata, run] = await Promise.all(['me.json', 'databricks-config.json', 'p2-run.json'].map(fixture));
 const m2mMe = await fixture('me-m2m.json');
+// Recorded GET /api/2.0/permissions/jobs/:id from the test workspace (agent SP owns the job).
+const jobPermissions = await fixture('permissions-jobs-get.json');
 const deletedJob = await fixture('job-deleted.json');
 const manifest = await readFile(new URL('eval-manifest.yml', fixtureDir), 'utf8');
 const host = 'https://fixture.cloud.databricks.com';
@@ -20,7 +22,7 @@ const scim = '/api/2.0/preview/scim/v2';
 const call = (method, path, body = {}, status = 200, check) => ({ method, path, body, status, check });
 const list = (bindings = [reads.verified.binding]) => call('GET', base, { bindings });
 const read = (detail = reads.verified) => call('GET', bindingPath, detail);
-const jobAcl = () => call('GET', `/api/2.0/permissions/jobs/${reads.verified.binding.agent_job_id}`, { access_control_list: [{ service_principal_name: reads.verified.binding.agent_sp_application_id, all_permissions: [{ permission_level: 'IS_OWNER' }] }] });
+const jobAcl = () => call('GET', `/api/2.0/permissions/jobs/${reads.verified.binding.agent_job_id}`, structuredClone(jobPermissions));
 const admin = (nonAdmin = false) => call('GET', `${scim}/Me`, nonAdmin ? { ...me, groups: [] } : me);
 const missing = (path) => call('GET', path, { error_code: 'RESOURCE_DOES_NOT_EXIST' }, 404);
 const checkBody = (value) => (r) => assert.deepEqual(r.body, value);
@@ -229,13 +231,25 @@ function evalPlan({ content = manifest, refused, nonAdmin = false } = {}) {
       checkBody({ changes: [{ principal: b.agent_sp_application_id, add: [grant] }] })));
     if (refused === kind) return [...calls, call('GET', `${uc}/catalogs/main`, { owner: 'catalog-owner' }), call('GET', `${uc}/schemas/main.evals`, { owner: 'schema-owner' })];
   }
+  calls.push(call('POST', '/api/2.0/secrets/acls/put', refused === 'secret' ? { error_code: 'PERMISSION_DENIED' } : {}, refused === 'secret' ? 403 : 200,
+    checkBody({ scope: 'support-evals', principal: b.agent_sp_application_id, permission: 'READ' })));
   return [...calls, call('GET', '/api/2.2/jobs/get', { job_id: Number(b.agent_job_id) }), call('POST', '/api/2.2/jobs/run-now', { run_id: run.run_id }, 200, checkBody({ job_id: Number(b.agent_job_id) }))];
 }
-for (const json of [false, true]) test(`add-eval PATCH grants preserve ACLs, print secret lines and run agent (${json ? 'JSON' : 'text'}, AUTH-012 / DATA-001)`, { timeout: 4900 }, async (t) => {
+for (const json of [false, true]) test(`add-eval PATCH grants preserve ACLs, apply secret ACLs and run agent (${json ? 'JSON' : 'text'}, AUTH-012 / DATA-001)`, { timeout: 4900 }, async (t) => {
   const server = await replay(t, evalPlan());
   const result = await runCli(server, ['add-eval', 'support/triage', '/Shared/eval', ...(json ? ['--json'] : [])]);
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.includes(`databricks secrets put-acl support-evals ${reads.verified.binding.agent_sp_application_id} READ`));
+  if (json) {
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output.secret_acl_applied, ['support-evals']);
+    assert.deepEqual(output.secret_acl_commands, []);
+    assert.ok(!Object.hasOwn(output.eval, 'grant_needed'));
+    assert.deepEqual(output.registration_grant_needed, reads.verified.evals[0].grant_needed);
+  } else {
+    assert.ok(result.stdout.includes('Secret scope support-evals: READ applied.'));
+    assert.ok(!result.stdout.includes(reads.verified.evals[0].grant_needed.title));
+    assert.ok(result.stdout.includes('The agent re-checks the grants on its run.'));
+  }
   noSecrets(result);
   server.assertDone();
 });
@@ -246,6 +260,26 @@ for (const code of ['route_eval_in_repo', 'route_eval_hosted', 'route_not_found'
   assert.equal(JSON.parse(result.stderr).error.code, code);
   assert.ok(!server.requests.some((r) => r.method === 'PATCH'));
   noSecrets(result);
+  server.assertDone();
+});
+for (const status of [400, 403]) for (const json of [false, true]) test(`add-eval refused secret READ falls back to the command (${status}, ${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
+  const calls = evalPlan({ refused: 'secret' });
+  calls.find((c) => c.path === '/api/2.0/secrets/acls/put').status = status;
+  const server = await replay(t, calls);
+  const result = await runCli(server, ['add-eval', 'support/triage', '/Shared/eval', ...(json ? ['--json'] : [])]);
+  assert.equal(result.status, 0, result.stderr);
+  const command = `databricks secrets put-acl support-evals ${reads.verified.binding.agent_sp_application_id} READ`;
+  if (json) {
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output.secret_acl_commands, [command]);
+    assert.deepEqual(output.secret_acl_applied, []);
+    assert.ok(!Object.hasOwn(output.eval, 'grant_needed'));
+    assert.equal(output.agent_started, true);
+  } else {
+    assert.ok(result.stdout.includes(command));
+    assert.ok(!result.stdout.includes('READ applied.'));
+    assert.ok(!result.stdout.includes(reads.verified.evals[0].grant_needed.title));
+  }
   server.assertDone();
 });
 for (const refused of ['folder', 'catalog', 'schema', 'table']) test(`add-eval ${refused} grant refusal names owners and exits 3`, { timeout: 4900 }, async (t) => {
@@ -640,7 +674,9 @@ test('status validates setup_items with the shared contract parser before worksp
 
 for (const json of [false, true]) test(`status warns about a user-owned agent job without altering server reads (${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
   const acl = jobAcl();
-  acl.body.access_control_list = [{ user_name: 'fixture-admin@example.com', all_permissions: [{ permission_level: 'IS_OWNER' }] }];
+  // The recorded shape with a user, not the agent SP, as the direct owner.
+  const [owner, ...inherited] = acl.body.access_control_list;
+  acl.body.access_control_list = [{ user_name: 'fixture-admin@example.com', all_permissions: owner.all_permissions }, ...inherited];
   const server = await replay(t, [list(), read(), acl]);
   const result = await runCli(server, ['status', ...(json ? ['--json'] : [])]);
   assert.equal(result.status, 0, result.stderr);

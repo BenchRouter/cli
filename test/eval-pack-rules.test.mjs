@@ -54,8 +54,6 @@ function pack(overrides = {}) {
     id: "web_review_v1",
     config_path: ".benchrouter/benchrouter.yml",
     workflow: ".github/workflows/benchrouter-evals.yml",
-    command: "node eval/run.mjs",
-    scorer: ".benchrouter/scorer.web.js",
     result_schema: "benchrouter.executable_result.v1",
     case_refs: ["apps/web/eval/cases.json"],
     argv: ["node", "eval/run.mjs"],
@@ -106,6 +104,8 @@ test("eval pack rules that match the server stop before any request", async (t) 
     [{ lockfile: "/pnpm-lock.yaml" }, "lockfile must be a relative path"],
     [{ working_directory: undefined, lockfile: "../pnpm-lock.yaml" }, "leaves the repository from working_directory (the repository root)"],
     [{ isolation: "container" }, "isolation must be process or job"],
+    [{ command: "node eval/run.mjs" }, "eval_pack.command is not accepted for a repository_executable eval pack."],
+    [{ scorer: ".benchrouter/scorer.web.js" }, "eval_pack.scorer is not accepted for a repository_executable eval pack."],
     [{ runtime_version: "lts" }, "runtime_version must be an exact version"],
     [{ primary_metric: "Pass_rate" }, "primary_metric must start with a lowercase letter"],
     [{ primary_metric: "pass-rate" }, "primary_metric must start with a lowercase letter"],
@@ -134,7 +134,8 @@ test("the overlap error names the file and explains both lists, exactly", async 
   assert.equal(result.status, 1);
   assert.equal(result.stderr, "--eval-pack for route app/web: input_refs and acceptance_refs both list apps/web/eval/run.mjs. " +
     "A file is either data the evaluator reads (input_refs) or part of what decides quality (acceptance_refs); " +
-    "an evaluator that holds the checks goes in acceptance_refs.\n");
+    "an evaluator that holds the checks goes in acceptance_refs.\n" +
+    "If BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'\n");
   assert.equal(bodies.length, 0);
 });
 

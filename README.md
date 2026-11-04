@@ -210,8 +210,6 @@ The file must use this contract:
   "id": "contextual_synopsis_v1",
   "config_path": ".benchrouter/benchrouter.yml",
   "workflow": ".github/workflows/benchrouter-evals.yml",
-  "command": "npm run eval:contextual-synopsis",
-  "scorer": ".benchrouter/scorer.contextual-synopsis.js",
   "result_schema": "benchrouter.executable_result.v1",
   "case_refs": ["eval/queries.json"],
   "argv": ["node", "eval/contextual-synopsis.mjs"],
@@ -227,6 +225,10 @@ The file must use this contract:
 }
 ```
 
+The eval pack has no `command` and no `scorer`: the runtime runs `argv` and
+reads the result file at `result_path`. The CLI rejects a pack that declares
+either one.
+
 The eval pack has no `api_family`. It inherits the route's `--api-family`, so
 pass the family of the call site the evaluator exercises. The CLI rejects a pack
 that declares its own.
@@ -240,8 +242,8 @@ Three fields are optional:
   as `apps/web`. Leave it out for the repository root; `.` is refused. The
   `lockfile` is relative to this directory and may name a parent directory's
   lockfile, such as `../../pnpm-lock.yaml`; the install runs in the lockfile's
-  directory. `result_path`, the refs, `config_path`, `workflow` and `scorer` stay
-  relative to the repository root.
+  directory. `result_path`, the refs, `config_path` and `workflow` stay relative
+  to the repository root.
 - `isolation`: `process` (the default) or `job`. Use `job` when the evaluator
   starts children that leave its process group, for example containers started
   through a Docker daemon.
@@ -326,6 +328,7 @@ benchrouter frontier <route-key> [--json]
 benchrouter failures <route-key> [model] [--json]
 benchrouter explain <model> [--route <route-key>] [--json]
 benchrouter login [--name text] [--expires-in-days 90]
+benchrouter feedback [--kind question|doc_gap|bug|other] [--json] "<message>"
 benchrouter account show [--json]
 benchrouter account token save --account-token br_ctrl_...
 benchrouter billing show|activity|statement [--json]

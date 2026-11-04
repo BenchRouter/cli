@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyUpgradePacket, LOCAL_SCRIPTS } from "../src/generated-kit.mjs";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, "..");
@@ -36,6 +36,68 @@ const providerIdentityReviewFixture = JSON.parse(
     "utf8"
   )
 );
+
+for (const phase of ["evaluation", "activation"]) {
+  for (const mode of ["isolated_replay", "repository_executable"]) {
+    test(`${phase} doctor names every missing declared file for ${mode}, including unselected routes`, { timeout: 4900 }, async (t) => {
+      const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+      const manifest = parseYaml(mode === "repository_executable" ? repositoryExecutableManifestYaml() : manifestYaml());
+      const route = manifest.routes[0];
+      route.code_refs = ["src/missing.js"];
+      route.eval_pack.config_path = "eval/missing-config.yml";
+      route.eval_pack.case_refs = ["eval/missing-cases.json", "eval/missing-more-cases.json"];
+      const refs = [route.eval_pack.config_path, ...route.eval_pack.case_refs, ...route.code_refs];
+      // EVAL-012: only isolated replay declares a scorer.
+      if (mode === "isolated_replay") {
+        route.eval_pack.scorer = "eval/missing-scorer.mjs";
+        refs.push(route.eval_pack.scorer);
+      }
+      if (mode === "repository_executable") {
+        route.eval_pack.working_directory = "apps/service";
+        route.eval_pack.lockfile = "../../pnpm-lock.yaml";
+        route.eval_pack.input_refs = ["eval/missing-input.json"];
+        route.eval_pack.acceptance_refs = ["eval/missing-checks.mjs", "eval/missing-cases.json"];
+        refs.push("pnpm-lock.yaml", "eval/missing-input.json", "eval/missing-checks.mjs");
+      }
+      const other = parseYaml(manifestYaml()).routes[0];
+      other.id = "other";
+      other.route_id = "app/other";
+      other.code_refs = ["src/other-missing.js"];
+      manifest.routes.push(other);
+      await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), stringifyYaml(manifest));
+      const result = await runCli(["doctor", "--phase", phase, "--route-id", routeId, "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
+      assert.equal(result.status, 1);
+      for (const ref of refs) {
+        const message = `route ${routeId}: missing declared file ${ref}`;
+        assert.ok(result.stderr.includes(message), result.stderr);
+        assert.equal(result.stderr.split(message).length - 1, 1, "one diagnostic per route/file");
+      }
+      assert.ok(result.stderr.includes("route app/other: missing declared file src/other-missing.js"));
+    });
+  }
+}
+
+test("doctor refuses a directory where a declared file belongs", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  const manifest = parseYaml(manifestYaml());
+  await mkdir(path.join(root, "eval/config-dir"), { recursive: true });
+  manifest.routes[0].eval_pack.config_path = "eval/config-dir";
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), stringifyYaml(manifest));
+  const result = await runCli(["doctor", "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.includes(`route ${routeId}: declared file eval/config-dir is not a regular file`), result.stderr);
+});
+
+test("doctor allows an undeclared scorer and still checks existing replay cases", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  const manifest = parseYaml(manifestYaml());
+  delete manifest.routes[0].eval_pack.scorer;
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), stringifyYaml(manifest));
+  await rm(path.join(root, ".benchrouter/scorer.app__chat.js"));
+  const result = await runCli(["doctor", "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("evaluation doctor needs no production wiring and never uses an inherited runtime key", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
   await rm(path.join(root, ".env.example"));
@@ -335,7 +397,7 @@ test("doctor uses the Anthropic API root and validates repository-executable ref
     path.join(root, ".env.example"),
     "BENCHROUTER_API_KEY=\nANTHROPIC_BASE_URL=https://api.benchrouter.com\nANTHROPIC_API_KEY=\n"
   );
-  await rm(path.join(root, ".benchrouter/scorer.app__chat.js"), { force: true });
+  // Declared scorers must exist, even for repository-executable packs.
 
   const result = await runDoctor(root, "https://api.benchrouter.com", { BENCHROUTER_API_KEY: undefined });
 
@@ -358,7 +420,7 @@ test("doctor gives a native Anthropic call site the API root under any variable 
   await writeFile(path.join(root, "eval/qrels.json"), '{"query-1":{"document-1":1}}\n');
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), repositoryExecutableManifestYaml().replace("base_url_env: ANTHROPIC_BASE_URL", "base_url_env: MY_CLAUDE_URL"));
   await writeFile(path.join(root, ".env.example"), "BENCHROUTER_API_KEY=\nMY_CLAUDE_URL=https://api.benchrouter.com\n");
-  await rm(path.join(root, ".benchrouter/scorer.app__chat.js"), { force: true });
+  // Declared scorers must exist, even for repository-executable packs.
 
   const result = await runDoctor(root, "https://api.benchrouter.com", { BENCHROUTER_API_KEY: undefined });
 
@@ -754,7 +816,8 @@ test("init gives an actionable initial-setup key expiry error", async (t) => {
   assert.equal(result.status, 1);
   assert.equal(
     result.stderr,
-    "Setup access expired. Refresh it at https://benchrouter.com/cli and run init again.\n"
+    "Setup access expired. Refresh it at https://benchrouter.com/cli and run init again.\n" +
+      "If BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'\n"
   );
   assert.equal(setupServer.requests.length, 1);
 });
@@ -794,7 +857,8 @@ test("init sends expired add-route setup scope back to the add-route flow", asyn
   assert.equal(result.status, 1);
   assert.equal(
     result.stderr,
-    "Setup access expired. Refresh it at https://benchrouter.com/cli/new and run init again.\n"
+    "Setup access expired. Refresh it at https://benchrouter.com/cli/new and run init again.\n" +
+      "If BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'\n"
   );
   assert.equal(setupServer.requests.length, 1);
 });
@@ -995,8 +1059,6 @@ test("init maps validated repository-executable eval packs to matching routes", 
   }
   const firstPack = repositoryExecutableEvalPack({
     id: "route_a_retrieval_v1",
-    command: "node eval/route-a.mjs",
-    scorer: ".benchrouter/scorer.route-a.js",
     case_refs: ["eval/queries-a.json"],
     argv: ["node", "eval/route-a.mjs"],
     input_refs: ["eval/route-a.mjs", "eval/corpus-a.json"],
@@ -1005,8 +1067,6 @@ test("init maps validated repository-executable eval packs to matching routes", 
   });
   const secondPack = repositoryExecutableEvalPack({
     id: "route_b_retrieval_v1",
-    command: "node eval/route-b.mjs",
-    scorer: ".benchrouter/scorer.route-b.js",
     case_refs: ["eval/queries-b.json"],
     argv: ["node", "eval/route-b.mjs"],
     input_refs: ["eval/route-b.mjs", "eval/corpus-b.json"],
@@ -1734,8 +1794,6 @@ routes:
       id: chat_repository_v1
       config_path: .benchrouter/benchrouter.yml
       workflow: .github/workflows/benchrouter-evals.yml
-      command: node eval/evaluator.mjs
-      scorer: .benchrouter/scorer.app__chat.js
       result_schema: benchrouter.executable_result.v1
       case_refs:
         - eval/qrels.json
@@ -1763,8 +1821,6 @@ function repositoryExecutableEvalPack(overrides = {}) {
     id: "app_chat_repository_v1",
     config_path: ".benchrouter/benchrouter.yml",
     workflow: ".github/workflows/benchrouter-evals.yml",
-    command: "node eval/evaluator.mjs",
-    scorer: ".benchrouter/scorer.app__chat.js",
     result_schema: "benchrouter.executable_result.v1",
     case_refs: ["eval/cases.json"],
     argv: ["node", "eval/evaluator.mjs"],

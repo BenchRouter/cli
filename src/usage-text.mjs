@@ -96,6 +96,14 @@ ${ACCOUNT_FLAGS}
 ${DATABRICKS_EXITS}`;
 
 const CONTROL_USAGE = {
+  feedback: `Usage:
+  benchrouter feedback [--kind question|doc_gap|bug|other] [--route <route-key>] [--command <text>] [--error-code <code>] [--repo owner/repo] [--setup-key br_setup_...] [--json] "<message>"
+
+Report a question, documentation gap, or bug. The message must have 1 to 8000 characters.
+Kind defaults to other. Command context is limited to 500 characters.
+Repository context defaults to the detected GitHub remote. CLI and kit versions are added when available.
+Prefers your account login, then --setup-key, BENCHROUTER_SETUP_KEY, or the saved repository key.
+${ACCOUNT_FLAGS}`,
   databricks: `${DATABRICKS_CONNECT_USAGE}\n${DATABRICKS_STATUS_USAGE}\n${DATABRICKS_EVAL_USAGE}\n${DATABRICKS_DISCONNECT_USAGE}`,
   "databricks status": DATABRICKS_STATUS_USAGE,
   "databricks add-eval": DATABRICKS_EVAL_USAGE,
@@ -875,6 +883,7 @@ export function resolveControlUsageName(positional) {
 
 export function topLevelControlUsageLines() {
   return `  benchrouter login [--name text] [--expires-in-days 90]
+  benchrouter feedback [--kind question|doc_gap|bug|other] [--json] "<message>"
   benchrouter databricks connect --host <url> --catalog <catalog> --schema <schema> [--json]
   benchrouter databricks status [--host <url>] [--all] [--json]
   benchrouter databricks add-eval <route> <folder> [--host <url>] [--json]

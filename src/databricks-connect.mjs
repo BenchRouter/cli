@@ -4,8 +4,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
 import { parseDatabricksConnectResponse, parseDatabricksSetupItems } from './databricks-contract.mjs';
-import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, encode } from './databricks.mjs';
-import { databricksControl, secretRedaction, exits, proofErrors, refusal, workspaceAdmin, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
+import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, rules, encode, isMissing } from './databricks.mjs';
+import { databricksControl, secretRedaction, exits, proofErrors, refusal, workspaceAdmin, numericId, readJob, runUcStep, bindingRead } from './databricks-helpers.mjs';
+import { readWorkspaceEvalGrants, applyWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
 import { aclPrincipal, runPendingSpSteps } from './databricks-sp-steps.mjs';
 import { renderDatabricksConnected } from './render.mjs';
 
@@ -17,9 +18,18 @@ export async function runDatabricksConnect(ctx) {
     const schema = ctx.stringArg('schema');
     if (!hostArg || !catalog || !schema) return ctx.usage(1, 'databricks connect', 'Pass --host, --catalog, and --schema.');
     const host = workspaceHost(hostArg);
-    const br = databricksControl(ctx);
+    const control = databricksControl(ctx);
     const log = (line) => { if (!ctx.args.json) process.stdout.write(`${line}\n`); };
     const workspace = new DatabricksWorkspace(host, remember, clean);
+    const timing = connectWaitTiming();
+    const br = (spec) => (spec.method ?? 'GET') === 'GET'
+      ? retryConnectRead((signal) => control({ ...spec, signal }), timing.retryMs, spec.signal)
+      : control(spec);
+    // Include reads made by the shared grant helpers. Never retry workspace writes here.
+    const workspaceCall = workspace.call.bind(workspace);
+    workspace.call = (method, path, body, options = {}) => method === 'GET'
+      ? retryConnectRead((signal) => workspaceCall(method, path, body, { ...options, signal }), timing.retryMs, options.signal)
+      : workspaceCall(method, path, body, options);
     log('1/8 Read the Databricks OAuth login and workspace admin identity.');
     const claims = await workspace.login();
     const metadata = await workspace.call('GET', '/.well-known/databricks-config', undefined, { anonymous: true });
@@ -110,11 +120,41 @@ export async function runDatabricksConnect(ctx) {
     await workspace.call('PUT', `/api/2.0/permissions/jobs/${jobId}`, { access_control_list: access });
     if (restricted) log('The workspace restriction keeps this admin as job owner. Removing the admin can stop the job.');
     await br(customerPaths.databricksRecordAgent(connected.binding_id, { agent_job_id: String(jobId), secret_scope: scope }));
+    let lastView = connectBindingRead(await br(customerPaths.databricksBinding(connected.binding_id)), spId);
+    const eval_grants = [];
+    for (const evaluation of lastView.evals.filter((e) => e.state === 'attached')) {
+      let reason;
+      try {
+        const read = await readWorkspaceEvalGrants(workspace, evaluation.eval_folder, evaluation.route_key, { skipUnavailable: true });
+        reason = read.reason;
+        if (!reason) {
+          const applied = await applyWorkspaceEvalGrants(workspace, lastView.binding, read);
+          if (applied.secret_acl_commands.length) reason = `Secret scope READ is still needed. Run: ${applied.secret_acl_commands.join('; ')}`;
+        }
+      } catch (error) {
+        if (isMissing(error)) reason = 'An eval folder, manifest, or cases table is missing. Restore it and run add-eval.';
+        else if (error instanceof DatabricksError && error.code === 'grant_refused') reason = error.message;
+        else if (error instanceof DatabricksError && (error.status === 403 || error.code === 'PERMISSION_DENIED')) reason = 'Databricks refused access. Ask the folder, table, or secret scope owner to grant access, then run add-eval.';
+        else throw error;
+      }
+      eval_grants.push({ route_key: evaluation.route_key, state: reason ? 'needs_grant' : 'granted', ...(reason ? { reason } : {}) });
+      if (reason) process.stderr.write(clean(`Eval ${evaluation.route_key}: ${reason}\n`));
+    }
 
     log('8/8 Start the agent job and wait for its run, setup items, and workspace verification.');
     const started = await workspace.call('POST', '/api/2.2/jobs/run-now', { job_id: jobId });
-    const final = await waitForAgent(workspace, br, connected.binding_id, numericId(started.run_id), spId, catalog, schema);
-    const result = JSON.parse(clean(JSON.stringify({ ok: true, binding_id: connected.binding_id, account_id: connected.account_id, state: final.binding.state, agent_job_id: String(jobId), agent_sp_application_id: spId, job_owner: restricted ? 'connecting_admin' : 'agent', setup_items: final.setup_items.map(({ kind, target, state }) => ({ kind, target, state })), skipped, pending_steps })));
+    const runId = numericId(started.run_id);
+    let final;
+    let note;
+    try {
+      final = await waitForAgent(workspace, br, connected.binding_id, runId, spId, catalog, schema, (view) => { lastView = view; }, timing);
+    } catch (error) {
+      // A definite answer (binding closed or changed, setup or agent run failed) is never hidden.
+      if (!error?.inconclusive || lastView.binding.state !== 'verified' || lastView.binding.agent_sp_application_id !== spId || lastView.binding.disconnect_requested_at) throw error;
+      final = lastView;
+      note = 'The workspace is connected. Connect could not finish checking the agent run. Run benchrouter databricks status for the current result.';
+    }
+    const result = JSON.parse(clean(JSON.stringify({ ok: true, binding_id: connected.binding_id, account_id: connected.account_id, state: final.binding.state, agent_job_id: String(jobId), agent_sp_application_id: spId, job_owner: restricted ? 'connecting_admin' : 'agent', setup_items: final.setup_items.map(({ kind, target, state }) => ({ kind, target, state })), skipped, pending_steps, eval_grants, ...(note ? { note } : {}) })));
     return emit(ctx, result, () => renderDatabricksConnected(result));
   } catch (error) {
     const code = error instanceof DatabricksError ? (Object.hasOwn(exits, error.code) || Object.hasOwn(proofErrors, error.code) ? error.code : 'databricks_request_failed') : 'command_failed';
@@ -230,15 +270,73 @@ function expectedSetupItems(bindingId, catalog, schema) {
     { kind: 'eval_job', target: `benchrouter-eval-${bindingId}` }
   ];
 }
-async function waitForAgent(workspace, br, bindingId, runId, spId, catalog, schema) {
-  const deadline = Date.now() + 180000;
+function connectWaitTiming() {
+  // The workspace constructor validates the loopback replay boundary before this runs.
+  const setting = (name, fallback, minimum, maximum) => {
+    const raw = process.env.BENCHROUTER_DATABRICKS_API_BASE ? process.env[name] : undefined;
+    if (raw === undefined) return fallback;
+    const value = Number(raw);
+    if (!raw.trim() || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error(`Invalid ${name} test timing.`);
+    return value;
+  };
+  return {
+    deadlineMs: setting('BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS', 180000, 1, 3000),
+    retryMs: setting('BENCHROUTER_DATABRICKS_TEST_WAIT_RETRY_MS', 1000, 0, 100),
+    pollMs: setting('BENCHROUTER_DATABRICKS_TEST_WAIT_POLL_MS', 1000, 1, 5000)
+  };
+}
+// An inconclusive error means Connect could not observe the outcome (a timeout, or transient failures
+// that outlasted the retries). Only these may fall back to an earlier verified binding view.
+function inconclusive(error) {
+  return Object.assign(error, { inconclusive: true });
+}
+function connectTimeout() {
+  return inconclusive(new Error('Timed out waiting for the agent run, setup items, and workspace verification. Run benchrouter databricks status.'));
+}
+async function retryConnectRead(request, retryMs, signal = AbortSignal.timeout(180000)) {
+  for (let attempt = 0; ; attempt++) {
+    if (signal.aborted) throw connectTimeout();
+    try { return await request(signal); } catch (error) {
+      if (signal.aborted) throw connectTimeout();
+      const transient = error.networkError || [429, 500, 502, 503, 504].includes(error.status);
+      if (!transient) throw error;
+      if (attempt >= 4) throw inconclusive(error);
+      try { await delay(retryMs * 2 ** attempt, undefined, { signal }); }
+      catch (error) { if (signal.aborted) throw connectTimeout(); throw error; }
+    }
+  }
+}
+function connectBindingRead(value, spId) {
+  const view = bindingRead(value);
+  if (view.binding.agent_sp_application_id !== spId || view.binding.disconnect_requested_at || ['disconnected', 'archived'].includes(view.binding.state)) throw new Error('The binding changed or closed during Connect. Run connect again.');
+  return view;
+}
+async function waitForAgent(workspace, br, bindingId, runId, spId, catalog, schema, observe, timing) {
+  const deadline = Date.now() + timing.deadlineMs;
+  const signal = AbortSignal.timeout(timing.deadlineMs);
   const expected = expectedSetupItems(bindingId, catalog, schema);
   let pending = expected;
   while (Date.now() < deadline) {
-    const run = await workspace.call('GET', `/api/2.2/jobs/runs/get?run_id=${runId}`);
-    const view = await br(customerPaths.databricksBinding(bindingId));
-    if (!view.binding || view.binding.agent_sp_application_id !== spId || view.binding.disconnect_requested_at || ['disconnected', 'archived'].includes(view.binding.state)) throw new Error('The binding changed or closed during Connect. Run connect again.');
+    let run;
+    let view;
+    try {
+      run = await workspace.call('GET', `/api/2.2/jobs/runs/get?run_id=${runId}`, undefined, { signal });
+    } catch (error) {
+      // The deadline passed during a read: report what the last finished poll was waiting for.
+      if (signal.aborted && error?.inconclusive) break;
+      throw error;
+    }
+    // A known failed run is a definite answer: report it before any later read can fail.
+    const finished = ['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'].includes(run.state?.life_cycle_state);
+    if (finished && run.state.result_state !== 'SUCCESS') throw new Error('The agent job did not finish successfully. Check the recorded job in Databricks.');
+    try {
+      view = connectBindingRead(await br({ ...customerPaths.databricksBinding(bindingId), signal }), spId);
+    } catch (error) {
+      if (signal.aborted && error?.inconclusive) break;
+      throw error;
+    }
     const items = parseDatabricksSetupItems(view.setup_items);
+    observe(view);
     const failed = items.find((item) => item.state === 'failed');
     if (failed) {
       if (failed.failure === null) throw new Error(`Databricks setup failed: ${failed.kind} ${failed.target}. Run status for details.`);
@@ -248,12 +346,10 @@ async function waitForAgent(workspace, br, bindingId, runId, spId, catalog, sche
     // The binding read returns the newest non-cancelled row per (kind, target).
     pending = expected.filter(({ kind, target }) => !items.some((item) => item.kind === kind && item.state === 'done'
       && (kind === 'volume' || kind === 'results_table' ? item.target.toLowerCase() === target.toLowerCase() : item.target === target)));
-    if (['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'].includes(run.state?.life_cycle_state)) {
-      if (run.state.result_state !== 'SUCCESS') throw new Error('The agent job did not finish successfully. Check the recorded job in Databricks.');
-      if (view.binding.state === 'verified' && pending.length === 0) return { ...view, setup_items: items };
-    }
-    await delay(1000);
+    if (finished && view.binding.state === 'verified' && pending.length === 0) return { ...view, setup_items: items };
+    try { await delay(Math.min(timing.pollMs, Math.max(0, deadline - Date.now())), undefined, { signal }); }
+    catch (error) { if (!signal.aborted) throw error; break; }
   }
   const waiting = pending.length ? ` Waiting for missing or incomplete setup items: ${pending.map((item) => `${item.kind} ${item.target}`).join(', ')}.` : '';
-  throw new Error(`Timed out waiting for the agent run, setup items, and workspace verification.${waiting} Check the agent job and run connect again.`);
+  throw inconclusive(new Error(`Timed out waiting for the agent run, setup items, and workspace verification.${waiting} Check the agent job and run connect again.`));
 }

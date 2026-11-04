@@ -10,6 +10,7 @@ const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureD
 const [me, sp, sp2, ruleset, run, settings, responseTemplate, metadata] = await Promise.all(['me.json', 'p1-create.json', 'p5-sp3.json', 'p1-ruleset-put.json', 'p2-run.json', 'settings.json', 'connect.json', 'databricks-config.json'].map(fixture));
 const m2mMe = await fixture('me-m2m.json');
 const setupTemplate = await fixture('binding-read.json');
+const bindingTemplate = await fixture('binding-verified.json');
 const deletedJob = await fixture('job-deleted.json');
 const manifest = await readFile(new URL('eval-manifest.yml', fixtureDir), 'utf8');
 const host = 'https://fixture.cloud.databricks.com';
@@ -17,6 +18,7 @@ const account = '00000000-0000-4000-8000-000000000001';
 const scim = '/api/2.0/preview/scim/v2';
 const rulePath = '/api/2.0/preview/accounts/access-control/rule-sets';
 const uc = '/api/2.1/unity-catalog';
+const fastWait = { BENCHROUTER_DATABRICKS_TEST_WAIT_RETRY_MS: '1' };
 const loginMarker = 'fake-login-token-must-not-leak';
 const clientId = '00000000-0000-4000-8000-000000000099';
 const clientSecret = 'fixture-m2m-client-secret-must-not-leak';
@@ -166,14 +168,19 @@ function plan(options = {}) {
     ? [{ ...admin, permission_level: 'IS_OWNER' }, { service_principal_name: agent.applicationId, permission_level: 'CAN_MANAGE' }]
     : [{ service_principal_name: agent.applicationId, permission_level: 'IS_OWNER' }]));
   add('POST', '/v1/databricks/bindings/dbxb_recorded/agent', { ok: true }, 200, (r) => assert.deepEqual(r.body, { agent_job_id: jobId, secret_scope: scope }));
+  add('GET', '/v1/databricks/bindings/dbxb_recorded', { ...structuredClone(bindingTemplate),
+    binding: { ...bindingTemplate.binding, ...binding(agent, jobId), state: 'connecting', ...options.recordedBinding }, evals: options.evals ?? [] });
   add('POST', '/api/2.2/jobs/run-now', { run_id: run.run_id });
   for (const snapshot of options.setupReads ?? [{}]) {
-    add('GET', '/api/2.2/jobs/runs/get', options.runFailed ? { state: { life_cycle_state: 'TERMINATED', result_state: 'FAILED' } } : snapshot.run ?? run);
+    const runRead = options.runFailed ? { state: { life_cycle_state: 'TERMINATED', result_state: 'FAILED' } } : snapshot.run ?? run;
+    add('GET', '/api/2.2/jobs/runs/get', runRead);
+    // Connect stops at a failed run before it reads the binding.
+    if (['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'].includes(runRead.state?.life_cycle_state) && runRead.state.result_state !== 'SUCCESS') break;
     add('GET', '/v1/databricks/bindings/dbxb_recorded', () => {
       const items = structuredClone(setupTemplate.setup_items).map((item) => ({ ...item, queued_at: queuedAt }));
       snapshot.items?.(items, queuedAt);
       if (options.setupFailed) Object.assign(items[2], { state: 'failed', failure: setupTemplate.failure });
-      return { binding: { ...binding(agent, jobId), ...snapshot.binding }, evals: [], exposures: snapshot.exposures ?? [], setup_items: items, setup_failure: snapshot.setupFailure ?? null };
+      return { ...structuredClone(bindingTemplate), binding: { ...bindingTemplate.binding, ...binding(agent, jobId), ...(options.runFailed || options.setupFailed ? { state: 'connecting' } : {}), ...snapshot.binding }, evals: [], exposures: snapshot.exposures ?? [], setup_items: items, setup_failure: snapshot.setupFailure ?? null };
     });
   }
   return { calls, c };
@@ -225,7 +232,9 @@ for (const json of [false, true]) test(`Databricks diagnostics name the call and
   const server = await replay(t, p.calls);
   const result = await runCli(server, json ? ['--json'] : []);
   assert.equal(result.status, 1);
-  const message = json ? JSON.parse(result.stderr).error.message : result.stderr.trim();
+  // Text mode adds the feedback hint as its own last line.
+  const hint = "\nIf BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'";
+  const message = json ? JSON.parse(result.stderr).error.message : result.stderr.trim().split(hint).join('');
   assert.equal(message, `Databricks request failed: GET /api/2.2/jobs/get answered 400 BAD_REQUEST. ${(prefix + '[redacted]' + 'y'.repeat(400)).slice(0, 300)}`);
   assert.ok(!message.includes('?job_id='));
   assert.ok(!message.includes(token.slice(0, 40)));
@@ -240,7 +249,7 @@ for (const [name, options, expectedStatus] of [
   ['another admin keeps the job after a 400 PERMISSION_DENIED without touching SP entitlements or secrets', { existing: binding(), noRole: true, ruleStatus: 400 }, 0],
   ['another admin keeps the recorded job after a 401 rule-set refusal', { existing: binding(), noRole: true, ruleStatus: 401, ruleCode: 'OTHER' }, 0],
   ['another admin keeps the recorded job after a 400 UNAUTHORIZED rule-set refusal', { existing: binding(), noRole: true, ruleStatus: 400, ruleCode: 'UNAUTHORIZED' }, 0],
-  ['unexpected rule-set errors stop Connect', { existing: binding(), ruleFailure: true, ruleStatus: 500, ruleCode: 'INTERNAL_ERROR' }, 1],
+  ['repeated transient rule-set errors stop Connect after bounded retries', { existing: binding(), ruleFailure: true, ruleStatus: 500, ruleCode: 'INTERNAL_ERROR' }, 1],
   ['another admin without a surviving job creates a new SP', { existing: binding(), noRole: true, jobMissing: true, newSp: true, heal: true }, 0],
   ['deleted recorded SP causes fresh SP creation and owner heal', { existing: binding(), spMissing: true, newSp: true, heal: true }, 0],
   ['restrict_workspace_admins keeps the connecting admin as owner and grants CAN_MANAGE', { restricted: true }, 0],
@@ -258,8 +267,9 @@ for (const [name, options, expectedStatus] of [
 ]) {
   test(name, { timeout: 4900 }, async (t) => {
     const p = plan(options);
+    if (options.ruleFailure) p.calls.push(...Array.from({ length: 4 }, () => ({ ...p.calls.at(-1) })));
     const server = await replay(t, p.calls);
-    const result = await runCli(server, ['--json', ...(options.warehouseFlag ? ['--warehouse', 'f7cf158c6784dd06'] : [])]);
+    const result = await runCli(server, ['--json', ...(options.warehouseFlag ? ['--warehouse', 'f7cf158c6784dd06'] : [])], fastWait);
     assert.equal(result.status, expectedStatus, result.stderr);
     if (options.existing && options.noRole && !options.newSp) {
       assert.equal(server.requests.filter((r) => r.path === rulePath).length, 1);
@@ -311,7 +321,7 @@ test('Connect matches Unity Catalog targets case-insensitively with mixed-case c
   const connect = server.requests.find((r) => r.method === 'POST' && r.path === '/v1/databricks/bindings');
   assert.equal(connect.body.catalog, 'Workspace');
   assert.equal(connect.body.schema, 'BR_H8');
-  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 1);
+  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 2);
   server.assertDone();
 });
 
@@ -331,13 +341,13 @@ test('same-SP same-schema Reconnect succeeds with an older done eval_job row (li
     { kind: 'experiment', target: '/Shared/benchrouter/dbxb_recorded', state: 'done' },
     { kind: 'eval_job', target: 'benchrouter-eval-dbxb_recorded', state: 'done' }
   ]);
-  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 1);
+  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 2);
   noSecrets(result);
   server.assertDone();
 });
 
 for (const [name, setupReads, status, reads] of [
-  ['all expected rows done succeed without eval_job_id or exposure checks', [{ binding: { eval_job_id: null }, exposures: [{ state: 'exposing', failure: setupTemplate.failure }], setupFailure: setupTemplate.failure }], 0, 1],
+  ['all expected rows done succeed without eval_job_id or exposure checks', [{ binding: { eval_job_id: null }, exposures: [{ ...bindingTemplate.exposures[0], state: 'exposing', failure: setupTemplate.failure }], setupFailure: setupTemplate.failure }], 0, 1],
   ['a re-queued pending row waits until done', [{ items: (items) => { items[2].state = 'pending'; } }, {}], 0, 2],
   ['done rows still wait for binding verification', [{ binding: { state: 'connecting' } }, {}], 0, 2],
   ['done rows still wait for the started agent run to succeed', [{ run: { ...run, state: { life_cycle_state: 'RUNNING' } } }, {}], 0, 2],
@@ -350,12 +360,13 @@ for (const [name, setupReads, status, reads] of [
   ['a binding that requested disconnect during Connect fails', [{ binding: { disconnect_requested_at: setupTemplate.setup_items[0].queued_at } }], 1, 1],
   ['a binding that changed SP during Connect fails', [{ binding: { agent_sp_application_id: sp2.applicationId } }], 1, 1]
 ]) test(name, { timeout: 4900 }, async (t) => {
-  const server = await replay(t, plan({ setupReads }).calls);
+  const snapshots = setupReads.map((snapshot) => status === 1 && name.includes('failed') ? { ...snapshot, binding: { state: 'connecting', ...snapshot.binding } } : snapshot);
+  const server = await replay(t, plan({ setupReads: snapshots }).calls);
   const result = await runCli(server, ['--json']);
   assert.equal(result.status, status, result.stderr);
   noSecrets(result);
   server.assertDone();
-  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, reads);
+  assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, reads + 1);
   if (status === 0) {
     const output = JSON.parse(result.stdout);
     assert.ok(!Object.hasOwn(output, 'setup_confirmation'));
@@ -380,22 +391,22 @@ for (const [index, expected] of setupTemplate.setup_items.entries()) {
     const server = await replay(t, plan({ setupReads }).calls);
     const result = await runCli(server, ['--json']);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 2);
+    assert.equal(server.requests.filter((r) => r.method === 'GET' && r.path === '/v1/databricks/bindings/dbxb_recorded').length, 3);
     noSecrets(result);
     server.assertDone();
   });
 
   for (const state of ['missing', 'pending', 'wrong target']) test(`Connect timeout names ${state} ${expected.kind} ${expected.target}`, { timeout: 4900 }, async (t) => {
-    const setupReads = [{ items: (items) => {
+    const setupReads = [{ binding: { state: 'connecting' }, items: (items) => {
       if (state === 'missing') items.splice(index, 1);
       else if (state === 'pending') items[index].state = 'pending';
       else items[index].target = `other-${expected.target}`;
     } }];
     const server = await replay(t, plan({ setupReads }).calls);
+    // One poll: a deadline long enough for its two reads on a slow CI runner, and a poll interval past it.
     const result = await runCli(server, ['--json'], {
-      NODE_OPTIONS: `--import=${new URL('./fixtures/databricks/timeout-clock.mjs', import.meta.url).href}`,
-      // Node 22 warns that mock timers are experimental. Keep stderr as CLI JSON.
-      NODE_NO_WARNINGS: '1'
+      BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS: '2000',
+      BENCHROUTER_DATABRICKS_TEST_WAIT_POLL_MS: '5000'
     });
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout, '');
@@ -408,7 +419,7 @@ for (const [index, expected] of setupTemplate.setup_items.entries()) {
 }
 
 test('setup-item failure text redacts credentials in human output', { timeout: 4900 }, async (t) => {
-  const p = plan({ m2m: true, setupReads: [{ items: (items) => {
+  const p = plan({ m2m: true, setupReads: [{ binding: { state: 'connecting' }, items: (items) => {
     Object.assign(items[2], { state: 'failed', failure: { ...setupTemplate.failure, message: [...tokens, clientSecret, basic, pollMarker].join(' ') } });
   } }] });
   const tokens = p.calls.filter((call) => call.path === '/oidc/v1/token').map((call) => call.body.access_token);
@@ -850,7 +861,7 @@ for (const retry of [false, true]) test(`Connect runs all persisted grants befor
   server.assertDone();
 });
 
-for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manifest_table_revoke', 'manifest_secret_acl_delete']) test(`Connect fails on unexpected ${action} export errors without acknowledgement`, { timeout: 4900 }, async (t) => {
+for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manifest_table_revoke', 'manifest_secret_acl_delete']) test(`Connect fails on repeated ${action} export errors without acknowledgement`, { timeout: 4900 }, async (t) => {
   const kind = ['manifest_table_revoke', 'manifest_secret_acl_delete'].includes(action) ? 'revoke' : 'grant';
   const step = kind === 'revoke' ? action === 'manifest_secret_acl_delete' ? manifestSecretRevoke() : manifestRevoke()
     : persistedChange.sp_change.grant.find((s) => s.action === action);
@@ -858,8 +869,9 @@ for (const action of ['manifest_table_grant', 'manifest_secret_acl_put', 'manife
   changeCalls[1] = { ...changeCalls[1], status: 500, body: { error_code: 'INTERNAL_ERROR' } };
   const p = plan({ agent: sp2, pending: [pendingStep(kind, step, 'failed-export')], changeCalls, done: [] });
   p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.0/workspace/export') + 1);
+  p.calls.push(...Array.from({ length: 4 }, () => ({ ...p.calls.at(-1) })));
   const server = await replay(t, p.calls);
-  const result = await runCli(server, ['--json']);
+  const result = await runCli(server, ['--json'], fastWait);
   assert.equal(result.status, 1, result.stderr);
   assert.ok(!server.requests.some((r) => r.path.endsWith('/cleanup') || r.path === '/api/2.2/jobs/create'));
   server.assertDone();
@@ -944,14 +956,15 @@ for (const method of ['GET', 'PUT']) test(`new SP rule-set ${method} stops after
   server.assertDone();
 });
 
-for (const method of ['GET', 'PUT']) for (const [status, code] of [[401, 'UNAUTHORIZED'], [500, 'INTERNAL_ERROR']]) test(`new SP rule-set ${method} does not retry ${status} ${code}`, { timeout: 4900 }, async (t) => {
+for (const method of ['GET', 'PUT']) for (const [status, code] of [[401, 'UNAUTHORIZED'], [500, 'INTERNAL_ERROR']]) test(`new SP rule-set ${method} stops after ${method === 'GET' && status === 500 ? 'bounded transient retries for' : 'one request for'} ${status} ${code}`, { timeout: 4900 }, async (t) => {
   const p = plan();
   const index = p.calls.findIndex((c) => c.method === method && c.path === rulePath);
-  p.calls.splice(index, p.calls.length, call(method, rulePath, { error_code: code }, status));
+  const attempts = method === 'GET' && status === 500 ? 5 : 1;
+  p.calls.splice(index, p.calls.length, ...Array.from({ length: attempts }, () => call(method, rulePath, { error_code: code }, status)));
   const server = await replay(t, p.calls);
-  const result = await runCli(server, ['--json'], { BENCHROUTER_DATABRICKS_TEST_RULE_RETRY_MS: '1' });
+  const result = await runCli(server, ['--json'], { ...fastWait, BENCHROUTER_DATABRICKS_TEST_RULE_RETRY_MS: '1' });
   assert.equal(result.status, 1, result.stderr);
-  assert.equal(server.requests.filter((r) => r.path === rulePath && r.method === method).length, 1);
+  assert.equal(server.requests.filter((r) => r.path === rulePath && r.method === method).length, attempts);
   server.assertDone();
 });
 
@@ -1010,10 +1023,11 @@ for (const status of [404, 500]) test(`manifest_table_grant table read ${status}
   const grant = persistedChange.sp_change.grant.find((s) => s.action === 'manifest_table_grant');
   const calls = grantCalls(grant).slice(0, 3);
   calls[2] = { ...calls[2], status, body: { error_code: status === 404 ? 'RESOURCE_DOES_NOT_EXIST' : 'INTERNAL_ERROR' } };
+  if (status === 500) calls.push(...Array.from({ length: 4 }, () => ({ ...calls[2] })));
   const p = plan({ agent: sp2, pending: [pendingStep('grant', grant, 'table-read')], changeCalls: calls });
   if (status === 500) p.calls.splice(p.calls.findIndex((c) => c.path.endsWith('/cleanup')));
   const server = await replay(t, p.calls);
-  const result = await runCli(server, ['--json']);
+  const result = await runCli(server, ['--json'], fastWait);
   assert.equal(result.status, status === 404 ? 0 : 1, result.stderr);
   server.assertDone();
 });
@@ -1157,7 +1171,7 @@ test('Connect refuses an SP-change revoke for an unrelated retired SP before wor
 });
 
 test('Connect handles a DTO failed setup item with null failure', { timeout: 4900 }, async (t) => {
-  const p = plan({ setupReads: [{ items: (items) => { items[0].state = 'failed'; items[0].failure = null; } }] });
+  const p = plan({ setupReads: [{ binding: { state: 'connecting' }, items: (items) => { items[0].state = 'failed'; items[0].failure = null; } }] });
   const server = await replay(t, p.calls);
   const result = await runCli(server, ['--json']);
   assert.equal(result.status, 1);
@@ -1173,5 +1187,279 @@ test('Connect replays structurally typed DTO fields without an exact-key restric
   const server = await replay(t, p.calls);
   const result = await runCli(server, ['--json']);
   assert.equal(result.status, 0, result.stderr);
+  server.assertDone();
+});
+
+const bindingPath = '/v1/databricks/bindings/dbxb_recorded';
+const pollReadIndex = (calls, path) => calls.findIndex((c, i) => c.path === path && i > calls.findIndex((r) => r.path === '/api/2.2/jobs/run-now'));
+
+for (const field of ['setup item', 'binding']) test(`a verified response with an invalid ${field} cannot become the connected fallback`, { timeout: 4900 }, async (t) => {
+  const snapshot = field === 'setup item'
+    ? { items: (items) => { items[0].state = 'invalid'; } }
+    : { binding: { cadence_seconds: 'invalid' } };
+  const p = plan({ setupReads: [snapshot] });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.ok(JSON.parse(result.stderr).error.message.includes(field === 'setup item' ? 'invalid Databricks setup_items' : 'invalid binding'));
+  server.assertDone();
+});
+
+test('malformed setup items after a verified read are reported, not hidden by the fallback', { timeout: 4900 }, async (t) => {
+  const p = plan({ setupReads: [
+    { run: { ...run, state: { life_cycle_state: 'RUNNING' } } },
+    { items: (items) => { items[0].state = 'invalid'; } }
+  ] });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(JSON.parse(result.stderr).error.message.includes('invalid Databricks setup_items'), result.stderr);
+  server.assertDone();
+});
+
+for (const [name, values] of [
+  ['BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS', ['0', '-1', '3001', '1.5', 'Infinity', 'invalid', '']],
+  ['BENCHROUTER_DATABRICKS_TEST_WAIT_POLL_MS', ['0', '5001', '1.5', 'invalid', '']],
+  ['BENCHROUTER_DATABRICKS_TEST_WAIT_RETRY_MS', ['-1', '101', '1.5', 'Infinity', 'invalid', '']]
+]) for (const value of values) test(`Connect rejects ${name}=${JSON.stringify(value)} at the replay boundary`, { timeout: 4900 }, async (t) => {
+  const server = await replay(t, []);
+  const result = await runCli(server, ['--json'], { [name]: value });
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(JSON.parse(result.stderr).error.message.includes(`Invalid ${name} test timing.`));
+  server.assertDone();
+});
+
+test('Connect ignores test timing overrides without the loopback replay boundary', { timeout: 4900 }, async (t) => {
+  const server = await replay(t, []);
+  const result = await runCli(server, ['--json'], {
+    BENCHROUTER_DATABRICKS_API_BASE: '', BR_FIXTURE_AUTH: 'pat',
+    BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS: 'invalid',
+    BENCHROUTER_DATABRICKS_TEST_WAIT_RETRY_MS: 'invalid'
+  });
+  assert.equal(result.status, 5, result.stderr);
+  assert.equal(JSON.parse(result.stderr).error.code, 'pat_login');
+  server.assertDone();
+});
+
+test('Connect rejects an external replay boundary before applying timing overrides', { timeout: 4900 }, async (t) => {
+  const server = await replay(t, []);
+  const result = await runCli(server, ['--json'], {
+    BENCHROUTER_DATABRICKS_API_BASE: host,
+    BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS: '1',
+    BENCHROUTER_DATABRICKS_TEST_WAIT_RETRY_MS: '0'
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(JSON.parse(result.stderr).error.message.includes('only for a loopback HTTP test server'));
+  server.assertDone();
+});
+
+test('the binding read before eval grants has the same bounded retry budget as polling', { timeout: 4900 }, async (t) => {
+  const p = plan();
+  const at = p.calls.findIndex((c) => c.method === 'GET' && c.path === bindingPath);
+  p.calls.splice(at, p.calls.length, ...Array.from({ length: 5 }, () => call('GET', bindingPath, { error: { message: loginMarker } }, 503)));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], fastWait);
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(JSON.parse(result.stderr).error.message.includes(`GET ${bindingPath} answered 503`));
+  assert.equal(server.requests.filter((r) => r.path === bindingPath).length, 5);
+  assert.ok(!server.requests.some((r) => r.path === '/api/2.2/jobs/run-now'));
+  server.assertDone();
+});
+
+for (const path of [bindingPath, '/api/2.2/jobs/runs/get']) {
+  test(`Connect retries a transient 503 from ${path} with backoff`, { timeout: 4900 }, async (t) => {
+    const p = plan();
+    const at = pollReadIndex(p.calls, path);
+    p.calls.splice(at, 0, call('GET', path, { error: { message: loginMarker } }, 503));
+    const server = await replay(t, p.calls);
+    const result = await runCli(server, ['--json']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).ok, true);
+    const reads = server.requests.filter((r) => r.path === path).slice(-2);
+    assert.ok(reads[1].received_at - reads[0].received_at >= 900);
+    server.assertDone();
+  });
+}
+
+for (const status of [429, 500, 502, 504]) test(`Connect retries polling status ${status}`, { timeout: 4900 }, async (t) => {
+  const p = plan();
+  const at = pollReadIndex(p.calls, bindingPath);
+  p.calls.splice(at, 0, call('GET', bindingPath, { error: { message: loginMarker } }, status));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], fastWait);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).ok, true);
+  server.assertDone();
+});
+
+for (const path of [bindingPath, '/api/2.2/jobs/runs/get']) test(`Connect retries a dropped polling connection to ${path}`, { timeout: 4900 }, async (t) => {
+  const p = plan();
+  const at = pollReadIndex(p.calls, path);
+  p.calls.splice(at, 0, { ...call('GET', path), dropConnection: true });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], fastWait);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).ok, true);
+  server.assertDone();
+});
+
+// A definite failure after verification is reported, never hidden behind the connected fallback.
+for (const failure of ['run', 'setup']) test(`a ${failure} failure after verification is reported`, { timeout: 4900 }, async (t) => {
+  const p = plan({ setupReads: [{
+    ...(failure === 'run' ? { run: { ...run, state: { life_cycle_state: 'TERMINATED', result_state: 'FAILED' } } }
+      : { items: (items) => { Object.assign(items[2], { state: 'failed', failure: setupTemplate.failure }); } })
+  }] });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.equal(JSON.parse(result.stderr).ok, false);
+  server.assertDone();
+});
+
+test('a failed agent run after a verified read is reported before the next binding read', { timeout: 4900 }, async (t) => {
+  const p = plan({ setupReads: [
+    { run: { ...run, state: { life_cycle_state: 'RUNNING' } } },
+    { run: { ...run, state: { life_cycle_state: 'TERMINATED', result_state: 'FAILED' } } }
+  ] });
+  // The plan sends no binding read after the failed run: the failed run ends Connect first.
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(JSON.parse(result.stderr).error.message.includes('The agent job did not finish successfully'), result.stderr);
+  server.assertDone();
+});
+
+for (const [name, change] of [
+  ['disconnect requested', { disconnect_requested_at: '2026-11-04T20:30:00.000Z' }],
+  ['closed', { state: 'disconnected' }],
+  ['a different agent', { agent_sp_application_id: '00000000-0000-0000-0000-000000000099' }]
+]) test(`a binding ${name} after verification is reported`, { timeout: 4900 }, async (t) => {
+  const p = plan({ setupReads: [
+    { run: { ...run, state: { life_cycle_state: 'RUNNING' } } },
+    { run: { ...run, state: { life_cycle_state: 'RUNNING' } }, binding: change }
+  ] });
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(JSON.parse(result.stderr).error.message.includes('The binding changed or closed during Connect'), result.stderr);
+  server.assertDone();
+});
+
+for (const json of [false, true]) for (const path of [bindingPath, '/api/2.2/jobs/runs/get']) {
+  test(`verified workspace remains connected after ${path} exhausts retries (${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
+    // Verification arrives during the wait, before a later read becomes unavailable.
+    const p = plan({ setupReads: [{ run: { ...run, state: { life_cycle_state: 'RUNNING' } } }, {}] });
+    const at = p.calls.findLastIndex((c) => c.path === path);
+    p.calls.splice(at, p.calls.length, ...Array.from({ length: 5 }, () => call('GET', path, { error: { message: loginMarker } }, 503)));
+    const server = await replay(t, p.calls);
+    const result = await runCli(server, json ? ['--json'] : [], fastWait);
+    assert.equal(result.status, 0, result.stderr);
+    const output = json ? JSON.parse(result.stdout) : null;
+    if (json) { assert.equal(output.ok, true); assert.equal(output.state, 'verified'); }
+    assert.ok((output?.note ?? result.stdout).includes('The workspace is connected.'));
+    assert.ok((output?.note ?? result.stdout).includes('benchrouter databricks status'));
+    assert.equal(server.requests.filter((r) => r.path === path).length, path === bindingPath ? 7 : 6);
+    server.assertDone();
+  });
+}
+
+test('an unverified workspace fails after the bounded polling retry budget', { timeout: 4900 }, async (t) => {
+  const p = plan();
+  const at = pollReadIndex(p.calls, bindingPath);
+  p.calls.splice(at, 1, ...Array.from({ length: 5 }, () => call('GET', bindingPath, { error: { message: loginMarker } }, 503)));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], fastWait);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.ok(JSON.parse(result.stderr).error.message.includes(`GET ${bindingPath} answered 503`));
+  server.assertDone();
+});
+
+test('polling retries stop at the existing Connect deadline', { timeout: 4900 }, async (t) => {
+  const p = plan();
+  const at = pollReadIndex(p.calls, bindingPath);
+  p.calls.splice(at, 1, call('GET', bindingPath, { error: { message: loginMarker } }, 503));
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], {
+    BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS: '200'
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(JSON.parse(result.stderr).error.message.includes('Timed out waiting for the agent run'));
+  assert.equal(server.requests.filter((r) => r.path === bindingPath).length, 2);
+  server.assertDone();
+});
+
+for (const headers of [{ 'x-request-id': 'request-fixture', 'cf-ray': 'ray-unused' }, { 'cf-ray': 'ray-fixture' }, { 'x-request-id': 'br_ctrl_recorded_fixture' }, {}]) {
+  test(`BenchRouter refusal includes safe request context (${Object.keys(headers).join(', ') || 'no request id'})`, { timeout: 4900 }, async (t) => {
+    const p = plan();
+    const at = pollReadIndex(p.calls, bindingPath);
+    p.calls.splice(at, 1, { ...call('GET', bindingPath, { error: { code: 'unknown', message: `remote-body-must-not-appear ${loginMarker} ${pollMarker}` } }, 403), headers });
+    const server = await replay(t, p.calls);
+    const result = await runCli(server, ['--json'], fastWait);
+    assert.equal(result.status, 1, result.stderr);
+    const message = JSON.parse(result.stderr).error.message;
+    assert.ok(message.includes(`GET ${bindingPath} answered 403`));
+    if (Object.keys(headers).length) assert.ok(message.includes(`Request id: ${(headers['x-request-id'] ?? headers['cf-ray']).split('br_ctrl_recorded_fixture').join('[redacted]')}.`));
+    assert.ok(!message.includes('ray-unused'));
+    assert.ok(!message.includes('remote-body-must-not-appear'));
+    assert.ok(!message.includes('?'));
+    server.assertDone();
+  });
+}
+
+function attachedEvalGrantCalls(agent, evaluation, { refused, missing } = {}) {
+  const read = [call('GET', '/api/2.0/workspace/get-status', missing === 'folder' ? { error_code: 'RESOURCE_DOES_NOT_EXIST' } : { object_id: 999, object_type: 'DIRECTORY' }, missing === 'folder' ? 404 : 200)];
+  if (missing === 'folder') return read;
+  const content = manifest.replace('support/triage', evaluation.route_key);
+  read.push(call('GET', '/api/2.0/workspace/export', missing === 'manifest' ? { error_code: 'RESOURCE_DOES_NOT_EXIST' } : { content: Buffer.from(content).toString('base64') }, missing === 'manifest' ? 404 : 200));
+  if (missing === 'manifest') return read;
+  read.push(call('PATCH', '/api/2.0/permissions/directories/999', {}, 200,
+    bodyIs({ access_control_list: [{ service_principal_name: agent.applicationId, permission_level: 'CAN_READ' }] })),
+  call('GET', `${uc}/tables/main.evals.cases`, { full_name: 'main.evals.cases', owner: 'table-owner' }));
+  for (const [securable, full_name, privilege] of [['catalog', 'main', 'USE_CATALOG'], ['schema', 'main.evals', 'USE_SCHEMA'], ['table', 'main.evals.cases', 'SELECT']]) {
+    read.push(call('PATCH', `${uc}/permissions/${securable}/${full_name}`, refused === securable ? { error_code: 'PERMISSION_DENIED' } : {}, refused === securable ? 403 : 200,
+      bodyIs({ changes: [{ principal: agent.applicationId, add: [privilege] }] })));
+    if (refused === securable) return [...read, call('GET', `${uc}/catalogs/main`, { owner: 'catalog-owner' }), call('GET', `${uc}/schemas/main.evals`, { owner: 'schema-owner' })];
+  }
+  read.push(call('POST', '/api/2.0/secrets/acls/put', refused === 'secret' ? { error_code: 'PERMISSION_DENIED' } : {}, refused === 'secret' ? 403 : 200,
+    bodyIs({ scope: 'support-evals', principal: agent.applicationId, permission: 'READ' })));
+  return read;
+}
+
+for (const outcome of ['granted', 'binding 503', 'folder 503', 'manifest 503', 'table 503', 'table', 'secret', 'folder missing', 'manifest missing']) test(`reconnect after Disconnect re-grants attached evals before the agent starts: ${outcome}`, { timeout: 4900 }, async (t) => {
+  const evaluation = structuredClone(bindingTemplate.evals[0]);
+  const next = { ...evaluation, id: 'dbxe_next', route_key: 'support/next' };
+  const p = plan({ agent: sp2, evals: [evaluation, next, { ...evaluation, id: 'dbxe_detached', state: 'detached' }] });
+  p.calls.find((c) => c.path === '/v1/databricks/bindings' && c.method === 'GET').body.bindings = [{ ...binding(), state: 'disconnected' }];
+  const grants = [...attachedEvalGrantCalls(sp2, evaluation, {
+    refused: ['table', 'secret'].includes(outcome) ? outcome : undefined,
+    missing: outcome.endsWith(' missing') ? outcome.split(' ')[0] : undefined
+  }), ...attachedEvalGrantCalls(sp2, next)];
+  p.calls.splice(p.calls.findIndex((c) => c.path === '/api/2.2/jobs/run-now'), 0, ...grants);
+  if (outcome.endsWith(' 503')) {
+    const path = { binding: bindingPath, folder: '/api/2.0/workspace/get-status', manifest: '/api/2.0/workspace/export', table: `${uc}/tables/main.evals.cases` }[outcome.split(' ')[0]];
+    p.calls.splice(p.calls.findIndex((c) => c.method === 'GET' && c.path === path), 0,
+      call('GET', path, { error: { message: loginMarker } }, 503));
+  }
+  const server = await replay(t, p.calls);
+  const result = await runCli(server, ['--json'], fastWait);
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.agent_sp_application_id, sp2.applicationId);
+  assert.equal(output.eval_grants[0].route_key, evaluation.route_key);
+  const granted = outcome === 'granted' || outcome.endsWith(' 503');
+  assert.equal(output.eval_grants[0].state, granted ? 'granted' : 'needs_grant');
+  assert.deepEqual(output.eval_grants[1], { route_key: next.route_key, state: 'granted' });
+  assert.equal(output.eval_grants.length, 2);
+  if (!granted) { assert.ok(output.eval_grants[0].reason); assert.ok(result.stderr.includes(`Eval ${evaluation.route_key}:`)); }
+  const start = server.requests.findIndex((r) => r.path === '/api/2.2/jobs/run-now');
+  const record = server.requests.findIndex((r) => r.path === `${bindingPath}/agent`);
+  const folderGrants = server.requests.filter((r) => r.method === 'PATCH' && r.path === '/api/2.0/permissions/directories/999');
+  assert.ok(folderGrants.length > 0);
+  for (const request of folderGrants) assert.ok(server.requests.indexOf(request) > record && server.requests.indexOf(request) < start);
+  for (const request of server.requests.filter((r) => r.path === `${uc}/permissions/table/main.evals.cases` || r.body?.permission === 'READ')) {
+    assert.ok(server.requests.indexOf(request) > record && server.requests.indexOf(request) < start);
+  }
   server.assertDone();
 });

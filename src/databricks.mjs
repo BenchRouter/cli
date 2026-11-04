@@ -105,7 +105,7 @@ export class DatabricksWorkspace {
     if (!this.#token || this.#claims.exp * 1000 - Date.now() < 300000) await this.login(Boolean(this.#token));
     return this.#claims;
   }
-  async call(method, path, body, { form = false, anonymous = false, basic } = {}) {
+  async call(method, path, body, { form = false, anonymous = false, basic, signal } = {}) {
     if (!anonymous && !basic) await this.freshLogin();
     const headers = { accept: 'application/json', 'user-agent': 'codex-research/1.0 contact@example.com' };
     if (basic) headers.authorization = `Basic ${basic}`;
@@ -113,16 +113,20 @@ export class DatabricksWorkspace {
     if (body !== undefined) headers['content-type'] = form ? 'application/x-www-form-urlencoded' : 'application/json';
     let response;
     let result;
+    let text;
     try {
       response = await fetch(`${this.base}${path}`, {
         method, headers, body: body === undefined ? undefined : form ? body.toString() : JSON.stringify(body),
-        redirect: 'error', signal: AbortSignal.timeout(30000)
+        redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000)
       });
-      const text = await response.text();
-      result = text ? JSON.parse(text) : {};
+      text = await response.text();
     } catch {
-      throw new DatabricksError('Databricks request failed or returned invalid JSON.');
+      const failure = new DatabricksError('Databricks request failed or returned invalid JSON.');
+      failure.networkError = true;
+      throw failure;
     }
+    try { result = text ? JSON.parse(text) : {}; }
+    catch { throw new DatabricksError('Databricks request failed or returned invalid JSON.', 'databricks_request_failed', response.ok ? null : response.status); }
     if (!response.ok) {
       const code = result?.error_code ?? result?.error;
       const identifier = typeof code === 'string' && code && [...code].every((c) => c === '_' || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) ? ` ${code}` : '';

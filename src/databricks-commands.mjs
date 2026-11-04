@@ -1,20 +1,15 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { emit } from './control-helpers.mjs';
 import { customerPaths } from './control-api.mjs';
-import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, uc, encode } from './databricks.mjs';
-import { databricksControl, secretRedaction, exits, refusal, workspaceAdmin, numericId, readJob, runUcStep } from './databricks-helpers.mjs';
-import { parseDatabricksEval, validateClosedExposures, validateDatabricksBinding, validateDatabricksRead, validateDisconnect } from './databricks-contract.mjs';
-import { readWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
+import { DatabricksWorkspace, DatabricksError, workspaceHost, scim, encode } from './databricks.mjs';
+import { databricksControl, secretRedaction, exits, refusal, workspaceAdmin, numericId, readJob, bindingRead } from './databricks-helpers.mjs';
+import { parseDatabricksEval, validateClosedExposures, validateDatabricksBinding, validateDisconnect } from './databricks-contract.mjs';
+import { readWorkspaceEvalGrants, applyWorkspaceEvalGrants } from './databricks-eval-manifest.mjs';
 import { isSpStep, runPendingSpSteps } from './databricks-sp-steps.mjs';
 import { objectExists, deleteRecorded, recordedObjects, objectKey } from './databricks-cleanup.mjs';
 import { renderDatabricksRead, renderDatabricksEval, renderDatabricksDisconnect } from './render.mjs';
 
 const closed = (b) => ['archived', 'disconnected'].includes(b.state);
-function bindingRead(value) {
-  validateDatabricksRead(value);
-  workspaceHost(`https://${value.binding.host}`);
-  return value;
-}
 async function listBindings(br, host) {
   const answer = await br(customerPaths.databricksBindings());
   if (!Array.isArray(answer.bindings)) throw new Error('BenchRouter returned an invalid binding list.');
@@ -128,34 +123,13 @@ export async function runDatabricksCommand(ctx) {
               || folder.split('/').slice(1).some((p) => !p || p === '.' || p === '..')) return ctx.usage(1, 'databricks add-eval', 'Pass a route and an absolute, normalized workspace folder.');
           await requireAdmin(ws);
           const { directory, grants } = await readWorkspaceEvalGrants(ws, folder, route);
-          const aclPath = `/api/2.0/permissions/directories/${numericId(directory.object_id)}`;
           const answer = await br(customerPaths.databricksAddEval(b.id, { route_key: route, eval_folder: folder }));
           parseDatabricksEval(answer?.eval);
-          try {
-            await ws.call('PATCH', aclPath, { access_control_list: [{ service_principal_name: b.agent_sp_application_id, permission_level: 'CAN_READ' }] });
-          } catch (error) {
-            if (!(error instanceof DatabricksError && (error.status === 403 || error.code === 'PERMISSION_DENIED'))) throw error;
-            let acl;
-            try { acl = await ws.optional('GET', aclPath); } catch { /* Owner unavailable; keep the grant refusal exit code. */ }
-            const owner = acl?.access_control_list?.find((a) => a.all_permissions?.some((p) => p.permission_level === 'IS_OWNER'));
-            throw refusal(`Databricks refused folder CAN_READ. Folder owner: ${owner?.user_name ?? owner?.service_principal_name ?? owner?.group_name ?? 'unknown'}. Ask the owner to grant access.`);
-          }
-          const [catalog, schema] = grants.casesTable.split('.');
-          const table = await ws.call('GET', `${uc}/tables/${encode(grants.casesTable)}`);
-          const steps = [];
-          if (catalog.toLowerCase() !== b.catalog.toLowerCase()) steps.push(['catalog', catalog, ['USE_CATALOG']]);
-          if (catalog.toLowerCase() !== b.catalog.toLowerCase() || schema.toLowerCase() !== b.schema.toLowerCase()) steps.push(['schema', `${catalog}.${schema}`, ['USE_SCHEMA']]);
-          steps.push(['table', grants.casesTable, ['SELECT']]);
-          try {
-            for (const [securable, full_name, privileges] of steps) await runUcStep(ws, { action: 'grant', securable, full_name, principal: { type: 'service_principal', name: b.agent_sp_application_id }, privileges, only_if: 'always' }, b.agent_sp_application_id, catalog, schema, 'add-eval');
-          } catch (error) {
-            if (error instanceof DatabricksError && error.code === 'grant_refused') throw refusal(`${error.message} Table owner: ${table.owner ?? 'unknown'}.`);
-            throw error;
-          }
-          // These lines contain identifiers only. Never read a secret value (AUTH-012 / DATA-001).
-          const secret_acl_commands = grants.secretScopes.map((scope) => `databricks secrets put-acl ${shellWord(scope)} ${shellWord(b.agent_sp_application_id)} READ`);
+          const applied = await applyWorkspaceEvalGrants(ws, b, { directory, grants });
           const agent_started = await runAgent(ws, b.agent_job_id);
-          result = { ...answer, secret_acl_commands, agent_started };
+          const { grant_needed: registration_grant_needed, ...evalView } = answer.eval;
+          result = { ...answer, eval: evalView, registration_grant_needed, ...applied, agent_started,
+            note: 'The agent re-checks the grants on its run. Run benchrouter databricks status for the current result.' };
           render = renderDatabricksEval;
         } else {
           const admin = await requireAdmin(ws);
@@ -229,7 +203,4 @@ export async function runDatabricksCommand(ctx) {
     const code = error instanceof DatabricksError ? (safeCodes.has(error.code) ? error.code : 'databricks_request_failed') : 'command_failed';
     ctx.fail(clean(error instanceof Error ? error.message : 'Databricks command failed.'), code, exits[code] ?? 1);
   }
-}
-function shellWord(value) {
-  return [...value].every((c) => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-'.includes(c)) && value ? value : `'${value.split("'").join("'\\''")}'`;
 }

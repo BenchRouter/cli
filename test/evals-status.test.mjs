@@ -74,6 +74,33 @@ test("evals status --pr reads the preview context from the route catalog", async
   assert.deepEqual(replay.requests.map((request) => request.url), ["/v1/dashboard/routes/validation/request-router/catalog"]);
 });
 
+// The setup_failures entry shape is server PR #807's contract (not yet recorded live).
+test("evals status --pr names a PR run that failed at setup before any preview lookup", async (t) => {
+  const failed = { ...catalog, setup_failures: [
+    { pr_number: 75, failed_step: "tree_invalid", message: "older PR", github_run_url: "https://github.com/example/app/actions/runs/1" },
+    { pr_number: 76, failed_step: "declared_file_missing", message: "Declared file .benchrouter/scorer.composer.js is missing.", github_run_url: "https://github.com/example/app/actions/runs/2" }
+  ] };
+  const replay = await startFixtureServer(t, failed);
+  const human = await runCli(["evals", "status", "validation/request-router", "--pr", "76", "--api-url", replay.url, ...token]);
+  assert.notEqual(human.status, 0);
+  assert.ok(human.stderr.startsWith("PR #76 eval run failed at setup: Declared file .benchrouter/scorer.composer.js is missing.\nGitHub run: https://github.com/example/app/actions/runs/2\n"), human.stderr);
+  const json = await runCli(["evals", "status", "validation/request-router", "--pr", "76", "--api-url", replay.url, ...token, "--json"]);
+  assert.equal(JSON.parse(json.stderr).error.code, "pr_setup_failed");
+});
+
+test("evals status --pr redacts the login token from a setup failure", async (t) => {
+  const leaked = { ...catalog, setup_failures: [
+    { pr_number: 76, failed_step: "fetch_failed", message: "fetch with br_ctrl_recorded_fixture failed", github_run_url: "https://example.test/br_ctrl_recorded_fixture" }
+  ] };
+  const replay = await startFixtureServer(t, leaked);
+  for (const json of [false, true]) {
+    const result = await runCli(["evals", "status", "validation/request-router", "--pr", "76", "--api-url", replay.url, ...token, ...(json ? ["--json"] : [])]);
+    assert.notEqual(result.status, 0);
+    assert.ok(!result.stderr.includes("br_ctrl_recorded_fixture"), result.stderr);
+    assert.ok(result.stderr.includes("[redacted]"), result.stderr);
+  }
+});
+
 test("evals status --pr names a missing preview, and evals list leads with each context's summary", async (t) => {
   const replay = await startFixtureServer(t, catalog);
   const missing = await runCli(["evals", "status", "validation/request-router", "--pr", "76", "--api-url", replay.url, ...token]);
