@@ -10,6 +10,7 @@ import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 import { readRouteManifest } from "./route-manifest.mjs";
 import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
+import { unifiedDiff } from "./line-diff.mjs";
 import { applyUpgradePacket, prepareUpgradeFiles, preserveCustomerSetup, inspectSignedKit, preparePackageJson, preflightFileApplication, stageFileApplication, UPGRADE_GENERATED_PATHS, BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS } from "./generated-kit.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -211,7 +212,9 @@ async function init() {
     } else if (file.path === WORKFLOW_PATH && previous !== null) {
       content = preserveCustomerSetup(previous, content);
     } else if (previous !== null && previous !== content && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
-      process.stdout.write(`skip-existing ${file.path}\n`);
+      process.stdout.write(isBenchRouterKitFile(file.path)
+        ? `skip-existing ${file.path} (it differs from BenchRouter's copy; --force replaces BenchRouter kit and README files)\n`
+        : `skip-existing ${file.path} (it differs from BenchRouter's copy; --overwrite-user-edits replaces it)\n`);
       continue;
     }
     plannedFiles.push({ path: file.path, content, previousContent: previous });
@@ -325,7 +328,7 @@ function mergeRequestedRoutesIntoManifest(existingSource, previewSource, request
   if (!changed) {
     return existingSource;
   }
-  return existingDocument.toString();
+  return existingDocument.toString({ lineWidth: 0 });
 }
 
 async function upgrade() {
@@ -344,7 +347,7 @@ async function upgrade() {
   const autoYes = Boolean(args.yes);
 
   if (!bearer) {
-    fail("Missing BenchRouter credential. Pass --upgrade-token (from the dashboard banner) or --api-key/BENCHROUTER_API_KEY.");
+    fail("Missing BenchRouter credential. At a terminal, mint a one-time upgrade token with `benchrouter setup upgrade-token --route-id <id>` (after `benchrouter login`) or from the dashboard banner, then pass --upgrade-token. In CI, pass --api-key or set BENCHROUTER_API_KEY.");
   }
   if (!repoFullName) {
     usage(1, "upgrade", "Missing --repo and unable to detect one from git remote.");
@@ -373,17 +376,16 @@ async function upgrade() {
       routeId,
       mode: "preview"
     });
+    let planned;
     try {
-      const planned = [...prepareUpgradeFiles(outputDir, preview.files), ...preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS })];
+      planned = [...prepareUpgradeFiles(outputDir, preview.files), ...preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS })];
       await preflightFileApplication(outputDir, planned);
     } catch (error) {
       fail(error instanceof Error ? error.message : "BenchRouter returned an invalid kit upgrade preview.");
     }
 
     process.stdout.write(`Planned BenchRouter kit upgrade to ${preview.setup_kit_version} for ${preview.repo_full_name} / ${preview.route_id}\n`);
-    for (const file of preview.files) {
-      process.stdout.write(`would write ${file.path}\n`);
-    }
+    writeUpgradePreview(outputDir, planned);
 
     if (dryRun) {
       return;
@@ -441,6 +443,31 @@ async function upgrade() {
   process.stdout.write("- Review the diff. benchrouter.yml and route-owned cases, scorers, calibration fixtures, and app files must be unchanged.\n");
   process.stdout.write(`- Run \`npx --yes benchrouter@latest doctor --repo ${repoFullName}\`.\n`);
   process.stdout.write("- Open a PR titled \"Upgrade BenchRouter kit\".\n");
+}
+
+// The preview compares each planned file with the file on disk, so a reviewer sees
+// only real changes, with a diff for each updated file.
+function writeUpgradePreview(outputDir, planned) {
+  const rows = planned.map((file) => {
+    const target = safeTargetPath(outputDir, file.path);
+    const current = existsSync(target) ? readFileSync(target, "utf8") : null;
+    return { ...file, current, action: current === null ? "create" : current === file.content ? "unchanged" : "update" };
+  });
+  const changed = rows.filter((row) => row.action !== "unchanged");
+  const unchanged = rows.filter((row) => row.action === "unchanged");
+  if (changed.length === 0) {
+    process.stdout.write("No file changes: every file already matches this kit version.\n");
+  } else {
+    process.stdout.write(`Would change ${changed.length} file(s):\n`);
+    for (const row of changed) process.stdout.write(`  ${row.action === "create" ? "create" : "update"} ${row.path}\n`);
+  }
+  if (unchanged.length > 0) {
+    process.stdout.write(`Unchanged (${unchanged.length}):\n`);
+    for (const row of unchanged) process.stdout.write(`  ${row.path}\n`);
+  }
+  for (const row of changed) {
+    process.stdout.write(`\n${unifiedDiff(row.path, row.current ?? "", row.content)}`);
+  }
 }
 
 async function fetchUpgradePacket({ apiUrl, bearer, repoFullName, routeId, mode }) {
@@ -1668,8 +1695,12 @@ Options:
                           Required with --base-url-env or --eval-pack; an executable eval inherits it.
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --dry-run                Print planned writes without changing files.
-  --force                  Overwrite BenchRouter-generated kit/readme files only.
-  --overwrite-user-edits   Overwrite existing differing files.
+  --force                  Replace BenchRouter-owned files that differ from the new copy:
+                           .benchrouter/README.md, SETUP_README.md, .gitignore, bootstrap.mjs
+                           and trust.json. Without it, init keeps an existing differing file and
+                           prints skip-existing. init always refreshes the evals workflow (it keeps
+                           your setup steps) and merges benchrouter.yml; --force changes neither.
+  --overwrite-user-edits   Replace every existing file that differs, including non-kit files.
   --output-dir <path>      Defaults to current directory.
   --save-token             Save this setup token for repo read commands.
 `);
@@ -1689,14 +1720,24 @@ Options:
 
 The upgrade flow previews the planned changes (without consuming the single-use
 upgrade token), prompts for confirmation, then applies. Use --yes to skip the
-prompt. Upgrade preserves the existing .benchrouter/benchrouter.yml byte-for-byte
+prompt. The preview lists the files that would change, with a diff for each, and
+the files that are already up to date.
+
+Upgrade preserves the existing .benchrouter/benchrouter.yml byte-for-byte
 and preserves all route-owned assets and dispatch-only customer setup steps.
 It replaces only the bootstrap, trust file, workflow, and README content.
+Upgrade has no --force flag: it always replaces those BenchRouter-owned files.
+(--force belongs to init, where it replaces differing BenchRouter kit files.)
 It validates all generated-file hashes before it writes files.
 
 Options:
-  --upgrade-token <token>  Single-use token from the dashboard "Upgrade BenchRouter kit" banner. Falls back to BENCHROUTER_UPGRADE_TOKEN.
-  --api-key <key>          BenchRouter API key for applying an upgrade. Falls back to BENCHROUTER_API_KEY env var. Ignored when --upgrade-token is set.
+  --upgrade-token <token>  Single-use token, valid for one hour. At a terminal, mint one with
+                           \`benchrouter setup upgrade-token --route-id <id>\` (needs \`benchrouter login\`),
+                           or copy it from the dashboard "Upgrade BenchRouter kit" banner.
+                           Falls back to BENCHROUTER_UPGRADE_TOKEN.
+  --api-key <key>          The runtime key, for CI only; a person at a terminal uses --upgrade-token.
+                           Falls back to BENCHROUTER_API_KEY. Ignored when --upgrade-token is set.
+                           API-key upgrades apply without a preview.
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --output-dir <path>      Defaults to current directory.
   --yes, -y                Skip the interactive confirmation after preview.

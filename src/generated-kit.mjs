@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { access, lstat, mkdir, open, realpath, rename, rm, rmdir } from "node:fs/promises";
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { parseDocument } from "yaml";
 import { readRouteManifest } from "./route-manifest.mjs";
 
@@ -121,11 +122,66 @@ export function preserveCustomerSetup(existingSource, generatedSource) {
   const runsOn = existing.toJS().jobs.eval["runs-on"];
   const customerRunsOn = validRunsOn(runsOn) && JSON.stringify(runsOn) !== JSON.stringify(generated.toJS().jobs.eval["runs-on"]);
   if (!customerRunsOn && customerSteps.length === 0 && customerPostSteps.length === 0) return generatedSource;
+  const spliced = spliceCustomerSource(existingSource, existing, previousSteps, previous, generatedSource, generated, nextSteps, next, customerRunsOn);
   if (customerRunsOn) generated.setIn(["jobs", "eval", "runs-on"], generated.createNode(runsOn));
   nextSteps.items.splice(next.run + 1, nextSteps.items.length - next.run - 1, ...customerPostSteps.map((step) => step.clone()));
   nextSteps.items.splice(next.interpreter + 1, next.run - next.interpreter - 1, ...customerSteps.map((step) => step.clone()));
   setupBounds(nextSteps);
-  return generated.toString();
+  // Prefer the text splice: BenchRouter's bytes stay as sent and the customer's sections keep their
+  // own formatting. Use it only when the parser reads it as exactly the merged workflow.
+  if (spliced !== null) {
+    const check = parseDocument(spliced);
+    if (check.errors.length === 0 && isDeepStrictEqual(check.toJS(), generated.toJS())) return spliced;
+  }
+  return generated.toString({ lineWidth: 0 });
+}
+
+// Copies the customer's sections of the old workflow text into BenchRouter's new workflow text:
+// the setup region between the interpreter recorder and the runtime step (with its comments),
+// the steps after the runtime step, and a customer runs-on value.
+function spliceCustomerSource(oldSource, oldDoc, oldSteps, oldBounds, newSource, newDoc, newSteps, newBounds, customerRunsOn) {
+  const lineStart = (source, offset) => source.lastIndexOf("\n", offset - 1) + 1;
+  const sameEndings = (text) => (newSource.includes("\r") ? text : text.replaceAll("\r\n", "\n"));
+  const oldItems = oldSteps.items;
+  const newItems = newSteps.items;
+  if ([...oldItems, ...newItems].some((item) => !Array.isArray(item?.range))) return null;
+  const edits = [
+    {
+      from: newItems[newBounds.run].range[2],
+      to: newItems.at(-1).range[2],
+      text: oldSource.slice(oldItems[oldBounds.run].range[2], oldItems.at(-1).range[2])
+    },
+    {
+      from: newItems[newBounds.interpreter].range[2],
+      to: lineStart(newSource, newItems[newBounds.run].range[0]),
+      text: oldSource.slice(oldItems[oldBounds.interpreter].range[2], lineStart(oldSource, oldItems[oldBounds.run].range[0]))
+    }
+  ];
+  if (customerRunsOn) {
+    // Copy from the end of the runs-on key, so a block list or map keeps its own line breaks.
+    const runsOnPair = (doc) => doc.getIn(["jobs", "eval"], true)?.items?.find((pair) => pair.key?.value === "runs-on");
+    const oldPair = runsOnPair(oldDoc);
+    const newPair = runsOnPair(newDoc);
+    if (![oldPair?.key, oldPair?.value, newPair?.key, newPair?.value].every((node) => Array.isArray(node?.range))) return null;
+    // A block value's range ends after its last newline and a plain value's does not, so both
+    // sides run to the end of that line (which also keeps a trailing comment).
+    const lineEnd = (source, offset) => {
+      if (source[offset - 1] === "\n") return offset;
+      const next = source.indexOf("\n", offset);
+      return next === -1 ? source.length : next + 1;
+    };
+    edits.push({
+      from: newPair.key.range[1],
+      to: lineEnd(newSource, newPair.value.range[1]),
+      text: oldSource.slice(oldPair.key.range[1], lineEnd(oldSource, oldPair.value.range[1]))
+    });
+  }
+  let result = newSource;
+  for (const edit of edits.sort((left, right) => right.from - left.from)) {
+    if (edit.to < edit.from) return null;
+    result = result.slice(0, edit.from) + sameEndings(edit.text) + result.slice(edit.to);
+  }
+  return result;
 }
 
 export function validateUpgradeFiles(files) {
