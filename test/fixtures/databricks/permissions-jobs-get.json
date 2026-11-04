@@ -1,0 +1,28 @@
+{
+  "object_id": "/jobs/1077673075335497",
+  "object_type": "job",
+  "access_control_list": [
+    {
+      "service_principal_name": "57e4c9d9-a02e-4080-9b88-6e3b8bed64cb",
+      "display_name": "benchrouter-agent-ad83a297",
+      "all_permissions": [
+        {
+          "permission_level": "IS_OWNER",
+          "inherited": false
+        }
+      ]
+    },
+    {
+      "group_name": "admins",
+      "all_permissions": [
+        {
+          "permission_level": "CAN_MANAGE",
+          "inherited": true,
+          "inherited_from_object": [
+            "/jobs/"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -9,6 +9,7 @@ const OBSERVATION_QUERY = ["source", "canonical-id", "subject-kind", "proposal-i
 const PUBLIC = ["help", "json", "api-url"];
 
 export const CONTROL_COMMAND_FLAGS = {
+  feedback: [...ACCOUNT, "kind", "route", "command", "error-code", "repo", "setup-key"],
   login: ["help", "json", "api-url", "name", "expires-in-days", "timeout-seconds", "no-open"],
   "account show": ACCOUNT,
   "account token": ACCOUNT,

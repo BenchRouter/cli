@@ -134,7 +134,8 @@ test("the overlap error names the file and explains both lists, exactly", async 
   assert.equal(result.status, 1);
   assert.equal(result.stderr, "--eval-pack for route app/web: input_refs and acceptance_refs both list apps/web/eval/run.mjs. " +
     "A file is either data the evaluator reads (input_refs) or part of what decides quality (acceptance_refs); " +
-    "an evaluator that holds the checks goes in acceptance_refs.\n");
+    "an evaluator that holds the checks goes in acceptance_refs.\n" +
+    "If BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'\n");
   assert.equal(bodies.length, 0);
 });
 

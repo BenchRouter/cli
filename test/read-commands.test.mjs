@@ -127,7 +127,8 @@ test("repo reads give actionable errors for missing and invalid access", async (
   assert.equal(missing.status, 1);
   assert.equal(
     missing.stderr,
-    "Missing the repository's setup key (br_setup_). Set BENCHROUTER_SETUP_KEY to the key you gave init, pass --setup-key, or rerun init with --save-token to keep it for this repository on this computer. With an account token from `benchrouter login`, `benchrouter routes show <route>` shows what a route serves and `benchrouter evals status <route>` shows its evaluation.\n"
+    "Missing the repository's setup key (br_setup_). Set BENCHROUTER_SETUP_KEY to the key you gave init, pass --setup-key, or rerun init with --save-token to keep it for this repository on this computer. With an account token from `benchrouter login`, `benchrouter routes show <route>` shows what a route serves and `benchrouter evals status <route>` shows its evaluation.\n" +
+      "If BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'\n"
   );
   assert.equal(replay.requests.length, 0);
 
@@ -135,7 +136,8 @@ test("repo reads give actionable errors for missing and invalid access", async (
   assert.equal(invalid.status, 1);
   assert.equal(
     invalid.stderr,
-    "BenchRouter repo access expired or is invalid. Open https://benchrouter.com/cli to create a new repo token.\n"
+    "BenchRouter repo access expired or is invalid. Open https://benchrouter.com/cli to create a new repo token.\n" +
+      "If BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'\n"
   );
   assert.equal(replay.requests.length, 1);
 

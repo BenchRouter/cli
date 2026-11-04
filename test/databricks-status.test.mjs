@@ -10,6 +10,8 @@ const states = ['connecting', 'verified', 'agent_silent', 'disconnecting', 'disc
 const reads = Object.fromEntries(await Promise.all(states.map(async (s) => [s, await fixture(`binding-${s}.json`)])));
 const [me, metadata, run] = await Promise.all(['me.json', 'databricks-config.json', 'p2-run.json'].map(fixture));
 const m2mMe = await fixture('me-m2m.json');
+// Recorded GET /api/2.0/permissions/jobs/:id from the test workspace (agent SP owns the job).
+const jobPermissions = await fixture('permissions-jobs-get.json');
 const deletedJob = await fixture('job-deleted.json');
 const manifest = await readFile(new URL('eval-manifest.yml', fixtureDir), 'utf8');
 const host = 'https://fixture.cloud.databricks.com';
@@ -20,7 +22,7 @@ const scim = '/api/2.0/preview/scim/v2';
 const call = (method, path, body = {}, status = 200, check) => ({ method, path, body, status, check });
 const list = (bindings = [reads.verified.binding]) => call('GET', base, { bindings });
 const read = (detail = reads.verified) => call('GET', bindingPath, detail);
-const jobAcl = () => call('GET', `/api/2.0/permissions/jobs/${reads.verified.binding.agent_job_id}`, { access_control_list: [{ service_principal_name: reads.verified.binding.agent_sp_application_id, all_permissions: [{ permission_level: 'IS_OWNER' }] }] });
+const jobAcl = () => call('GET', `/api/2.0/permissions/jobs/${reads.verified.binding.agent_job_id}`, structuredClone(jobPermissions));
 const admin = (nonAdmin = false) => call('GET', `${scim}/Me`, nonAdmin ? { ...me, groups: [] } : me);
 const missing = (path) => call('GET', path, { error_code: 'RESOURCE_DOES_NOT_EXIST' }, 404);
 const checkBody = (value) => (r) => assert.deepEqual(r.body, value);
@@ -672,7 +674,9 @@ test('status validates setup_items with the shared contract parser before worksp
 
 for (const json of [false, true]) test(`status warns about a user-owned agent job without altering server reads (${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
   const acl = jobAcl();
-  acl.body.access_control_list = [{ user_name: 'fixture-admin@example.com', all_permissions: [{ permission_level: 'IS_OWNER' }] }];
+  // The recorded shape with a user, not the agent SP, as the direct owner.
+  const [owner, ...inherited] = acl.body.access_control_list;
+  acl.body.access_control_list = [{ user_name: 'fixture-admin@example.com', all_permissions: owner.all_permissions }, ...inherited];
   const server = await replay(t, [list(), read(), acl]);
   const result = await runCli(server, ['status', ...(json ? ['--json'] : [])]);
   assert.equal(result.status, 0, result.stderr);

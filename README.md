@@ -326,6 +326,7 @@ benchrouter frontier <route-key> [--json]
 benchrouter failures <route-key> [model] [--json]
 benchrouter explain <model> [--route <route-key>] [--json]
 benchrouter login [--name text] [--expires-in-days 90]
+benchrouter feedback [--kind question|doc_gap|bug|other] [--json] "<message>"
 benchrouter account show [--json]
 benchrouter account token save --account-token br_ctrl_...
 benchrouter billing show|activity|statement [--json]

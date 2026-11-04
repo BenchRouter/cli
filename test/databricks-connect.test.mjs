@@ -232,7 +232,9 @@ for (const json of [false, true]) test(`Databricks diagnostics name the call and
   const server = await replay(t, p.calls);
   const result = await runCli(server, json ? ['--json'] : []);
   assert.equal(result.status, 1);
-  const message = json ? JSON.parse(result.stderr).error.message : result.stderr.trim();
+  // Text mode adds the feedback hint as its own last line.
+  const hint = "\nIf BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'";
+  const message = json ? JSON.parse(result.stderr).error.message : result.stderr.trim().split(hint).join('');
   assert.equal(message, `Databricks request failed: GET /api/2.2/jobs/get answered 400 BAD_REQUEST. ${(prefix + '[redacted]' + 'y'.repeat(400)).slice(0, 300)}`);
   assert.ok(!message.includes('?job_id='));
   assert.ok(!message.includes(token.slice(0, 40)));

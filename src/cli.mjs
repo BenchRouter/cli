@@ -900,6 +900,9 @@ async function doctor() {
     ? manifestRoutes.filter((route) => route.routeId === selectedRouteId)
     : manifestRoutes;
   if (selectedRouteId && selectedRoutes.length !== 1) fail(`Expected one declared route matching ${selectedRouteId}.`);
+  for (const route of manifestRoutes) {
+    validateDeclaredFilesForDoctor(root, route, failures);
+  }
   const routeFiles = discoverRouteFilesFromManifest(selectedRoutes, root);
   if (routeFiles.length === 0) {
     failures.push("could not discover route scorer/cases files from .benchrouter/benchrouter.yml");
@@ -908,14 +911,12 @@ async function doctor() {
   // Isolated replay validates runnable case arrays and standalone scorers. Repository-executable
   // routes validate their declared repository inputs without imposing replay-only file shapes.
   for (const routeFile of routeFiles) {
-    if (routeFile.evalMode === "repository_executable") {
-      validateRepositoryExecutableFilesForDoctor(root, routeFile.repositoryExecutableRefs, failures);
-    } else {
+    if (routeFile.evalMode !== "repository_executable") {
       validateCasesForDoctor(routeFile.casesPath, routeFile.casesRelPath, failures);
     }
   }
   for (const { evalMode, scorerPath, scorerRelPath } of routeFiles) {
-    if (evalMode === "repository_executable") {
+    if (evalMode === "repository_executable" || !scorerRelPath) {
       continue;
     }
     if (existsSync(scorerPath)) {
@@ -1086,22 +1087,29 @@ function discoverRouteFilesFromManifest(routes, root) {
   }));
 }
 
-function validateRepositoryExecutableFilesForDoctor(root, refs, failures) {
+function validateDeclaredFilesForDoctor(root, route, failures) {
+  const refs = new Set([route.configPath, route.scorerPath, ...route.caseRefs, ...route.codeRefs, ...route.repositoryExecutableRefs].filter(Boolean));
   for (const ref of refs) {
     const resolved = resolveDoctorRelativePath(root, ref);
     if (!resolved.ok) {
-      failures.push(`repository-executable eval ref ${ref} is invalid: ${resolved.error}`);
+      failures.push(`route ${route.routeId}: declared file ${ref} is invalid: ${resolved.error}`);
       continue;
     }
-    if (!existsSync(resolved.path)) {
-      failures.push(`missing repository-executable eval ref ${ref}`);
+    let isFile = false;
+    try { isFile = statSync(resolved.path).isFile(); } catch { isFile = false; }
+    if (existsSync(resolved.path) && !isFile) {
+      failures.push(`route ${route.routeId}: declared file ${ref} is not a regular file`);
+    } else if (!isFile) {
+      // A declared config may also be one of the required kit files.
+      const existing = failures.indexOf(`missing ${ref}`);
+      if (existing !== -1) failures.splice(existing, 1);
+      failures.push(`route ${route.routeId}: missing declared file ${ref}`);
     }
   }
 }
 
 function validateCasesForDoctor(casesPath, relPath, failures) {
   if (!existsSync(casesPath)) {
-    failures.push(`missing ${relPath}`);
     return;
   }
   let cases;
@@ -1272,11 +1280,9 @@ function validateRuntimeWiringForDoctor(root, routes, failures) {
     for (const codeRef of route.codeRefs) {
       const resolved = resolveDoctorRelativePath(root, codeRef);
       if (!resolved.ok) {
-        failures.push(`runtime wiring route ${label}: invalid code_ref ${codeRef}: ${resolved.error}`);
         continue;
       }
       if (!existsSync(resolved.path)) {
-        failures.push(`runtime wiring route ${label}: missing code_ref ${codeRef}`);
         continue;
       }
       let contents;
@@ -1843,6 +1849,7 @@ function fail(message, code = "command_failed", exitCode = 1) {
     process.stderr.write(`${JSON.stringify({ ok: false, error: { code, message } })}\n`);
   } else {
     process.stderr.write(`${message}\n`);
+    if (command !== "feedback") process.stderr.write("If BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'\n");
   }
   process.exit(exitCode);
 }

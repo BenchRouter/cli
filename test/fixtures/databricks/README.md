@@ -169,3 +169,8 @@ from production on 2026-11-03, after BenchRouter #756 (one provider service per 
 It holds `provider_service` setup items, one failed (`service_get_http_403`). The host,
 account and SP ids are replaced with test values. Route, exposure and setup item lists are
 trimmed to a few entries. The shapes are otherwise as served.
+
+`permissions-jobs-get.json` is `GET /api/2.0/permissions/jobs/1077673075335497` from the
+test workspace on 2026-11-04, recorded with `databricks api get` and unmodified: the agent
+service principal is the direct `IS_OWNER`, and `admins` has `CAN_MANAGE` inherited from
+`/jobs/`. It holds no human email address.
