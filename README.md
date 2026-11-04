@@ -234,12 +234,31 @@ that declares its own.
 The `lockfile` is `package-lock.json`, `npm-shrinkwrap.json` or `pnpm-lock.yaml`
 for runtime `node`, and `bun.lock` or `bun.lockb` for runtime `bun`.
 
+Three fields are optional:
+
+- `working_directory`: the repository-relative directory where `argv` runs, such
+  as `apps/web`. Leave it out for the repository root; `.` is refused. The
+  `lockfile` is relative to this directory and may name a parent directory's
+  lockfile, such as `../../pnpm-lock.yaml`; the install runs in the lockfile's
+  directory. `result_path`, the refs, `config_path`, `workflow` and `scorer` stay
+  relative to the repository root.
+- `isolation`: `process` (the default) or `job`. Use `job` when the evaluator
+  starts children that leave its process group, for example containers started
+  through a Docker daemon.
+- `runtime_version`: informational only. The job's `node` or `bun` runs, and the
+  runtime records its version. When present, it must be an exact version.
+
+`primary_metric` uses lowercase letters, digits and underscores, and starts with
+a letter. `case_refs`, `input_refs` and `acceptance_refs` may not list a file
+twice, and no file may be both an input and an acceptance file.
+
 The CLI rejects mutable runtime versions, unsafe paths, missing referenced
 files, invalid or reserved secret names, fractional timeouts, and timeouts above
 90 minutes before it sends the setup request. The eval pack declares no call or
 spend limit: BenchRouter bounds each executable run's spend itself, at five
-times the route baseline's measured spend on the same eval or $1, whichever is
-higher. The CLI rejects `max_model_calls`, `max_cost_usd` and
+times the route baseline's measured spend on the same eval, with no floor.
+Before the first reference run there is no measured spend, so only
+`timeout_minutes` bounds that run. The CLI rejects `max_model_calls`, `max_cost_usd` and
 `max_cost_per_call_usd` as unknown fields. The generated workflow runs `argv` without a shell. It receives only
 the declared customer secrets and the scoped BenchRouter eval contract.
 
@@ -304,7 +323,7 @@ benchrouter billing auto-reload setup --threshold <usd> --amount <usd> | disable
 benchrouter keys list|create|disable|enable|revoke
 benchrouter repos list|refresh
 benchrouter setup status [--repo owner/repo]
-benchrouter setup create --repository-id <id> --installation-id <id> [--intent initial|new_route]
+benchrouter setup create [--repo owner/repo] [--intent initial|new_route]
 benchrouter setup session show <session-id>
 benchrouter setup approve <approval-id|approval-link> [--model <model-id>] [--yes]
 benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
@@ -386,8 +405,23 @@ using that key stops authenticating.
 `setup create` starts a setup session and prints a one-time setup code plus the
 server-authored `init` command. `setup upgrade-token` mints a single-use
 `br_upgrade_` token and prints it once. Both secrets are printed once and never
-saved; pass them to `init --setup-key` and `upgrade --upgrade-token`. Read
-`repository_id` and `installation_id` from `repos list`.
+saved; pass them to `init --setup-key` and `upgrade --upgrade-token`.
+`setup create` looks up the repository ID and the GitHub App installation ID for
+`--repo` (or the current git remote) from your synced GitHub access, as
+`repos list` shows them. If the repository is missing, run `repos refresh` or
+open the BenchRouter setup page once, or pass `--repository-id` and
+`--installation-id` yourself.
+
+To add a route to a repository that already has BenchRouter:
+
+1. Sign in with `benchrouter login`.
+2. Run `benchrouter setup create --intent new_route --repo owner/repo`. It
+   prints a one-time setup key and the `init` command.
+3. Rerun `init` with that key and the new route's `--route-id`, `--name` and
+   `--incumbent-model` (plus `--eval-pack`, `--api-family` and `--base-url-env`
+   when the route needs them). `init` adds the route to `benchrouter.yml` and
+   keeps the existing routes.
+4. Commit the changes and open a pull request.
 
 `blocks list` prints one line per block that stops evaluations: its kind, scope,
 time, whether Unblock clears it, and how to clear it. `blocks unblock` (account

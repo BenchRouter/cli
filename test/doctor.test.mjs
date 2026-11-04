@@ -631,6 +631,43 @@ test("init does not commit the server packet before local file application succe
   assert.equal(setupServer.requests.length, 0);
 });
 
+test("init dry run lists what it would write apart from what it would skip", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-init-preview-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, ".benchrouter/cases.compose.json"), "[\"customer edits\"]\n");
+  await writeFile(path.join(root, ".benchrouter/SETUP_README.md"), "# Same\n");
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: {
+      repo_full_name: "example/app",
+      setup_packet: {
+        files: [
+          { path: ".benchrouter/README.md", content: "# BenchRouter\n" },
+          { path: ".benchrouter/SETUP_README.md", content: "# Same\n" },
+          { path: ".benchrouter/cases.compose.json", content: "[]\n" }
+        ],
+        package_json: { scripts: {}, dev_dependencies: [] },
+        runtime_env: {}
+      }
+    }
+  });
+
+  const result = await runCli([
+    "init", "--setup-key", "br_setup_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
+    "--api-url", setupServer.url, "--output-dir", root, "--dry-run"
+  ], root);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes("Would change 1 file(s):\n  create .benchrouter/README.md\n"), result.stdout);
+  assert.ok(result.stdout.includes("Unchanged (1):\n  .benchrouter/SETUP_README.md\n"), result.stdout);
+  assert.ok(result.stdout.includes("Would skip 2 file(s):\n  .benchrouter/cases.compose.json (it differs from BenchRouter's copy; --overwrite-user-edits replaces it)\n  package.json (no package.json found, so no scripts update)\n"), result.stdout);
+  assert.ok(!result.stdout.includes("would write"), result.stdout);
+  assert.equal(await readFile(path.join(root, ".benchrouter/cases.compose.json"), "utf8"), "[\"customer edits\"]\n");
+  assert.equal(existsSync(path.join(root, ".benchrouter/README.md")), false);
+});
+
 test("init requires direct-provider identity flags together", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-provider-flags-"));
   t.after(() => rm(root, { recursive: true, force: true }));

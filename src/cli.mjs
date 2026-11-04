@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
@@ -34,6 +34,8 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "runtime",
   "runtime_version",
   "lockfile",
+  "working_directory",
+  "isolation",
   "input_refs",
   "acceptance_refs",
   "result_path",
@@ -226,18 +228,9 @@ async function init() {
 
 
 
-  if (dryRun) {
-    process.stdout.write(`Dry run for ${targetRepo}\n`);
-    for (const file of previewPacket.files) {
-      if (file.path !== ".env.example") process.stdout.write(`would write ${file.path}\n`);
-    }
-    process.stdout.write("would update package.json scripts/devDependencies when package.json exists\n");
-    process.stdout.write("runtime env configuration is deferred until activation\n");
-    process.stdout.write("would request Runtime/host BENCHROUTER_API_KEY during a real init\n");
-    return;
-  }
-
+  // The dry run and the real run share this plan, so the preview names exactly what init writes and skips.
   const plannedFiles = [];
+  const skippedFiles = [];
   for (const file of previewPacket.files) {
     if (file.path === ".env.example") continue;
     const targetPath = safeTargetPath(outputDir, file.path);
@@ -248,13 +241,34 @@ async function init() {
     } else if (file.path === WORKFLOW_PATH && previous !== null) {
       content = preserveCustomerSetup(previous, content);
     } else if (previous !== null && previous !== content && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
-      process.stdout.write(isBenchRouterKitFile(file.path)
-        ? `skip-existing ${file.path} (it differs from BenchRouter's copy; --force replaces BenchRouter kit and README files)\n`
-        : `skip-existing ${file.path} (it differs from BenchRouter's copy; --overwrite-user-edits replaces it)\n`);
+      skippedFiles.push(isBenchRouterKitFile(file.path)
+        ? `${file.path} (it differs from BenchRouter's copy; --force replaces BenchRouter kit and README files)`
+        : `${file.path} (it differs from BenchRouter's copy; --overwrite-user-edits replaces it)`);
       continue;
     }
     plannedFiles.push({ path: file.path, content, previousContent: previous });
   }
+
+  if (dryRun) {
+    process.stdout.write(`Dry run for ${targetRepo}\n`);
+    let packageFiles = [];
+    try {
+      packageFiles = preparePackageJson(outputDir, previewPacket.package_json);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : "Could not plan the package.json update.");
+    }
+    writeFilePreview(outputDir, [...plannedFiles, ...packageFiles]);
+    if (packageFiles.length === 0) skippedFiles.push("package.json (no package.json found, so no scripts update)");
+    if (skippedFiles.length > 0) {
+      process.stdout.write(`Would skip ${skippedFiles.length} file(s):\n`);
+      for (const line of skippedFiles) process.stdout.write(`  ${line}\n`);
+    }
+    process.stdout.write("runtime env configuration is deferred until activation\n");
+    process.stdout.write("would request Runtime/host BENCHROUTER_API_KEY during a real init\n");
+    return;
+  }
+
+  for (const line of skippedFiles) process.stdout.write(`skip-existing ${line}\n`);
   try {
     plannedFiles.push(...preparePackageJson(outputDir, previewPacket.package_json));
     await (await stageFileApplication({
@@ -421,7 +435,7 @@ async function upgrade() {
     }
 
     process.stdout.write(`Planned BenchRouter kit upgrade to ${preview.setup_kit_version} for ${preview.repo_full_name} / ${preview.route_id}\n`);
-    writeUpgradePreview(outputDir, planned);
+    writeFilePreview(outputDir, planned, "No file changes: every file already matches this kit version.");
 
     if (dryRun) {
       return;
@@ -483,7 +497,7 @@ async function upgrade() {
 
 // The preview compares each planned file with the file on disk, so a reviewer sees
 // only real changes, with a diff for each updated file.
-function writeUpgradePreview(outputDir, planned) {
+function writeFilePreview(outputDir, planned, noChanges = "No file changes: every file already matches.") {
   const rows = planned.map((file) => {
     const target = safeTargetPath(outputDir, file.path);
     const current = existsSync(target) ? readFileSync(target, "utf8") : null;
@@ -492,7 +506,7 @@ function writeUpgradePreview(outputDir, planned) {
   const changed = rows.filter((row) => row.action !== "unchanged");
   const unchanged = rows.filter((row) => row.action === "unchanged");
   if (changed.length === 0) {
-    process.stdout.write("No file changes: every file already matches this kit version.\n");
+    process.stdout.write(`${noChanges}\n`);
   } else {
     process.stdout.write(`Would change ${changed.length} file(s):\n`);
     for (const row of changed) process.stdout.write(`  ${row.action === "create" ? "create" : "update"} ${row.path}\n`);
@@ -1521,24 +1535,58 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   for (const field of ["id", "config_path", "workflow", "command", "scorer", "result_path", "primary_metric"]) {
     requireNonEmptyString(pack[field], `${at}.${field}`);
   }
+  if (!isMetricName(pack.primary_metric)) {
+    fail(`${at}.primary_metric must start with a lowercase letter and use only lowercase letters, digits and underscores.`);
+  }
+  // EVAL-012: optional fields. Absent or null means the repository root and process isolation.
+  const workingDirectory = pack.working_directory ?? null;
+  if (workingDirectory !== null) {
+    if (!isSafeDirectoryPath(workingDirectory)) {
+      fail(`${at}.working_directory must be a repository-relative directory such as apps/web (omit it for the repository root).`);
+    }
+    let isDirectory = false;
+    try { isDirectory = statSync(path.resolve(outputDir, workingDirectory)).isDirectory(); } catch { isDirectory = false; }
+    if (!isDirectory) fail(`${at}.working_directory ${workingDirectory} is not a directory in the repository.`);
+  }
+  if (pack.isolation !== undefined && pack.isolation !== null && pack.isolation !== "process" && pack.isolation !== "job") {
+    fail(`${at}.isolation must be process or job.`);
+  }
   if (pack.result_schema !== "benchrouter.executable_result.v1") {
     fail(`${at}.result_schema must be benchrouter.executable_result.v1.`);
   }
   if (pack.runtime !== "node" && pack.runtime !== "bun") {
     fail(`${at}.runtime must be node or bun.`);
   }
-  if (typeof pack.runtime_version !== "string" || !/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pack.runtime_version)) {
-    fail(`${at}.runtime_version must be an exact version such as 22.18.0, not a mutable alias.`);
+  // runtime_version is informational: the job's node or bun runs, and the runtime records its version.
+  if (pack.runtime_version !== undefined && (typeof pack.runtime_version !== "string" || !/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pack.runtime_version))) {
+    fail(`${at}.runtime_version must be an exact version such as 22.18.0, not a mutable alias, or be left out.`);
   }
   const allowedLockfiles = pack.runtime === "bun"
     ? new Set(["bun.lock", "bun.lockb"])
     : new Set(["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"]);
-  if (!allowedLockfiles.has(pack.lockfile)) {
+  // The lockfile is relative to working_directory and may name a parent directory's lockfile with
+  // ../ segments, as long as it stays inside the repository.
+  const lockfileParts = typeof pack.lockfile === "string" ? pack.lockfile.split("/") : [];
+  if (!allowedLockfiles.has(lockfileParts.at(-1))) {
     fail(`${at}.lockfile is not valid for runtime ${pack.runtime}.`);
+  }
+  if (pack.lockfile.includes("\0") || pack.lockfile.includes("\\") || pack.lockfile.startsWith("/") || pack.lockfile.startsWith("~")
+    || path.win32.isAbsolute(pack.lockfile) || pack.lockfile[1] === ":" || lockfileParts.some((part) => part === "" || part === ".")) {
+    fail(`${at}.lockfile must be a relative path such as pnpm-lock.yaml or ../../pnpm-lock.yaml.`);
+  }
+  const lockfileRepoPath = path.posix.normalize(path.posix.join(workingDirectory ?? ".", pack.lockfile));
+  if (lockfileRepoPath === ".." || lockfileRepoPath.startsWith("../")) {
+    fail(`${at}.lockfile ${pack.lockfile} leaves the repository from working_directory ${workingDirectory ?? "(the repository root)"}.`);
   }
   for (const field of ["case_refs", "argv", "input_refs", "acceptance_refs"]) {
     requireNonEmptyStringArray(pack[field], `${at}.${field}`);
   }
+  for (const field of ["case_refs", "input_refs", "acceptance_refs"]) {
+    const duplicate = pack[field].find((ref, index) => pack[field].indexOf(ref) !== index);
+    if (duplicate !== undefined) fail(`${at}.${field} lists ${duplicate} twice.`);
+  }
+  const overlap = pack.input_refs.find((ref) => pack.acceptance_refs.includes(ref));
+  if (overlap !== undefined) fail(`${at}.input_refs and acceptance_refs both list ${overlap}; acceptance files must stay apart from inputs.`);
   if (!Array.isArray(pack.secret_env) || pack.secret_env.some((name) => typeof name !== "string")) {
     fail(`${at}.secret_env must be an array of declared environment-variable names.`);
   }
@@ -1556,7 +1604,7 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   if (pack.timeout_minutes > 90) {
     fail(`${at}.timeout_minutes must be from 1 through 90 so the workflow keeps its install and upload buffer.`);
   }
-  for (const field of ["config_path", "workflow", "scorer", "result_path", "lockfile"]) {
+  for (const field of ["config_path", "workflow", "scorer", "result_path"]) {
     requireSafeRepoPath(pack[field], `${at}.${field}`);
   }
   for (const field of ["case_refs", "input_refs", "acceptance_refs"]) {
@@ -1564,7 +1612,7 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
       requireSafeRepoPath(ref, `${at}.${field}[${index}]`);
     }
   }
-  const requiredExistingRefs = new Set([pack.lockfile, ...pack.case_refs, ...pack.input_refs, ...pack.acceptance_refs]);
+  const requiredExistingRefs = new Set([lockfileRepoPath, ...pack.case_refs, ...pack.input_refs, ...pack.acceptance_refs]);
   for (const ref of requiredExistingRefs) {
     if (!existsSync(path.resolve(outputDir, ref))) {
       fail(`${at} references missing repository file ${ref}.`);
@@ -1591,6 +1639,20 @@ function requirePositiveInteger(value, label) {
   if (!Number.isInteger(value) || value <= 0) {
     fail(`${label} must be a positive integer.`);
   }
+}
+
+// EVAL-012: a safe repository-relative directory: no leading / or ~, no drive letter, backslash or
+// NUL, and every segment non-empty and not . or .. (so "." itself is refused).
+function isSafeDirectoryPath(value) {
+  if (typeof value !== "string" || value === "" || value.includes("\0") || value.includes("\\")) return false;
+  if (value.startsWith("/") || value.startsWith("~") || path.win32.isAbsolute(value) || value[1] === ":") return false;
+  return value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function isMetricName(value) {
+  const lower = (char) => char >= "a" && char <= "z";
+  return typeof value === "string" && lower(value[0] ?? "")
+    && [...value].every((char) => lower(char) || (char >= "0" && char <= "9") || char === "_");
 }
 
 function requireSafeRepoPath(value, label) {
