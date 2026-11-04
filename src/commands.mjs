@@ -259,17 +259,24 @@ async function runSetup(ctx) {
   }
   if (sub === "create") {
     const repoFullName = requireRepoFullName(ctx, "setup create");
-    const repositoryId = ctx.stringArg("repository-id");
-    const installationIdArg = ctx.stringArg("installation-id");
+    let repositoryId = optionValue(ctx, "repository-id", "setup create");
+    const installationIdArg = optionValue(ctx, "installation-id", "setup create");
     const intent = ctx.stringArg("intent", "initial");
-    if (!repositoryId) return ctx.usage(1, "setup create", "Missing --repository-id (the GitHub repository ID).");
-    if (!installationIdArg) return ctx.usage(1, "setup create", "Missing --installation-id.");
-    const installationId = Number(installationIdArg);
-    if (!Number.isInteger(installationId) || installationId <= 0) {
-      return ctx.usage(1, "setup create", "--installation-id must be a positive integer.");
+    if ((repositoryId === undefined) !== (installationIdArg === undefined)) {
+      return ctx.usage(1, "setup create", "Pass --repository-id and --installation-id together, or neither to look both up from --repo.");
+    }
+    let installationId;
+    if (installationIdArg !== undefined) {
+      installationId = Number(installationIdArg);
+      if (!Number.isInteger(installationId) || installationId <= 0 || String(installationId) !== installationIdArg) {
+        return ctx.usage(1, "setup create", "--installation-id must be a positive integer.");
+      }
     }
     if (intent !== "initial" && intent !== "new_route") {
       return ctx.usage(1, "setup create", "--intent must be initial or new_route.");
+    }
+    if (repositoryId === undefined) {
+      ({ repositoryId, installationId } = await resolveSetupRepository(ctx, repoFullName));
     }
     await requireMutationConfirmation(
       ctx,
@@ -315,6 +322,36 @@ async function runSetup(ctx) {
     return emit(ctx, body, () => render.renderUpgradeTokenMint(body));
   }
   return unknown(ctx, "setup", sub);
+}
+
+/**
+ * SETUP-001: the GitHub repository ID and App installation ID for --repo, from the
+ * person's synced repository access (GET /v1/setup/repos). GitHub names compare
+ * without case. The server lists active installations first, so the first match wins.
+ */
+async function resolveSetupRepository(ctx, repoFullName) {
+  const body = await accountRequest(ctx, customerPaths.setupRepos("setup create"));
+  const wanted = repoFullName.toLowerCase();
+  const repos = Array.isArray(body?.repos) ? body.repos : [];
+  const match = repos.find((repo) => typeof repo?.repo_full_name === "string" && repo.repo_full_name.toLowerCase() === wanted);
+  if (match && typeof match.repository_id === "string" && match.repository_id !== ""
+    && Number.isInteger(match.installation_id) && match.installation_id > 0) {
+    return { repositoryId: match.repository_id, installationId: match.installation_id };
+  }
+  if (match) return ctx.fail(`BenchRouter listed ${repoFullName} without a repository ID and installation ID.`, "setup_repo_invalid");
+  const owner = wanted.split("/")[0];
+  const installation = (Array.isArray(body?.installations) ? body.installations : [])
+    .find((item) => typeof item?.owner_login === "string" && item.owner_login.toLowerCase() === owner);
+  const installHint = installation?.install_url
+    ? ` If the BenchRouter GitHub App does not include this repository, add it: ${installation.install_url}`
+    : " If the BenchRouter GitHub App is not installed for this owner, install it from https://benchrouter.com/cli.";
+  return ctx.fail(
+    `Your synced GitHub access does not list ${repoFullName} with push, maintain or admin rights. ` +
+      "Run `benchrouter repos refresh` (or open the BenchRouter setup page once) to refresh GitHub access, then retry." +
+      installHint +
+      " You can also pass --repository-id and --installation-id from `benchrouter repos list`.",
+    "setup_repo_not_found"
+  );
 }
 
 function requireRepoFullName(ctx, usageName) {

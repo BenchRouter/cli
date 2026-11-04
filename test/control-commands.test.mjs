@@ -348,13 +348,14 @@ test("--payload-json is parsed, not pattern-matched, and must be a JSON object",
 test("setup create validates its identifiers before authenticating", async () => {
   const account = ["--account-token", "br_ctrl_recorded_fixture", "--repo", "example/app", "--yes"];
 
+  const together = "Pass --repository-id and --installation-id together, or neither to look both up from --repo.";
   const noRepositoryId = await runCli(["setup", "create", "--installation-id", "42", ...account]);
   assert.equal(noRepositoryId.status, 1);
-  assert.match(noRepositoryId.stderr, /Missing --repository-id/);
+  assert.ok(noRepositoryId.stderr.startsWith(together), noRepositoryId.stderr);
 
   const noInstallation = await runCli(["setup", "create", "--repository-id", "123", ...account]);
   assert.equal(noInstallation.status, 1);
-  assert.match(noInstallation.stderr, /Missing --installation-id/);
+  assert.ok(noInstallation.stderr.startsWith(together), noInstallation.stderr);
 
   const badInstallation = await runCli([
     "setup", "create", "--repository-id", "123", "--installation-id", "not-a-number", ...account

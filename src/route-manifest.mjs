@@ -84,7 +84,12 @@ function normalizeRoute(route, index) {
     resultSchema: requiredString(evalPack.result_schema, `${prefix}.eval_pack.result_schema`),
     repositoryExecutableRefs: evalMode === "repository_executable"
       ? Array.from(new Set([
-          requiredString(evalPack.lockfile, `${prefix}.eval_pack.lockfile`),
+          // EVAL-012: the lockfile is relative to working_directory (the repository root when absent).
+          path.posix.normalize(path.posix.join(
+            typeof evalPack.working_directory === "string" && evalPack.working_directory !== "" ? evalPack.working_directory : ".",
+            // Validated as present, then used exactly as written, as init sends it.
+            requiredString(evalPack.lockfile, `${prefix}.eval_pack.lockfile`) && evalPack.lockfile
+          )),
           ...caseRefs,
           ...inputRefs,
           ...acceptanceRefs

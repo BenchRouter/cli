@@ -343,7 +343,7 @@ Options:
 ${ACCOUNT_FLAGS}`,
   setup: `Usage:
   benchrouter setup status [--repo owner/repo]
-  benchrouter setup create --repository-id <id> --installation-id <id> [--repo owner/repo] [--intent initial|new_route]
+  benchrouter setup create [--repo owner/repo] [--intent initial|new_route]
   benchrouter setup session show <session-id>
   benchrouter setup approve <approval-id|approval-link> [--model <model-id>] [--yes]
   benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
@@ -361,18 +361,22 @@ Options:
   --repo owner/repo
 ${ACCOUNT_FLAGS}`,
   "setup create": `Usage:
-  benchrouter setup create --repository-id <id> --installation-id <id> [--repo owner/repo] [--intent initial|new_route]
+  benchrouter setup create [--repo owner/repo] [--intent initial|new_route]
 
 Calls POST /v1/setup/sessions and prints the one-time setup code plus the
 server-authored init command. The code is never written to disk; pass it to
-\`benchrouter init --setup-key\`. Get --repository-id and --installation-id from
-\`benchrouter repos list\`.
+\`benchrouter init --setup-key\`. The repository ID and GitHub App installation
+ID come from your synced GitHub access (\`benchrouter repos list\`).
+
+To add a route to a repository that already has BenchRouter, use
+--intent new_route, then rerun init with the new key and the new route's
+--route-id, --name and --incumbent-model. init keeps the existing routes.
 
 Options:
-  --repository-id <id>         GitHub repository ID.
-  --installation-id <id>       GitHub App installation ID (positive integer).
   --repo owner/repo            Defaults to the current git remote.
   --intent initial|new_route   Defaults to initial.
+  --repository-id <id>         Optional: GitHub repository ID. Pass with --installation-id.
+  --installation-id <id>       Optional: GitHub App installation ID (positive integer).
   --yes, -y
 ${ACCOUNT_FLAGS}`,
   "setup session": `Usage:
