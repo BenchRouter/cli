@@ -89,6 +89,7 @@ if (args.version === true && args._.length === 0) {
 } else if (isControlPlaneCommand(command)) {
   await runControlCommand({
     args,
+    optionNames: args[OPTION_NAMES],
     command,
     stringArg,
     fail,

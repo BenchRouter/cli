@@ -372,7 +372,7 @@ test("setup create validates its identifiers before authenticating", async () =>
   assert.equal(noRouteId.status, 1);
   assert.match(noRouteId.stderr, /Missing --route-id/);
 
-  const noSession = await runCli(["setup", "session", "show", ...account]);
+  const noSession = await runCli(["setup", "session", "show", "--account-token", "br_ctrl_recorded_fixture"]);
   assert.equal(noSession.status, 1);
   assert.match(noSession.stderr, /Missing setup session id/);
 });
