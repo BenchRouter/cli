@@ -218,8 +218,8 @@ The file must use this contract:
   "runtime": "node",
   "runtime_version": "22.18.0",
   "lockfile": "package-lock.json",
-  "input_refs": ["eval/contextual-synopsis.mjs", "eval/corpus.json"],
-  "acceptance_refs": ["eval/queries.json", "eval/qrels.json"],
+  "input_refs": ["eval/queries.json", "eval/corpus.json"],
+  "acceptance_refs": ["eval/contextual-synopsis.mjs", "eval/qrels.json"],
   "result_path": ".benchrouter/executable-result.json",
   "primary_metric": "recall_at_5",
   "timeout_minutes": 60,
@@ -250,7 +250,18 @@ Three fields are optional:
 
 `primary_metric` uses lowercase letters, digits and underscores, and starts with
 a letter. `case_refs`, `input_refs` and `acceptance_refs` may not list a file
-twice, and no file may be both an input and an acceptance file.
+twice, and no file may be in both `input_refs` and `acceptance_refs`:
+
+- `input_refs` are the data the evaluator reads: fixtures, prompts, scenarios.
+  BenchRouter hashes them into the route's input fingerprint, together with the
+  command, lockfile and code refs. A change to any of them starts a new input
+  identity, so earlier model results are not reused.
+- `acceptance_refs` are the files that decide what counts as good. BenchRouter
+  hashes them, with the primary metric, into the acceptance fingerprint. A change
+  to any of them redefines quality, so earlier scores are not comparable and the
+  models are measured again.
+- The evaluator program belongs in `acceptance_refs` when it contains the checks.
+  Keep fixtures and other data it reads in `input_refs`.
 
 The CLI rejects mutable runtime versions, unsafe paths, missing referenced
 files, invalid or reserved secret names, fractional timeouts, and timeouts above
