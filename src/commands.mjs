@@ -1,3 +1,4 @@
+import { controlFlagsEntry, unknownControlFlags } from "./control-flags.mjs";
 import { readFile } from "node:fs/promises";
 import { normalizeRepoFullName, saveAccountToken, saveAdminToken } from "./config.mjs";
 import { adminPaths, adminKeysMintBrowserSessionRequired, customerPaths, publicPaths } from "./control-api.mjs";
@@ -50,6 +51,14 @@ export function isControlPlaneCommand(command) {
  */
 export async function runControlCommand(ctx) {
   const { command } = ctx;
+  const flagsEntry = controlFlagsEntry(ctx.args._);
+  if (flagsEntry !== null) {
+    const unknownFlags = unknownControlFlags(flagsEntry, ctx.optionNames, ctx.args._);
+    if (unknownFlags.length > 0) {
+      return ctx.usage(1, resolveControlUsageName(ctx.args._) ?? command,
+        `Unknown flag${unknownFlags.length > 1 ? "s" : ""} for benchrouter ${flagsEntry}: ${unknownFlags.join(", ")}. Nothing was changed.`);
+    }
+  }
   // One help gate for the whole tree: resolve the deepest matching usage entry
   // so every nesting level answers --help without reaching the network.
   if (ctx.args.help) {
@@ -376,9 +385,6 @@ async function runRoutes(ctx) {
   }
   if (sub === "create") {
     // SERVE-001: a pinned route (no eval) in a new group or an existing one with no repository.
-    for (const flag of ["product", "product-slug", "product-id"]) {
-      if (ctx.args[flag] !== undefined) return ctx.usage(1, "routes create", `Unknown option --${flag}. Use --group, --group-slug, or --group-id.`);
-    }
     const name = optionValue(ctx, "name", "routes create");
     const model = optionValue(ctx, "model", "routes create");
     const groupName = optionValue(ctx, "group", "routes create");

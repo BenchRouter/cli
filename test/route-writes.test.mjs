@@ -100,13 +100,14 @@ test("routes create requires exactly one group choice and rejects removed produc
     [["--group-id="], /--group-id needs a value/],
     [["--group", "Support", "--group-slug"], /--group-slug needs a value/],
     ...["product", "product-slug", "product-id"].flatMap((flag) => [
-      [[`--${flag}`, "old"], new RegExp(`Unknown option --${flag}`)],
-      [["--group", "Support", `--${flag}`, "old"], new RegExp(`Unknown option --${flag}`)]
+      [[`--${flag}`, "old"], `Unknown flag for benchrouter routes create: --${flag}. Nothing was changed.`],
+      [["--group", "Support", `--${flag}`, "old"], `Unknown flag for benchrouter routes create: --${flag}. Nothing was changed.`]
     ])
   ]) {
     const bad = await runCli([...base, ...extra]);
     assert.notEqual(bad.status, 0);
-    assert.match(bad.stderr, message);
+    if (typeof message === "string") assert.ok(bad.stderr.startsWith(message), bad.stderr);
+    else assert.match(bad.stderr, message);
   }
   assert.deepEqual(replay.requests, []);
 });
