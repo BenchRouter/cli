@@ -971,8 +971,6 @@ test("init maps validated repository-executable eval packs to matching routes", 
   }
   const firstPack = repositoryExecutableEvalPack({
     id: "route_a_retrieval_v1",
-    command: "node eval/route-a.mjs",
-    scorer: ".benchrouter/scorer.route-a.js",
     case_refs: ["eval/queries-a.json"],
     argv: ["node", "eval/route-a.mjs"],
     input_refs: ["eval/route-a.mjs", "eval/corpus-a.json"],
@@ -981,8 +979,6 @@ test("init maps validated repository-executable eval packs to matching routes", 
   });
   const secondPack = repositoryExecutableEvalPack({
     id: "route_b_retrieval_v1",
-    command: "node eval/route-b.mjs",
-    scorer: ".benchrouter/scorer.route-b.js",
     case_refs: ["eval/queries-b.json"],
     argv: ["node", "eval/route-b.mjs"],
     input_refs: ["eval/route-b.mjs", "eval/corpus-b.json"],
@@ -1632,8 +1628,6 @@ routes:
       id: chat_repository_v1
       config_path: .benchrouter/benchrouter.yml
       workflow: .github/workflows/benchrouter-evals.yml
-      command: node eval/evaluator.mjs
-      scorer: .benchrouter/scorer.app__chat.js
       result_schema: benchrouter.executable_result.v1
       case_refs:
         - eval/qrels.json
@@ -1661,8 +1655,6 @@ function repositoryExecutableEvalPack(overrides = {}) {
     id: "app_chat_repository_v1",
     config_path: ".benchrouter/benchrouter.yml",
     workflow: ".github/workflows/benchrouter-evals.yml",
-    command: "node eval/evaluator.mjs",
-    scorer: ".benchrouter/scorer.app__chat.js",
     result_schema: "benchrouter.executable_result.v1",
     case_refs: ["eval/cases.json"],
     argv: ["node", "eval/evaluator.mjs"],

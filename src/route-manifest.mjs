@@ -77,7 +77,8 @@ function normalizeRoute(route, index) {
     incumbentModel: requiredString(seed.incumbent_model, `${prefix}.seed.incumbent_model`),
     evalArchetype: optionalString(metadata.eval_archetype),
     evalMode,
-    scorerPath: requiredString(evalPack.scorer, `${prefix}.eval_pack.scorer`),
+    // EVAL-012: only isolated replay has a scorer; an executable pack's runtime reads result_path.
+    scorerPath: evalMode === "repository_executable" ? null : requiredString(evalPack.scorer, `${prefix}.eval_pack.scorer`),
     casesPath: caseRefs[0],
     caseRefs,
     workflowPath: requiredString(evalPack.workflow, `${prefix}.eval_pack.workflow`),

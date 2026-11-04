@@ -26,8 +26,6 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "id",
   "config_path",
   "workflow",
-  "command",
-  "scorer",
   "result_schema",
   "case_refs",
   "argv",
@@ -985,7 +983,7 @@ async function fetchModelIds(apiUrl) {
 function discoverRouteFilesFromManifest(routes, root) {
   return routes.map((route) => ({
     evalMode: route.evalMode,
-    scorerPath: path.join(root, route.scorerPath),
+    scorerPath: route.scorerPath === null ? null : path.join(root, route.scorerPath),
     scorerRelPath: route.scorerPath,
     casesPath: path.join(root, route.casesPath),
     casesRelPath: route.casesPath,
@@ -1525,6 +1523,10 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   if (pack.api_family !== undefined) {
     fail(`${at} must not contain api_family. Pass --api-family for the route; the eval inherits the call site's family.`);
   }
+  // EVAL-012: the runtime runs argv and reads result_path, so an executable pack has no command or scorer.
+  for (const field of ["command", "scorer"]) {
+    if (Object.hasOwn(pack, field)) fail(`${at}: eval_pack.${field} is not accepted for a repository_executable eval pack.`);
+  }
   const unknownField = Object.keys(pack).find((field) => !EXECUTABLE_EVAL_PACK_FIELDS.has(field));
   if (unknownField) {
     fail(`${at} contains unknown field ${unknownField}.`);
@@ -1532,7 +1534,7 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   if (pack.mode !== "repository_executable") {
     fail(`${at}.mode must be repository_executable.`);
   }
-  for (const field of ["id", "config_path", "workflow", "command", "scorer", "result_path", "primary_metric"]) {
+  for (const field of ["id", "config_path", "workflow", "result_path", "primary_metric"]) {
     requireNonEmptyString(pack[field], `${at}.${field}`);
   }
   if (!isMetricName(pack.primary_metric)) {
@@ -1606,7 +1608,7 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   if (pack.timeout_minutes > 90) {
     fail(`${at}.timeout_minutes must be from 1 through 90 so the workflow keeps its install and upload buffer.`);
   }
-  for (const field of ["config_path", "workflow", "scorer", "result_path"]) {
+  for (const field of ["config_path", "workflow", "result_path"]) {
     requireSafeRepoPath(pack[field], `${at}.${field}`);
   }
   for (const field of ["case_refs", "input_refs", "acceptance_refs"]) {
