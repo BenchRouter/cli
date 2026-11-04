@@ -43,8 +43,11 @@ not live server recordings. The experiment and eval job targets match the live
 H8 findings (2026-10-30). The replay sets queue timestamps when it receives the
 register POST. Scenario variants preserve old timestamps, omit expected rows,
 or change state and failure to check completion from the current setup state.
-`timeout-clock.mjs` advances only the subprocess clock to exercise the three-minute
-timeout within the four-second subprocess limit. HTTP replay and polling stay real.
+Deadline tests use real time with `BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS`
+(1 to 1000 ms). Retry tests can set `BENCHROUTER_DATABRICKS_TEST_WAIT_RETRY_MS`
+(0 to 100 ms). Both overrides require the validated loopback replay boundary,
+`BENCHROUTER_DATABRICKS_API_BASE`. Production keeps its three-minute wait deadline
+and one-second initial retry delay.
 
 `auth-describe.json` and `databricks-config.json` use the live wire shapes supplied
 in the 2026-10-30 round 2 review (Databricks CLI v1.22.1 and the anonymous workspace

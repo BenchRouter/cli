@@ -1,6 +1,13 @@
 import { accountClient } from './control-helpers.mjs';
 import { apiRequest, ApiError } from './http.mjs';
-import { DatabricksError, uc, ucPaths, encode, isMissing } from './databricks.mjs';
+import { DatabricksError, uc, ucPaths, encode, isMissing, workspaceHost } from './databricks.mjs';
+import { validateDatabricksRead } from './databricks-contract.mjs';
+
+export function bindingRead(value) {
+  validateDatabricksRead(value);
+  workspaceHost(`https://${value.binding.host}`);
+  return value;
+}
 
 export const exits = { grant_refused: 3, workspace_admin_required: 4, pat_login: 5, databricks_login_required: 1, databricks_auth_unsupported: 1 };
 export const proofErrors = {
@@ -75,11 +82,22 @@ const refusalMessages = {
 export function databricksControl(ctx) {
   // AUTH-006: use the existing account control-token login before workspace writes.
   const control = accountClient(ctx);
+  const { remember, clean } = secretRedaction();
+  remember(control.token);
   return async (spec) => {
     try { return await apiRequest({ ...control, ...spec }); } catch (error) {
       // AUTH-012 / DATA-001: do not echo remote messages or arbitrary error codes.
-      if (error instanceof ApiError) throw refusal(refusalMessages[error.code] ?? proofErrors[error.code] ?? `BenchRouter Databricks request failed (${error.status}).`,
-        Object.hasOwn(refusalMessages, error.code) || Object.hasOwn(proofErrors, error.code) ? error.code : 'benchrouter_request_failed');
+      if (error instanceof ApiError) {
+        const context = clean(`BenchRouter Databricks request failed: ${spec.method ?? 'GET'} ${spec.path.split('?')[0]} answered ${error.status}.${error.requestId ? ` Request id: ${error.requestId}.` : ''}`);
+        const message = refusalMessages[error.code] ?? proofErrors[error.code];
+        throw new DatabricksError(message ? `${context} ${message}` : context,
+          Object.hasOwn(refusalMessages, error.code) || Object.hasOwn(proofErrors, error.code) ? error.code : 'benchrouter_request_failed', error.status);
+      }
+      if (error.networkError) {
+        const failure = new DatabricksError('BenchRouter Databricks request failed.', 'benchrouter_request_failed');
+        failure.networkError = true;
+        throw failure;
+      }
       throw new Error('BenchRouter Databricks request failed.');
     }
   };

@@ -34,6 +34,7 @@ export async function replay(t, calls, checkRequest) {
       }
       checkRequest?.(request);
       expected.check?.(request);
+      if (expected.dropConnection) { req.socket.destroy(); return; }
       if (expected.headers?.date === null) res.sendDate = false;
       const headers = Object.fromEntries(Object.entries(expected.headers ?? {}).filter(([, value]) => value !== null));
       res.writeHead(expected.status, { 'content-type': 'application/json', ...headers });
@@ -66,5 +67,5 @@ export async function runDatabricksCli(server, args = [], env = {}) {
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 export function noSecrets(result) {
-  for (const secret of [loginMarker, clientSecret, basic, pollMarker, 'proof-signature']) assert.ok(!(result.stdout + result.stderr).includes(secret));
+  for (const secret of [loginMarker, clientSecret, basic, pollMarker, 'proof-signature', 'br_ctrl_recorded_fixture']) assert.ok(!(result.stdout + result.stderr).includes(secret));
 }

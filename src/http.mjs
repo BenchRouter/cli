@@ -1,13 +1,14 @@
 import { resolveAccountToken, resolveAdminToken } from "./config.mjs";
 
 export class ApiError extends Error {
-  constructor(message, { status, code, body, text } = {}) {
+  constructor(message, { status, code, body, text, requestId } = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status ?? null;
     this.code = code ?? null;
     this.body = body ?? null;
     this.text = text ?? "";
+    this.requestId = requestId ?? null;
   }
 }
 
@@ -81,7 +82,9 @@ export async function apiRequest({
       });
       return { response, text: await response.text() };
     } catch (error) {
-      throw new Error(`BenchRouter ${label} request failed: ${networkMessage(error)}`);
+      const failure = new Error(`BenchRouter ${label} request failed: ${networkMessage(error)}`);
+      failure.networkError = true;
+      throw failure;
     }
   };
 
@@ -100,6 +103,7 @@ export async function apiRequest({
     const code = errorCode(parsed);
     throw new ApiError(`BenchRouter ${label} failed (${response.status}): ${message}`, {
       status: response.status,
+      requestId: response.headers.get("x-request-id") || response.headers.get("cf-ray"),
       code,
       body: parsed,
       text

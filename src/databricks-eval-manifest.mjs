@@ -1,6 +1,6 @@
 import { parseDocument } from 'yaml';
-import { refusal } from './databricks-helpers.mjs';
-import { DatabricksError, isMissing } from './databricks.mjs';
+import { refusal, numericId, runUcStep } from './databricks-helpers.mjs';
+import { DatabricksError, isMissing, uc, encode } from './databricks.mjs';
 
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const text = (v, max = 256) => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -8,6 +8,50 @@ const envName = (v, max = 64) => text(v, max) && v[0] >= 'A' && v[0] <= 'Z'
   && [...v].every((c) => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_')
   && !v.startsWith('BENCHROUTER_') && !v.startsWith('DATABRICKS_');
 const invalid = () => refusal('The eval manifest is invalid. Check .benchrouter/benchrouter.yml against the Databricks runner manifest schema.', 'manifest_invalid');
+
+export async function applyWorkspaceEvalGrants(workspace, binding, { directory, grants }) {
+  const spId = binding.agent_sp_application_id;
+  const aclPath = `/api/2.0/permissions/directories/${numericId(directory.object_id)}`;
+  try {
+    await workspace.call('PATCH', aclPath, { access_control_list: [{ service_principal_name: spId, permission_level: 'CAN_READ' }] });
+  } catch (error) {
+    if (!(error instanceof DatabricksError && (error.status === 403 || error.code === 'PERMISSION_DENIED'))) throw error;
+    let acl;
+    try { acl = await workspace.optional('GET', aclPath); } catch { /* Owner unavailable; keep the grant refusal exit code. */ }
+    const owner = acl?.access_control_list?.find((a) => a.all_permissions?.some((p) => p.permission_level === 'IS_OWNER'));
+    throw refusal(`Databricks refused folder CAN_READ. Folder owner: ${owner?.user_name ?? owner?.service_principal_name ?? owner?.group_name ?? 'unknown'}. Ask the owner to grant access.`);
+  }
+  const [catalog, schema] = grants.casesTable.split('.');
+  const table = await workspace.call('GET', `${uc}/tables/${encode(grants.casesTable)}`);
+  const steps = [];
+  if (catalog.toLowerCase() !== binding.catalog.toLowerCase()) steps.push(['catalog', catalog, ['USE_CATALOG']]);
+  if (catalog.toLowerCase() !== binding.catalog.toLowerCase() || schema.toLowerCase() !== binding.schema.toLowerCase()) steps.push(['schema', `${catalog}.${schema}`, ['USE_SCHEMA']]);
+  steps.push(['table', grants.casesTable, ['SELECT']]);
+  try {
+    for (const [securable, full_name, privileges] of steps) await runUcStep(workspace,
+      { action: 'grant', securable, full_name, principal: { type: 'service_principal', name: spId }, privileges, only_if: 'always' }, spId, catalog, schema, 'add-eval');
+  } catch (error) {
+    if (error instanceof DatabricksError && error.code === 'grant_refused') throw refusal(`${error.message} Table owner: ${table.owner ?? 'unknown'}.`);
+    throw error;
+  }
+  const secret_acl_applied = [];
+  const secret_acl_commands = [];
+  for (const scope of grants.secretScopes) {
+    // AUTH-012 / DATA-001: apply an ACL using identifiers only. Never read secret values.
+    try {
+      await workspace.call('POST', '/api/2.0/secrets/acls/put', { scope, principal: spId, permission: 'READ' });
+      secret_acl_applied.push(scope);
+    } catch (error) {
+      if (!(error instanceof DatabricksError && (error.status === 403 || error.code === 'PERMISSION_DENIED'))) throw error;
+      secret_acl_commands.push(`databricks secrets put-acl ${shellWord(scope)} ${shellWord(spId)} READ`);
+    }
+  }
+  return { secret_acl_applied, secret_acl_commands };
+}
+
+function shellWord(value) {
+  return [...value].every((c) => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-'.includes(c)) && value ? value : `'${value.split("'").join("'\\''")}'`;
+}
 
 export async function readWorkspaceEvalGrants(workspace, folder, routeKey, { skipUnavailable = false, skipInvalidManifest = true } = {}) {
   let directory;

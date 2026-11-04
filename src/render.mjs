@@ -1015,6 +1015,7 @@ export function renderAutoReloadDisable(body) {
 
 export function renderDatabricksConnected(result) {
   process.stdout.write(`Connected Databricks. Binding ${result.binding_id}; agent job ${result.agent_job_id}.\n`);
+  if (result.note) process.stdout.write(`${result.note}\n`);
   for (const item of result.setup_items) process.stdout.write(`${item.kind} ${item.target}: ${item.state}\n`);
 }
 
@@ -1117,7 +1118,8 @@ export function renderDatabricksRead(value) {
 }
 export function renderDatabricksEval(value) {
   const lines = ['Eval registered. Folder and cases-table grants applied.', ...databricksEvalLines(value.eval),
-    value.agent_started ? 'The recorded agent job was started.' : 'The recorded agent job is absent. No agent job was started.', 'Secret READ grants to run:'];
+    value.agent_started ? 'The recorded agent job was started.' : 'The recorded agent job is absent. No agent job was started.', value.note,
+    ...value.secret_acl_applied.map((scope) => `Secret scope ${scope}: READ applied.`), 'Secret READ grants to run:'];
   lines.push(...(value.secret_acl_commands.length ? value.secret_acl_commands : ['  None.']));
   process.stdout.write(`${lines.join('\n')}\n`);
 }

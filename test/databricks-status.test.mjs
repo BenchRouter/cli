@@ -229,13 +229,25 @@ function evalPlan({ content = manifest, refused, nonAdmin = false } = {}) {
       checkBody({ changes: [{ principal: b.agent_sp_application_id, add: [grant] }] })));
     if (refused === kind) return [...calls, call('GET', `${uc}/catalogs/main`, { owner: 'catalog-owner' }), call('GET', `${uc}/schemas/main.evals`, { owner: 'schema-owner' })];
   }
+  calls.push(call('POST', '/api/2.0/secrets/acls/put', refused === 'secret' ? { error_code: 'PERMISSION_DENIED' } : {}, refused === 'secret' ? 403 : 200,
+    checkBody({ scope: 'support-evals', principal: b.agent_sp_application_id, permission: 'READ' })));
   return [...calls, call('GET', '/api/2.2/jobs/get', { job_id: Number(b.agent_job_id) }), call('POST', '/api/2.2/jobs/run-now', { run_id: run.run_id }, 200, checkBody({ job_id: Number(b.agent_job_id) }))];
 }
-for (const json of [false, true]) test(`add-eval PATCH grants preserve ACLs, print secret lines and run agent (${json ? 'JSON' : 'text'}, AUTH-012 / DATA-001)`, { timeout: 4900 }, async (t) => {
+for (const json of [false, true]) test(`add-eval PATCH grants preserve ACLs, apply secret ACLs and run agent (${json ? 'JSON' : 'text'}, AUTH-012 / DATA-001)`, { timeout: 4900 }, async (t) => {
   const server = await replay(t, evalPlan());
   const result = await runCli(server, ['add-eval', 'support/triage', '/Shared/eval', ...(json ? ['--json'] : [])]);
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.includes(`databricks secrets put-acl support-evals ${reads.verified.binding.agent_sp_application_id} READ`));
+  if (json) {
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output.secret_acl_applied, ['support-evals']);
+    assert.deepEqual(output.secret_acl_commands, []);
+    assert.ok(!Object.hasOwn(output.eval, 'grant_needed'));
+    assert.deepEqual(output.registration_grant_needed, reads.verified.evals[0].grant_needed);
+  } else {
+    assert.ok(result.stdout.includes('Secret scope support-evals: READ applied.'));
+    assert.ok(!result.stdout.includes(reads.verified.evals[0].grant_needed.title));
+    assert.ok(result.stdout.includes('The agent re-checks the grants on its run.'));
+  }
   noSecrets(result);
   server.assertDone();
 });
@@ -246,6 +258,26 @@ for (const code of ['route_eval_in_repo', 'route_eval_hosted', 'route_not_found'
   assert.equal(JSON.parse(result.stderr).error.code, code);
   assert.ok(!server.requests.some((r) => r.method === 'PATCH'));
   noSecrets(result);
+  server.assertDone();
+});
+for (const status of [400, 403]) for (const json of [false, true]) test(`add-eval refused secret READ falls back to the command (${status}, ${json ? 'JSON' : 'text'})`, { timeout: 4900 }, async (t) => {
+  const calls = evalPlan({ refused: 'secret' });
+  calls.find((c) => c.path === '/api/2.0/secrets/acls/put').status = status;
+  const server = await replay(t, calls);
+  const result = await runCli(server, ['add-eval', 'support/triage', '/Shared/eval', ...(json ? ['--json'] : [])]);
+  assert.equal(result.status, 0, result.stderr);
+  const command = `databricks secrets put-acl support-evals ${reads.verified.binding.agent_sp_application_id} READ`;
+  if (json) {
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output.secret_acl_commands, [command]);
+    assert.deepEqual(output.secret_acl_applied, []);
+    assert.ok(!Object.hasOwn(output.eval, 'grant_needed'));
+    assert.equal(output.agent_started, true);
+  } else {
+    assert.ok(result.stdout.includes(command));
+    assert.ok(!result.stdout.includes('READ applied.'));
+    assert.ok(!result.stdout.includes(reads.verified.evals[0].grant_needed.title));
+  }
   server.assertDone();
 });
 for (const refused of ['folder', 'catalog', 'schema', 'table']) test(`add-eval ${refused} grant refusal names owners and exits 3`, { timeout: 4900 }, async (t) => {
