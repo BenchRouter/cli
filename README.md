@@ -231,6 +231,9 @@ The eval pack has no `api_family`. It inherits the route's `--api-family`, so
 pass the family of the call site the evaluator exercises. The CLI rejects a pack
 that declares its own.
 
+The `lockfile` is `package-lock.json`, `npm-shrinkwrap.json` or `pnpm-lock.yaml`
+for runtime `node`, and `bun.lock` or `bun.lockb` for runtime `bun`.
+
 The CLI rejects mutable runtime versions, unsafe paths, missing referenced
 files, invalid or reserved secret names, fractional timeouts, and timeouts above
 90 minutes before it sends the setup request. The eval pack declares no call or
