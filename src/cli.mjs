@@ -4,7 +4,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
 import { isMap, isSeq, parseDocument } from "yaml";
-import { normalizeRepoFullName, resolveRepoToken, saveRepoToken } from "./config.mjs";
+import { normalizeRepoFullName, resolveAccountToken, resolveRepoToken, saveRepoToken } from "./config.mjs";
+import { apiRequest, ApiError } from "./http.mjs";
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
@@ -77,7 +78,7 @@ const READ_COMMAND_FLAGS = ["help", "repo", "setup-key", "api-url", "json", "rou
 const LOCAL_COMMAND_FLAGS = {
   init: ["help", "json", "repo", "route-id", "name", "incumbent-model", "provider-id", "provider-ref", "eval-pack", "eval-command",
     "code-ref", "base-url-env", "api-family", "api-url", "dry-run", "force", "overwrite-user-edits", "output-dir", "setup-key", "save-token"],
-  doctor: ["help", "json", "repo", "api-url", "output-dir", "phase", "route-id", "live-chat-completions", "skip-github-workflow", "check-default-branch"],
+  doctor: ["help", "json", "repo", "setup-key", "account-token", "api-url", "output-dir", "phase", "route-id", "live-chat-completions", "skip-github-workflow", "check-default-branch"],
   models: ["help", "api-url", "filter", "json"],
   upgrade: ["help", "json", "upgrade-token", "api-key", "repo", "route-id", "api-url", "output-dir", "yes", "dry-run"],
   status: READ_COMMAND_FLAGS,
@@ -888,6 +889,8 @@ async function doctor() {
     }
   }
 
+  await checkManifestForDoctor({ root, apiUrl, repoFullName, selectedRouteId, failures, passed, skipped });
+
   let manifestRoutes = [];
   try {
     manifestRoutes = readRouteManifest(root).routes;
@@ -897,7 +900,7 @@ async function doctor() {
   const selectedRoutes = selectedRouteId
     ? manifestRoutes.filter((route) => route.routeId === selectedRouteId)
     : manifestRoutes;
-  if (selectedRouteId && selectedRoutes.length !== 1) fail(`Expected one declared route matching ${selectedRouteId}.`);
+  if (selectedRouteId && selectedRoutes.length !== 1) failures.push(`Expected one declared route matching ${selectedRouteId}.`);
   for (const route of manifestRoutes) {
     validateDeclaredFilesForDoctor(root, route, failures);
   }
@@ -1056,6 +1059,81 @@ function printDoctorReport(stream, { passed, skipped, notes, failures }) {
   for (const item of skipped) stream.write(`doctor skipped: ${item}\n`);
   for (const item of notes) stream.write(`doctor note: ${item}\n`);
   for (const item of failures) stream.write(`doctor failed: ${item}\n`);
+}
+
+async function checkManifestForDoctor({ root, apiUrl, repoFullName, selectedRouteId, failures, passed, skipped }) {
+  let manifest;
+  try {
+    manifest = readFileSync(path.join(root, ".benchrouter/benchrouter.yml"));
+  } catch {
+    // The existing local checks report missing or unreadable manifests.
+  }
+  if (manifest?.length > 256 * 1024) {
+    failures.push("manifest check: benchrouter.yml exceeds the 256 KiB UTF-8 limit");
+    return;
+  }
+  let credential;
+  try {
+    credential = resolveAccountToken(stringArg("account-token"))
+      || (repoFullName || stringArg("setup-key") || process.env.BENCHROUTER_SETUP_KEY?.trim()
+        ? resolveRepoToken(repoFullName, stringArg("setup-key")) : null);
+  } catch {
+    failures.push("manifest check: could not read a valid credential; run benchrouter login or use the repo's setup key");
+    return;
+  }
+  if (!credential) {
+    skipped.push("manifest rules not checked (no credential)");
+    return;
+  }
+  if (!repoFullName) {
+    skipped.push("manifest rules not checked (repo unknown); pass --repo owner/repo");
+    return;
+  }
+  if (!manifest) return;
+  const body = { repo_full_name: repoFullName, manifest_yaml: manifest.toString("utf8") };
+  if (selectedRouteId) body.route_id = selectedRouteId;
+  if (Buffer.byteLength(JSON.stringify(body), "utf8") > 1024 * 1024) {
+    failures.push("manifest check: request exceeds the 1 MiB JSON body limit");
+    return;
+  }
+  const redact = (value) => value.split(credential.token).join("[REDACTED]");
+  try {
+    const result = await apiRequest({
+      apiUrl, token: credential.token, method: "POST", path: "/v1/repo/manifest-check",
+      body, label: "manifest check", timeoutMs: 3000, requireBody: true
+    });
+    const strings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
+    if (typeof result?.ok !== "boolean" || !strings(result.errors) || !Array.isArray(result.routes)
+      || !result.routes.every((route) => typeof route?.route_id === "string" && typeof route.ok === "boolean" && strings(route.errors))
+      || !Array.isArray(result.not_checked)
+      || !result.not_checked.every((item) => typeof item?.check === "string" && typeof item.detail === "string")) {
+      skipped.push("manifest check: BenchRouter returned an invalid response; retry later");
+      return;
+    }
+    for (const error of result.errors) failures.push(`manifest check: ${redact(error)}`);
+    for (const route of result.routes) {
+      for (const error of route.errors) failures.push(`manifest check route ${redact(route.route_id)}: ${redact(error)}`);
+    }
+    for (const item of result.not_checked) skipped.push(`manifest check ${redact(item.check)}: ${redact(item.detail)}`);
+    const hasErrors = result.errors.length > 0 || result.routes.some((route) => route.errors.length > 0);
+    if (result.ok && !hasErrors && result.routes.every((route) => route.ok)) {
+      passed.push("manifest check: BenchRouter accepted benchrouter.yml");
+    } else if (!hasErrors) {
+      failures.push("manifest check: BenchRouter did not accept benchrouter.yml");
+    }
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      failures.push("manifest check: this credential cannot check this repo; run benchrouter login or use the repo's setup key");
+    } else if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+      // Only a bounded error code is safe to print from an error body.
+      const code = typeof error.code === "string" && error.code.length <= 100 && error.code.length > 0
+        && [...error.code].every((char) => (char >= "a" && char <= "z") || (char >= "0" && char <= "9") || char === "_")
+        ? ` (${redact(error.code)})` : "";
+      failures.push(`manifest check: HTTP ${error.status}${code}; check benchrouter.yml, its size, and --route-id`);
+    } else {
+      skipped.push("manifest check: BenchRouter is unavailable or the request failed; retry later");
+    }
+  }
 }
 
 async function fetchModelIds(apiUrl) {
@@ -1955,6 +2033,8 @@ Options:
 
 Options:
   --repo owner/repo          Defaults to the current git remote.
+  --account-token br_ctrl_...  Defaults to BENCHROUTER_ACCOUNT_TOKEN, then the saved login.
+  --setup-key br_setup_...   Used without an account login; defaults to BENCHROUTER_SETUP_KEY, then the saved repo key.
   --api-url <url>            Defaults to https://api.benchrouter.com.
   --output-dir <path>        Defaults to current directory.
   --phase evaluation|activation  Defaults to evaluation; activation checks production wiring.
@@ -1962,6 +2042,9 @@ Options:
   --live-chat-completions    Opt into a billable diagnostic for the selected activation route.
   --skip-github-workflow     Skip the GitHub workflow-state check.
   --check-default-branch     Verify the config is present on the default branch.
+
+Both phases check manifest rules with BenchRouter when a repo and credential are available.
+Missing credentials and unavailable checks are reported as skipped.
 `);
   } else if (["status", "frontier", "failures", "explain"].includes(commandName)) {
     const commandUsage = {

@@ -37,6 +37,161 @@ const providerIdentityReviewFixture = JSON.parse(
   )
 );
 
+const acceptedManifest = { ok: true, errors: [], routes: [{ route_id: routeId, ok: true, errors: [] }], not_checked: [] };
+
+for (const phase of ["evaluation", "activation"]) {
+  test(`${phase} doctor checks the exact manifest with account auth and the route filter`, { timeout: 4900 }, async (t) => {
+    const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+    const manifest = `${manifestYaml()}\n# Preserve this comment and UTF-8: café\n`;
+    await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifest);
+    const proxy = await startFixtureProxy(t, { status: 200, body: acceptedManifest });
+    const result = await runManifestDoctor(root, proxy.url, {
+      BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_manifest",
+      BENCHROUTER_SETUP_KEY: "br_setup_unused",
+      BENCHROUTER_API_KEY: "br_test_unused",
+      BENCHROUTER_ADMIN_TOKEN: "bradm_unused"
+    }, ["--phase", phase, "--route-id", routeId]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.split("\n").includes("doctor passed: manifest check: BenchRouter accepted benchrouter.yml"));
+    assert.equal(proxy.requests.length, 1);
+    assert.deepEqual(proxy.requests[0], {
+      method: "POST", url: "/v1/repo/manifest-check", authorization: "Bearer br_ctrl_manifest",
+      contentType: "application/json",
+      body: { repo_full_name: "example/app", manifest_yaml: manifest, route_id: routeId }
+    });
+  });
+}
+
+test("doctor reports exact whole-manifest and route refusals and redacts the credential", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  const token = "br_ctrl_manifest_secret";
+  const proxy = await startFixtureProxy(t, { status: 200, body: {
+    ok: false, errors: ["Product repo does not match manifest.", `Refused ${token}.`],
+    routes: [{ route_id: routeId, ok: false, errors: ["eval_pack.case_refs must include the snapshot input."] }], not_checked: []
+  } });
+  const result = await runManifestDoctor(root, proxy.url, { BENCHROUTER_ACCOUNT_TOKEN: token });
+  assert.equal(result.status, 1);
+  const lines = result.stderr.split("\n");
+  assert.ok(lines.includes("doctor failed: manifest check: Product repo does not match manifest."));
+  assert.ok(lines.includes("doctor failed: manifest check: Refused [REDACTED]."));
+  assert.ok(lines.includes(`doctor failed: manifest check route ${routeId}: eval_pack.case_refs must include the snapshot input.`));
+  assert.ok(!`${result.stdout}${result.stderr}`.includes(token));
+  assert.ok(!result.stderr.includes("doctor passed: manifest check:"));
+});
+
+test("doctor prints not_checked entries as skipped and redacts all server fields", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  const token = "br_setup_manifest_secret";
+  const proxy = await startFixtureProxy(t, { status: 200, body: {
+    ...acceptedManifest, not_checked: [{ check: `snapshot ${token}`, detail: `No snapshot for ${token}.` }]
+  } });
+  const result = await runManifestDoctor(root, proxy.url, { BENCHROUTER_SETUP_KEY: token });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.split("\n").includes("doctor skipped: manifest check snapshot [REDACTED]: No snapshot for [REDACTED]."));
+  assert.ok(!`${result.stdout}${result.stderr}`.includes(token));
+});
+
+test("doctor skips manifest rules without credentials and never sends runtime or admin keys", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  const proxy = await startFixtureProxy(t, { status: 200, body: acceptedManifest });
+  const result = await runManifestDoctor(root, proxy.url, {
+    BENCHROUTER_API_KEY: "br_test_unused", BENCHROUTER_ADMIN_TOKEN: "bradm_unused"
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.split("\n").includes("doctor skipped: manifest rules not checked (no credential)"));
+  assert.equal(proxy.requests.length, 0);
+});
+
+for (const source of ["argument", "environment", "saved"]) {
+  test(`doctor uses the ${source} repository setup key`, { timeout: 4900 }, async (t) => {
+    const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+    const token = "br_setup_manifest";
+    const env = source === "environment" ? { BENCHROUTER_SETUP_KEY: token } : {};
+    const flags = source === "argument" ? ["--setup-key", token] : [];
+    if (source === "saved") {
+      const configDir = path.join(root, ".test-config", "repositories");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(path.join(configDir, `${Buffer.from("example/app").toString("base64url")}.json`),
+        JSON.stringify({ repo_full_name: "example/app", token }), { mode: 0o600 });
+    }
+    const proxy = await startFixtureProxy(t, { status: 200, body: acceptedManifest });
+    const result = await runManifestDoctor(root, proxy.url, env, flags);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(proxy.requests.length, 1);
+    assert.equal(proxy.requests[0].authorization, `Bearer ${token}`);
+    assert.ok(!Object.hasOwn(proxy.requests[0].body, "route_id"));
+  });
+}
+
+test("doctor prefers a saved account login over an explicit setup key", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  const configDir = path.join(root, ".test-config");
+  await mkdir(configDir);
+  await writeFile(path.join(configDir, "account.json"), JSON.stringify({ token: "br_ctrl_saved" }), { mode: 0o600 });
+  const proxy = await startFixtureProxy(t, { status: 200, body: acceptedManifest });
+  const result = await runManifestDoctor(root, proxy.url, {}, ["--setup-key", "br_setup_unused"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(proxy.requests.length, 1);
+  assert.equal(proxy.requests[0].authorization, "Bearer br_ctrl_saved");
+});
+
+for (const status of [400, 401, 403, 413, 503]) {
+  test(`doctor handles manifest HTTP ${status} without printing remote messages`, { timeout: 4900 }, async (t) => {
+    const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+    const proxy = await startFixtureProxy(t, { status, body: { error: { code: "manifest_check_refused", message: "private remote message" } } });
+    const result = await runManifestDoctor(root, proxy.url, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_manifest" });
+    assert.equal(result.status, status === 503 ? 0 : 1, result.stderr);
+    const output = result.stdout + result.stderr;
+    if (status === 401 || status === 403) {
+      assert.ok(output.includes("doctor failed: manifest check: this credential cannot check this repo; run benchrouter login or use the repo's setup key"));
+    } else if (status === 503) {
+      assert.ok(output.includes("doctor skipped: manifest check: BenchRouter is unavailable or the request failed; retry later"));
+    } else {
+      assert.ok(output.includes(`doctor failed: manifest check: HTTP ${status} (manifest_check_refused); check benchrouter.yml, its size, and --route-id`));
+    }
+    assert.ok(!output.includes("private remote message"));
+    assert.equal(proxy.requests.length, 1);
+  });
+}
+
+test("doctor handles a manifest network failure", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  const proxy = await startFixtureProxy(t, {
+    status: 200, body: acceptedManifest, onRequest: ({ request }) => request.socket.destroy()
+  });
+  const result = await runManifestDoctor(root, proxy.url, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_manifest" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes("doctor skipped: manifest check: BenchRouter is unavailable or the request failed; retry later"));
+  assert.equal(proxy.requests.length, 1);
+});
+
+test("doctor retains server errors when the route filter is unknown locally", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  const proxy = await startFixtureProxy(t, { status: 400, body: { error: "unknown_route_id" } });
+  const result = await runManifestDoctor(root, proxy.url, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_manifest" }, ["--route-id", "app/missing"]);
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.includes("doctor failed: manifest check: HTTP 400 (unknown_route_id); check benchrouter.yml, its size, and --route-id"));
+  assert.ok(result.stderr.includes("Expected one declared route matching app/missing."));
+  assert.equal(proxy.requests.length, 1);
+  assert.equal(proxy.requests[0].body.route_id, "app/missing");
+});
+
+test("doctor refuses a manifest over 256 KiB of UTF-8 before sending", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  const manifest = `${manifestYaml()}\n#${"é".repeat(128 * 1024)}\n`;
+  assert.ok(manifest.length < 256 * 1024);
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifest);
+  const proxy = await startFixtureProxy(t, { status: 200, body: acceptedManifest });
+  const result = await runManifestDoctor(root, proxy.url, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_manifest" });
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.includes("doctor failed: manifest check: benchrouter.yml exceeds the 256 KiB UTF-8 limit"));
+  assert.equal(proxy.requests.length, 0);
+});
+
+function runManifestDoctor(root, apiUrl, env = {}, flags = []) {
+  return runCli(["doctor", "--repo", "example/app", "--skip-github-workflow", "--api-url", apiUrl, ...flags], root, env);
+}
+
 for (const phase of ["evaluation", "activation"]) {
   for (const mode of ["isolated_replay", "repository_executable"]) {
     test(`${phase} doctor names every missing declared file for ${mode}, including unselected routes`, { timeout: 4900 }, async (t) => {
@@ -1892,6 +2047,9 @@ function runCli(cliArgs, cwd, envOverrides = {}) {
       ...process.env,
       // A closed port: the newer-version check fails fast and adds no note.
       npm_config_registry: "http://127.0.0.1:9",
+      BENCHROUTER_CONFIG_DIR: path.join(cwd, ".test-config"),
+      BENCHROUTER_ACCOUNT_TOKEN: "",
+      BENCHROUTER_SETUP_KEY: "",
       ...envOverrides
     };
     if (Object.hasOwn(envOverrides, "BENCHROUTER_API_KEY") && envOverrides.BENCHROUTER_API_KEY === undefined) {

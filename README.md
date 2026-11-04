@@ -501,6 +501,16 @@ Anthropic SDK adds its own `/v1/messages` path. A route without
 
 `doctor` defaults to evaluation checks. It does not require production wiring or a runtime key and never implicitly makes a provider call. Use `--phase activation --route-id product/route` to check one selected call site.
 
+Both phases send the exact `.benchrouter/benchrouter.yml` text to the read-only
+server manifest check when the repo is known. Doctor prefers your account login
+(`--account-token`, `BENCHROUTER_ACCOUNT_TOKEN`, or saved login), then uses the
+repo setup key (`--setup-key`, `BENCHROUTER_SETUP_KEY`, or `init --save-token`).
+Runtime and admin keys cannot authenticate this check. Manifests over 256 KiB
+fail locally. Server manifest errors fail doctor; checks the server did not run
+are skipped. Missing credentials or a network/server failure produce a skipped
+check. Rejected credentials fail with instructions to log in or use the repo's
+setup key. `--route-id` also filters the server check.
+
 Add `--live-chat-completions` only to opt into a billable synthetic Chat Completions diagnostic. An inherited `BENCHROUTER_API_KEY` alone does not opt in. This diagnostic does not verify the application request contract; use an authorized application smoke for that. Native Anthropic and Responses calls need their own application smoke.
 It labels each external check as passed, failed, or skipped. A doctor pass only
 means that every check that ran passed. It does not certify evaluation quality
