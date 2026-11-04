@@ -45,9 +45,13 @@ for (const phase of ["evaluation", "activation"]) {
       const route = manifest.routes[0];
       route.code_refs = ["src/missing.js"];
       route.eval_pack.config_path = "eval/missing-config.yml";
-      route.eval_pack.scorer = "eval/missing-scorer.mjs";
       route.eval_pack.case_refs = ["eval/missing-cases.json", "eval/missing-more-cases.json"];
-      const refs = [route.eval_pack.config_path, route.eval_pack.scorer, ...route.eval_pack.case_refs, ...route.code_refs];
+      const refs = [route.eval_pack.config_path, ...route.eval_pack.case_refs, ...route.code_refs];
+      // EVAL-012: only isolated replay declares a scorer.
+      if (mode === "isolated_replay") {
+        route.eval_pack.scorer = "eval/missing-scorer.mjs";
+        refs.push(route.eval_pack.scorer);
+      }
       if (mode === "repository_executable") {
         route.eval_pack.working_directory = "apps/service";
         route.eval_pack.lockfile = "../../pnpm-lock.yaml";
