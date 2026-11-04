@@ -1586,7 +1586,9 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
     if (duplicate !== undefined) fail(`${at}.${field} lists ${duplicate} twice.`);
   }
   const overlap = pack.input_refs.find((ref) => pack.acceptance_refs.includes(ref));
-  if (overlap !== undefined) fail(`${at}.input_refs and acceptance_refs both list ${overlap}; acceptance files must stay apart from inputs.`);
+  if (overlap !== undefined) {
+    fail(`${at}: input_refs and acceptance_refs both list ${overlap}. A file is either data the evaluator reads (input_refs) or part of what decides quality (acceptance_refs); an evaluator that holds the checks goes in acceptance_refs.`);
+  }
   if (!Array.isArray(pack.secret_env) || pack.secret_env.some((name) => typeof name !== "string")) {
     fail(`${at}.secret_env must be an array of declared environment-variable names.`);
   }

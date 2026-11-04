@@ -110,7 +110,7 @@ test("eval pack rules that match the server stop before any request", async (t) 
     [{ primary_metric: "Pass_rate" }, "primary_metric must start with a lowercase letter"],
     [{ primary_metric: "pass-rate" }, "primary_metric must start with a lowercase letter"],
     [{ case_refs: ["apps/web/eval/cases.json", "apps/web/eval/cases.json"] }, "case_refs lists apps/web/eval/cases.json twice"],
-    [{ acceptance_refs: ["apps/web/eval/qrels.json", "apps/web/eval/run.mjs"] }, "input_refs and acceptance_refs both list apps/web/eval/run.mjs"]
+    [{ acceptance_refs: ["apps/web/eval/qrels.json", "apps/web/eval/run.mjs"] }, "input_refs and acceptance_refs both list apps/web/eval/run.mjs. A file is either data the evaluator reads (input_refs) or part of what decides quality (acceptance_refs); an evaluator that holds the checks goes in acceptance_refs."]
   ];
   for (const [overrides, message] of cases) {
     const { result, bodies } = await initWith(t, root, pack(overrides));
@@ -126,6 +126,16 @@ test("a lockfile in a child directory of working_directory is accepted", async (
   await writeFile(path.join(root, "apps/web/deps/pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
   const { result, bodies } = await initWith(t, root, pack({ lockfile: "deps/pnpm-lock.yaml" }));
   assert.equal(bodies.length, 1, result.stderr);
+});
+
+test("the overlap error names the file and explains both lists, exactly", async (t) => {
+  const root = await monorepo(t);
+  const { result, bodies } = await initWith(t, root, pack({ acceptance_refs: ["apps/web/eval/qrels.json", "apps/web/eval/run.mjs"] }));
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "--eval-pack for route app/web: input_refs and acceptance_refs both list apps/web/eval/run.mjs. " +
+    "A file is either data the evaluator reads (input_refs) or part of what decides quality (acceptance_refs); " +
+    "an evaluator that holds the checks goes in acceptance_refs.\n");
+  assert.equal(bodies.length, 0);
 });
 
 test("null optional fields mean the repository root and process isolation", async (t) => {
