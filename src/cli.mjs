@@ -1532,7 +1532,7 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   }
   const allowedLockfiles = pack.runtime === "bun"
     ? new Set(["bun.lock", "bun.lockb"])
-    : new Set(["package-lock.json", "npm-shrinkwrap.json"]);
+    : new Set(["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"]);
   if (!allowedLockfiles.has(pack.lockfile)) {
     fail(`${at}.lockfile is not valid for runtime ${pack.runtime}.`);
   }

@@ -1039,6 +1039,18 @@ test("init rejects an unsafe or mutable executable eval pack before HTTP", async
   assert.match(traversal.stderr, /acceptance_refs\[0\] must be a normalized repository-relative path/);
   assert.doesNotMatch(traversal.stderr, /fetch failed/);
 
+  // A node pack may pin a pnpm lockfile; bun keeps its own lockfiles.
+  await writeFile(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ lockfile: "pnpm-lock.yaml" }))}\n`);
+  const pnpmLockfile = await runCli(command, root);
+  assert.equal(pnpmLockfile.status, 1);
+  assert.ok(!pnpmLockfile.stderr.includes("lockfile is not valid"), pnpmLockfile.stderr);
+  assert.ok(pnpmLockfile.stderr.includes("fetch failed"), pnpmLockfile.stderr);
+  await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ lockfile: "pnpm-lock.yaml", runtime: "bun", runtime_version: "1.2.0" }))}\n`);
+  const bunPnpm = await runCli(command, root);
+  assert.equal(bunPnpm.status, 1);
+  assert.ok(bunPnpm.stderr.includes("lockfile is not valid for runtime bun"), bunPnpm.stderr);
+
   await writeFile(packPath, `${JSON.stringify(repositoryExecutableEvalPack({ timeout_minutes: 91 }))}\n`);
   const excessiveTimeout = await runCli(command, root);
   assert.equal(excessiveTimeout.status, 1);
