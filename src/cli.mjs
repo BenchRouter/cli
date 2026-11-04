@@ -34,6 +34,11 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "timeout_minutes",
   "secret_env"
 ]);
+// The env example file names doctor accepts, in the order it checks them. The first file found is the one doctor reads,
+// so the two original names stay first.
+// .dev.vars.example is the Wrangler (Cloudflare Workers and Pages) convention.
+const RUNTIME_ENV_TEMPLATE_NAMES = [".env.example", "env.template", ".env.sample", ".env.template", ".dev.vars.example"];
+
 // EVAL-012: the protocol a call site speaks. It chooses the BenchRouter base URL value.
 const API_FAMILIES = new Set([
   "openai_chat_completions",
@@ -777,7 +782,7 @@ async function doctor() {
 
   const envTemplate = resolveRuntimeEnvTemplate(root);
   if (!envTemplate && phase === "activation") {
-    failures.push("missing .env.example or env.template");
+    failures.push(`missing a runtime env example file; doctor looks for ${RUNTIME_ENV_TEMPLATE_NAMES.join(", ")}`);
   } else if (envTemplate) {
     const envExample = readFileSync(envTemplate.path, "utf8");
     const envKeys = parseEnvExampleKeys(envExample);
@@ -1165,7 +1170,7 @@ function detectFallbackProviderEnvKeys(root) {
 }
 
 function resolveRuntimeEnvTemplate(root) {
-  for (const relativePath of [".env.example", "env.template"]) {
+  for (const relativePath of RUNTIME_ENV_TEMPLATE_NAMES) {
     const candidate = path.join(root, relativePath);
     if (existsSync(candidate)) return { path: candidate, relativePath };
   }

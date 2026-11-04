@@ -171,6 +171,44 @@ test("doctor accepts the repository env.template convention", async (t) => {
   assert.match(result.stdout, /BenchRouter doctor passed/);
 });
 
+test("doctor accepts the Wrangler .dev.vars.example, .env.sample and .env.template conventions", async (t) => {
+  for (const name of [".dev.vars.example", ".env.sample", ".env.template"]) {
+    const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+    await rename(path.join(root, ".env.example"), path.join(root, name));
+
+    const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
+
+    assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+    assert.match(result.stdout, /BenchRouter doctor passed/);
+  }
+});
+
+test("doctor reads env.template before a newer accepted name", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  await rename(path.join(root, ".env.example"), path.join(root, "env.template"));
+  await writeFile(path.join(root, ".env.sample"), "UNRELATED=1\n");
+
+  const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /BenchRouter doctor passed/);
+});
+
+test("activation doctor without an accepted env example file lists the names it accepts", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  await rename(path.join(root, ".env.example"), path.join(root, ".env.local.example"));
+
+  const result = await runDoctor(root, "http://127.0.0.1:9", { BENCHROUTER_API_KEY: undefined });
+
+  assert.notEqual(result.status, 0);
+  assert.ok(
+    (result.stdout + result.stderr).includes(
+      "missing a runtime env example file; doctor looks for .env.example, env.template, .env.sample, .env.template, .dev.vars.example"
+    ),
+    result.stdout + result.stderr
+  );
+});
+
 test("doctor accepts a declared BENCHROUTER runtime base URL from the current generated kit", async (t) => {
   const root = await createTargetRepo(t, {
     codeRefText: "const baseURL = process.env.BENCHROUTER_DISPATCH_API_URL;"
