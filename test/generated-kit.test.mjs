@@ -77,6 +77,58 @@ test("RUN-001 refresh keeps customer setup and rejects a step with broader autho
   assert.throws(() => preserveCustomerSetup(invalid.toString(), kit.get(WORKFLOW_PATH)), /Every customer setup step/);
 });
 
+function handFormattedCustomerWorkflow(source, runsOn = "runs-on: [self-hosted, gcp]\n") {
+  const setup = [
+    "      - name: Install evaluator tools   # pinned by the eval owner",
+    "        if: ${{ github.event_name == 'workflow_dispatch' }}",
+    "        run: |",
+    "          python -m pip install --requirement .benchrouter/evaluator-requirements.txt --no-deps --disable-pip-version-check",
+    "          python --version",
+    "      # keep the next step last",
+    "      - {name: Warm cache, if: github.event_name == 'workflow_dispatch', run: echo warm}",
+    ""
+  ].join("\n");
+  const post = [
+    "      - name: Report speaker metrics",
+    "        if: always()",
+    "        run: >-",
+    "          node .benchrouter/summarize-speaker-metrics.mjs",
+    "          --format json",
+    ""
+  ].join("\n");
+  const marker = "      # ---- end customer-setup ----\n";
+  assert.ok(source.includes(marker) && source.includes("runs-on: ubuntu-24.04\n"));
+  return source.replace(marker, setup + marker).replace("runs-on: ubuntu-24.04\n", runsOn) + post;
+}
+
+test("refresh copies customer sections as written and keeps BenchRouter's bytes", () => {
+  const generated = kit.get(WORKFLOW_PATH);
+  const existing = handFormattedCustomerWorkflow(generated);
+  assert.equal(preserveCustomerSetup(existing, generated), existing);
+  const runtimeLine = '          BENCHROUTER_JOB_CEILING_MIN: "120"\n';
+  const marked = runtimeLine + "          BENCHROUTER_KIT_VERSION: 0.0.11\n";
+  const nextKit = generated.replace(runtimeLine, marked);
+  assert.notEqual(nextKit, generated);
+  assert.equal(preserveCustomerSetup(existing, nextKit), existing.replace(runtimeLine, marked));
+});
+
+test("refresh keeps a block-list or block-map runner as written", () => {
+  const generated = kit.get(WORKFLOW_PATH);
+  for (const runsOn of [
+    "runs-on:\n      - self-hosted\n      - gcp   # our pool\n",
+    "runs-on:\n      group: gcp-runners\n      labels: [linux, x64]\n"
+  ]) {
+    const existing = handFormattedCustomerWorkflow(generated, runsOn);
+    assert.equal(preserveCustomerSetup(existing, generated), existing, runsOn);
+  }
+});
+
+test("refresh of a CRLF workflow writes the kit's LF line endings", () => {
+  const generated = kit.get(WORKFLOW_PATH);
+  const existing = handFormattedCustomerWorkflow(generated);
+  assert.equal(preserveCustomerSetup(existing.replaceAll("\n", "\r\n"), generated), existing);
+});
+
 test("SETUP-001 doctor and refresh keep a customer runs-on and still check the rest of the job", async (t) => {
   const root = await targetRepo(t);
   const canonical = kit.get(WORKFLOW_PATH);

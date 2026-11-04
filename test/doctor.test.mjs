@@ -1187,6 +1187,62 @@ test("upgrade applies the exact signed kit while preserving canonical YAML", asy
   assert.match(result.stdout, /npx --yes benchrouter@latest doctor --repo example\/app/);
 });
 
+test("upgrade preview separates changed and unchanged files and diffs the changed ones", async (t) => {
+  const root = await createUpgradeTarget(t);
+  for (const [filePath, content] of signedKitFixture) {
+    await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
+    await writeFile(path.join(root, filePath), content);
+  }
+  await writeFile(path.join(root, ".benchrouter/README.md"), "# BenchRouter\nOld line\n");
+  const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
+
+  const result = await runCli([
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+  ], root);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(server.requests.length, 1);
+  assert.ok(result.stdout.includes("Would change 1 file(s):\n  update .benchrouter/README.md\n"), result.stdout);
+  assert.ok(result.stdout.includes(`Unchanged (${signedKitFixture.size}):\n`), result.stdout);
+  for (const filePath of signedKitFixture.keys()) assert.ok(result.stdout.includes(`\n  ${filePath}\n`), filePath);
+  assert.ok(result.stdout.includes("--- a/.benchrouter/README.md\n+++ b/.benchrouter/README.md\n@@ -1,2 +1,1 @@\n # BenchRouter\n-Old line\n"), result.stdout);
+  assert.ok(!result.stdout.includes("would write"), result.stdout);
+});
+
+test("upgrade preview names the same changes that apply makes, with customer steps and package.json", async (t) => {
+  const root = await createUpgradeTarget(t);
+  for (const [filePath, content] of signedKitFixture) {
+    await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
+    await writeFile(path.join(root, filePath), content);
+  }
+  const workflowPath = ".github/workflows/benchrouter-evals.yml";
+  const marker = "      # ---- end customer-setup ----\n";
+  const customer = "      - name: Install evaluator tools\n        if: github.event_name == 'workflow_dispatch'\n        run: python --version\n";
+  const kitWorkflow = signedKitFixture.get(workflowPath);
+  await writeFile(path.join(root, workflowPath), kitWorkflow.replace(marker, customer + marker));
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "app", private: true }, null, 2) + "\n");
+  const files = exactUpgradeFiles().map((file) => file.path === workflowPath
+    ? generatedUpgradeFile(workflowPath, file.content.replace('BENCHROUTER_JOB_CEILING_MIN: "120"\n', 'BENCHROUTER_JOB_CEILING_MIN: "120"\n          BENCHROUTER_KIT_VERSION: 0.0.11\n'))
+    : file);
+  const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(files) });
+
+  const result = await runCli([
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
+  ], root);
+
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.split("\n");
+  const previewChanged = lines.filter((line) => line.startsWith("  update ") || line.startsWith("  create ")).map((line) => line.trim().split(" ")[1]).sort();
+  const applied = lines.filter((line) => line.startsWith("updated ") || line.startsWith("created ")).map((line) => line.split(" ")[1]).sort();
+  assert.deepEqual(previewChanged, [".benchrouter/README.md", workflowPath, "package.json"].sort());
+  assert.deepEqual(applied, previewChanged);
+  const written = await readFile(path.join(root, workflowPath), "utf8");
+  assert.ok(written.includes(customer + marker), written);
+  assert.ok(written.includes("BENCHROUTER_KIT_VERSION: 0.0.11\n"), written);
+});
+
 test("doctor fails when call_site.base_url_env is not referenced by route code_refs", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.PROVIDER_BASE_URL;" });
   const proxy = await startFixtureProxy(t, {
