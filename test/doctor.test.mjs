@@ -161,6 +161,30 @@ test("doctor skips live proxy ping when the runtime key is absent", async (t) =>
   assert.equal(proxy.requests.length, 0);
 });
 
+test("doctor names the fix when benchrouter:calibrate is the customer's own script", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({
+    scripts: { ...LOCAL_SCRIPTS, "benchrouter:calibrate": "node .benchrouter/verify-speaker-scorer.cjs" }
+  }, null, 2) + "\n");
+  const result = await runCli(["doctor", "--output-dir", root, "--api-url", "http://127.0.0.1:9", "--skip-github-workflow"], root);
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.includes(
+    'package.json scripts.benchrouter:calibrate is "node .benchrouter/verify-speaker-scorer.cjs", not BenchRouter\'s "node .benchrouter/bootstrap.mjs calibrate". ' +
+    'BenchRouter owns benchrouter:calibrate: rename your script to a name outside benchrouter:, then set benchrouter:calibrate back to "node .benchrouter/bootstrap.mjs calibrate" (upgrade does this).'
+  ), result.stderr);
+});
+
+test("doctor sends an older BenchRouter script value to upgrade, not to a rename", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({
+    scripts: { ...LOCAL_SCRIPTS, "benchrouter:calibrate": "node .benchrouter/benchrouter-calibrate.mjs" }
+  }, null, 2) + "\n");
+  const result = await runCli(["doctor", "--output-dir", root, "--api-url", "http://127.0.0.1:9", "--skip-github-workflow"], root);
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.includes('package.json scripts.benchrouter:calibrate is an older BenchRouter value ("node .benchrouter/benchrouter-calibrate.mjs"); run benchrouter upgrade to set "node .benchrouter/bootstrap.mjs calibrate".'), result.stderr);
+  assert.ok(!result.stderr.includes("rename your script"), result.stderr);
+});
+
 test("doctor accepts the repository env.template convention", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   await rename(path.join(root, ".env.example"), path.join(root, "env.template"));
@@ -1290,6 +1314,84 @@ test("upgrade preview names the same changes that apply makes, with customer ste
   const written = await readFile(path.join(root, workflowPath), "utf8");
   assert.ok(written.includes(customer + marker), written);
   assert.ok(written.includes("BENCHROUTER_KIT_VERSION: 0.0.11\n"), written);
+});
+
+test("upgrade preview warns before replacing a customer script or customer README sections", async (t) => {
+  const root = await createUpgradeTarget(t);
+  for (const [filePath, content] of signedKitFixture) {
+    await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
+    await writeFile(path.join(root, filePath), content);
+  }
+  await writeFile(path.join(root, ".benchrouter/README.md"),
+    "# BenchRouter\n\n## Speaker scorer notes\n\n```sh\n# not a heading\n```\n\n### Calibration log\n");
+  await writeFile(path.join(root, "package.json"), JSON.stringify({
+    name: "app",
+    scripts: { "benchrouter:calibrate": "node .benchrouter/verify-speaker-scorer.cjs", "benchrouter:capture": "node .benchrouter/bootstrap.mjs capture" }
+  }, null, 2) + "\n");
+  const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
+
+  const result = await runCli([
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+  ], root);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(
+    "\nWarning: this replaces content BenchRouter did not write:\n" +
+    "  - replaces .benchrouter/README.md, which has content BenchRouter did not write (sections: ## Speaker scorer notes; ### Calibration log). Move your notes to a file BenchRouter does not write\n" +
+    "  - replaces your script benchrouter:calibrate (node .benchrouter/verify-speaker-scorer.cjs); keep your own scripts under another name\n"
+  ), result.stdout);
+  assert.ok(!result.stdout.includes("benchrouter:capture ("), result.stdout);
+});
+
+test("ownership warnings use per-script history and CommonMark fences", async (t) => {
+  const root = await createUpgradeTarget(t);
+  for (const [filePath, content] of signedKitFixture) {
+    await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
+    await writeFile(path.join(root, filePath), content);
+  }
+  await writeFile(path.join(root, ".benchrouter/README.md"), [
+    "# BenchRouter", "", "## Credentials", "", "## Add another route to this repo", "", "````md", "```", "## Inside a long fence", "```", "````", "",
+    "    ## Indented code", "", "##\tTabbed notes ##", ""
+  ].join("\n"));
+  await writeFile(path.join(root, "package.json"), JSON.stringify({
+    name: "app",
+    scripts: {
+      "benchrouter:calibrate": "tsx scripts/benchrouter-calibrate.ts",
+      "benchrouter:capture": "node .benchrouter/bootstrap.mjs calibrate"
+    }
+  }, null, 2) + "\n");
+  const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
+
+  const result = await runCli([
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+  ], root);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes("(sections: ## Tabbed notes)"), result.stdout);
+  assert.ok(result.stdout.includes("replaces your script benchrouter:capture (node .benchrouter/bootstrap.mjs calibrate)"), result.stdout);
+  assert.ok(!result.stdout.includes("benchrouter:calibrate ("), result.stdout);
+});
+
+test("upgrade preview does not warn when the old README and scripts are BenchRouter's", async (t) => {
+  const root = await createUpgradeTarget(t);
+  for (const [filePath, content] of signedKitFixture) {
+    await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
+    await writeFile(path.join(root, filePath), content);
+  }
+  await writeFile(path.join(root, ".benchrouter/README.md"), "# BenchRouter\nOlder kit wording.\n");
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "app", scripts: { test: "node --test", "benchrouter:calibrate": "node .benchrouter/benchrouter-calibrate.mjs" } }, null, 2) + "\n");
+  const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
+
+  const result = await runCli([
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+  ], root);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes("update .benchrouter/README.md"), result.stdout);
+  assert.ok(!result.stdout.includes("Warning:"), result.stdout);
 });
 
 test("doctor fails when call_site.base_url_env is not referenced by route code_refs", async (t) => {

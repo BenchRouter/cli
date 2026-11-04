@@ -48,6 +48,22 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
 // .dev.vars.example is the Wrangler (Cloudflare Workers and Pages) convention.
 const RUNTIME_ENV_TEMPLATE_NAMES = [".env.example", "env.template", ".env.sample", ".env.template", ".dev.vars.example"];
 
+// Every value a BenchRouter kit or init packet has written, per benchrouter: script name. A different
+// old value is the customer's own script, which the kit replaces.
+// Mined from the server's full history (2026-11-04).
+const KIT_SCRIPT_HISTORY = {
+  "benchrouter:capture": [LOCAL_SCRIPTS["benchrouter:capture"]],
+  "benchrouter:calibrate": [LOCAL_SCRIPTS["benchrouter:calibrate"], "node .benchrouter/benchrouter-calibrate.mjs", "tsx scripts/benchrouter-calibrate.ts"],
+  "benchrouter:eval": ["node .benchrouter/benchrouter-eval.mjs", "tsx scripts/benchrouter-eval.ts"]
+};
+// Every heading any BenchRouter-written .benchrouter/README.md has had (headings hold no variables),
+// besides the new kit README's own headings, which come from the packet.
+const KIT_README_HEADINGS = new Set([
+  "# BenchRouter", "## What It Does", "## Credentials", "## Request Bodies", "## Folder Shape",
+  "## Manage routes and spend from your agent", "## Improving your cases", "## Commands", "## Capture",
+  "## Add another route to this repo", "## Executable eval file lists"
+]);
+
 // EVAL-012: the protocol a call site speaks. It chooses the BenchRouter base URL value.
 const API_FAMILIES = new Set([
   "openai_chat_completions",
@@ -258,6 +274,7 @@ async function init() {
       fail(error instanceof Error ? error.message : "Could not plan the package.json update.");
     }
     writeFilePreview(outputDir, [...plannedFiles, ...packageFiles]);
+    writeOwnershipWarnings(outputDir, [...plannedFiles, ...packageFiles]);
     if (packageFiles.length === 0) skippedFiles.push("package.json (no package.json found, so no scripts update)");
     if (skippedFiles.length > 0) {
       process.stdout.write(`Would skip ${skippedFiles.length} file(s):\n`);
@@ -436,6 +453,7 @@ async function upgrade() {
 
     process.stdout.write(`Planned BenchRouter kit upgrade to ${preview.setup_kit_version} for ${preview.repo_full_name} / ${preview.route_id}\n`);
     writeFilePreview(outputDir, planned, "No file changes: every file already matches this kit version.");
+    writeOwnershipWarnings(outputDir, planned);
 
     if (dryRun) {
       return;
@@ -518,6 +536,74 @@ function writeFilePreview(outputDir, planned, noChanges = "No file changes: ever
   for (const row of changed) {
     process.stdout.write(`\n${unifiedDiff(row.path, row.current ?? "", row.content)}`);
   }
+}
+
+// Warns before BenchRouter replaces content it did not write: a customer's own benchrouter:
+// script, or sections a customer added to .benchrouter/README.md. A README heading that the
+// new kit README does not have is treated as the customer's.
+function writeOwnershipWarnings(outputDir, planned) {
+  const warnings = [];
+  for (const file of planned) {
+    const target = safeTargetPath(outputDir, file.path);
+    if (!existsSync(target)) continue;
+    const current = readFileSync(target, "utf8");
+    if (current === file.content) continue;
+    if (file.path === "package.json") {
+      let before;
+      let after;
+      try { before = JSON.parse(current).scripts ?? {}; after = JSON.parse(file.content).scripts ?? {}; } catch { continue; }
+      for (const [name, value] of Object.entries(before)) {
+        if (!name.startsWith("benchrouter:") || after[name] === value || typeof value !== "string" || (KIT_SCRIPT_HISTORY[name] ?? []).includes(value)) continue;
+        warnings.push(`replaces your script ${name} (${value}); keep your own scripts under another name`);
+      }
+    } else if (file.path === ".benchrouter/README.md") {
+      const kitHeadings = new Set(markdownHeadings(file.content));
+      const customer = markdownHeadings(current).filter((heading) => !kitHeadings.has(heading) && !KIT_README_HEADINGS.has(heading));
+      if (customer.length > 0) {
+        warnings.push(`replaces .benchrouter/README.md, which has content BenchRouter did not write (sections: ${customer.join("; ")}). Move your notes to a file BenchRouter does not write`);
+      }
+    }
+  }
+  if (warnings.length === 0) return;
+  process.stdout.write(`\nWarning: this replaces content BenchRouter did not write:\n`);
+  for (const warning of warnings) process.stdout.write(`  - ${warning}\n`);
+}
+
+// ATX heading texts (# to ######) outside fenced code blocks, following CommonMark: a fence is
+// three or more backticks or tildes indented at most three spaces, and only a run of the same
+// character at least as long, with nothing after it, closes it.
+function markdownHeadings(text) {
+  const headings = [];
+  let fence = null;
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    let indent = 0;
+    while (line[indent] === " ") indent += 1;
+    const rest = line.slice(indent);
+    const fenceChar = rest[0] === "`" || rest[0] === "~" ? rest[0] : null;
+    let run = 0;
+    while (fenceChar !== null && rest[run] === fenceChar) run += 1;
+    if (fence !== null) {
+      if (indent <= 3 && fenceChar === fence.char && run >= fence.length && rest.slice(run).trim() === "") fence = null;
+      continue;
+    }
+    if (indent > 3) continue;
+    if (fenceChar !== null && run >= 3 && !(fenceChar === "`" && rest.slice(run).includes("`"))) {
+      fence = { char: fenceChar, length: run };
+      continue;
+    }
+    let level = 0;
+    while (rest[level] === "#") level += 1;
+    const after = rest[level];
+    if (level === 0 || level > 6 || (after !== undefined && after !== " " && after !== "\t")) continue;
+    let textPart = rest.slice(level).trim();
+    // An optional closing run of # preceded by a space is not part of the heading.
+    let end = textPart.length;
+    while (end > 0 && textPart[end - 1] === "#") end -= 1;
+    if (end < textPart.length && (end === 0 || textPart[end - 1] === " " || textPart[end - 1] === "\t")) textPart = textPart.slice(0, end).trim();
+    if (textPart !== "") headings.push(`${"#".repeat(level)} ${textPart}`);
+  }
+  return headings;
 }
 
 async function fetchUpgradePacket({ apiUrl, bearer, repoFullName, routeId, mode }) {
@@ -853,7 +939,14 @@ async function doctor() {
   } else {
     const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8"));
     for (const [name, value] of Object.entries(LOCAL_SCRIPTS)) {
-      if (parsed.scripts?.[name] !== value) failures.push(`package.json scripts.${name} must be ${value}`);
+      const current = parsed.scripts?.[name];
+      if (current === undefined) failures.push(`package.json scripts.${name} must be ${value}`);
+      else if (current !== value && (KIT_SCRIPT_HISTORY[name] ?? []).includes(current)) {
+        failures.push(`package.json scripts.${name} is an older BenchRouter value (${JSON.stringify(current)}); run benchrouter upgrade to set ${JSON.stringify(value)}.`);
+      } else if (current !== value) {
+        failures.push(`package.json scripts.${name} is ${JSON.stringify(current)}, not BenchRouter's ${JSON.stringify(value)}. ` +
+          `BenchRouter owns ${name}: rename your script to a name outside benchrouter:, then set ${name} back to ${JSON.stringify(value)} (upgrade does this).`);
+      }
     }
   }
 
