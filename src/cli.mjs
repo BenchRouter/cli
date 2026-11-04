@@ -13,6 +13,12 @@ import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
 import { unifiedDiff } from "./line-diff.mjs";
 import { applyUpgradePacket, prepareUpgradeFiles, preserveCustomerSetup, inspectSignedKit, preparePackageJson, preflightFileApplication, stageFileApplication, UPGRADE_GENERATED_PATHS, BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS } from "./generated-kit.mjs";
 
+// Every option name as typed, kept apart from parsed values so a name such as "_" or
+// "__proto__" cannot hide in the positional list or the object prototype.
+const OPTION_NAMES = Symbol("option names");
+// Flags that every command reads only as on or off.
+const BOOLEAN_FLAGS = new Set(["help", "json", "yes", "dry-run", "force", "overwrite-user-edits", "save-token",
+  "live-chat-completions", "skip-github-workflow", "check-default-branch"]);
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "help";
 const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
@@ -46,6 +52,35 @@ const API_FAMILIES = new Set([
   "anthropic_messages",
   "openai_responses"
 ]);
+
+// The flags each built-in command reads. A flag outside its list is a mistake (for example
+// `upgrade --force`, which only init has), so the command stops before it does anything.
+// Control-plane and runtime commands parse their own flags and are not listed here.
+// json is read by the shared fail() and usage() helpers on every command.
+const READ_COMMAND_FLAGS = ["help", "repo", "setup-key", "api-url", "json", "route"];
+const LOCAL_COMMAND_FLAGS = {
+  init: ["help", "json", "repo", "route-id", "name", "incumbent-model", "provider-id", "provider-ref", "eval-pack", "eval-command",
+    "code-ref", "base-url-env", "api-family", "api-url", "dry-run", "force", "overwrite-user-edits", "output-dir", "setup-key", "save-token"],
+  doctor: ["help", "json", "repo", "api-url", "output-dir", "phase", "route-id", "live-chat-completions", "skip-github-workflow", "check-default-branch"],
+  models: ["help", "api-url", "filter", "json"],
+  upgrade: ["help", "json", "upgrade-token", "api-key", "repo", "route-id", "api-url", "output-dir", "yes", "dry-run"],
+  status: READ_COMMAND_FLAGS,
+  frontier: READ_COMMAND_FLAGS,
+  failures: READ_COMMAND_FLAGS,
+  explain: READ_COMMAND_FLAGS
+};
+
+if (Object.hasOwn(LOCAL_COMMAND_FLAGS, command)) {
+  // These commands take no positional value that starts with "-", so such a token is a flag
+  // the parser left in the positional list (for example -f).
+  const unknownFlags = [
+    ...args[OPTION_NAMES].filter((name) => !LOCAL_COMMAND_FLAGS[command].includes(name)).map((name) => `--${name}`),
+    ...args._.filter((value) => typeof value === "string" && value.startsWith("-") && value.length > 1)
+  ];
+  if (unknownFlags.length > 0) {
+    usage(1, command, `Unknown flag${unknownFlags.length > 1 ? "s" : ""} for benchrouter ${command}: ${[...new Set(unknownFlags)].join(", ")}. Nothing was changed.`);
+  }
+}
 
 if (args.version === true && args._.length === 0) {
   process.stdout.write(`${CLI_VERSION}\n`);
@@ -1572,11 +1607,12 @@ function requireSafeRepoPath(value, label) {
 }
 
 function parseArgs(values) {
-  const parsed = { _: [] };
+  const parsed = { _: [], [OPTION_NAMES]: [] };
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
     if (value === "-y") {
       parsed.yes = true;
+      parsed[OPTION_NAMES].push("yes");
       continue;
     }
     if (!value.startsWith("--")) {
@@ -1588,9 +1624,12 @@ function parseArgs(values) {
     const equalsIndex = option.indexOf("=");
     const key = equalsIndex === -1 ? option : option.slice(0, equalsIndex);
     const inlineValue = equalsIndex === -1 ? undefined : option.slice(equalsIndex + 1);
+    parsed[OPTION_NAMES].push(key);
     const next = values[index + 1];
     const databricksBoolean = values[0] === "databricks" && ["json", "help", "force", "reclaim"].includes(key);
-    const argValue = inlineValue !== undefined ? (databricksBoolean && ["true", "false"].includes(inlineValue) ? inlineValue === "true" : inlineValue) : !databricksBoolean && next && !next.startsWith("--") ? values[++index] : true;
+    // A boolean flag never takes the next token as its value, so `--yes -f` leaves -f to be checked.
+    const takesNoValue = databricksBoolean || BOOLEAN_FLAGS.has(key);
+    const argValue = inlineValue !== undefined ? (databricksBoolean && ["true", "false"].includes(inlineValue) ? inlineValue === "true" : inlineValue) : !takesNoValue && next && !next.startsWith("--") ? values[++index] : true;
 
     if (parsed[key] === undefined) {
       parsed[key] = argValue;
