@@ -401,9 +401,10 @@ for (const [index, expected] of setupTemplate.setup_items.entries()) {
       else items[index].target = `other-${expected.target}`;
     } }];
     const server = await replay(t, plan({ setupReads }).calls);
-    // Long enough that the first poll's two reads finish before the deadline under parallel test load.
+    // One poll: a deadline long enough for its two reads on a slow CI runner, and a poll interval past it.
     const result = await runCli(server, ['--json'], {
-      BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS: '600'
+      BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS: '2000',
+      BENCHROUTER_DATABRICKS_TEST_WAIT_POLL_MS: '5000'
     });
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout, '');
@@ -1216,7 +1217,8 @@ test('malformed setup items after a verified read are reported, not hidden by th
 });
 
 for (const [name, values] of [
-  ['BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS', ['0', '-1', '1001', '1.5', 'Infinity', 'invalid', '']],
+  ['BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS', ['0', '-1', '3001', '1.5', 'Infinity', 'invalid', '']],
+  ['BENCHROUTER_DATABRICKS_TEST_WAIT_POLL_MS', ['0', '5001', '1.5', 'invalid', '']],
   ['BENCHROUTER_DATABRICKS_TEST_WAIT_RETRY_MS', ['-1', '101', '1.5', 'Infinity', 'invalid', '']]
 ]) for (const value of values) test(`Connect rejects ${name}=${JSON.stringify(value)} at the replay boundary`, { timeout: 4900 }, async (t) => {
   const server = await replay(t, []);

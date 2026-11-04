@@ -280,8 +280,9 @@ function connectWaitTiming() {
     return value;
   };
   return {
-    deadlineMs: setting('BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS', 180000, 1, 1000),
-    retryMs: setting('BENCHROUTER_DATABRICKS_TEST_WAIT_RETRY_MS', 1000, 0, 100)
+    deadlineMs: setting('BENCHROUTER_DATABRICKS_TEST_WAIT_DEADLINE_MS', 180000, 1, 3000),
+    retryMs: setting('BENCHROUTER_DATABRICKS_TEST_WAIT_RETRY_MS', 1000, 0, 100),
+    pollMs: setting('BENCHROUTER_DATABRICKS_TEST_WAIT_POLL_MS', 1000, 1, 5000)
   };
 }
 // An inconclusive error means Connect could not observe the outcome (a timeout, or transient failures
@@ -316,11 +317,24 @@ async function waitForAgent(workspace, br, bindingId, runId, spId, catalog, sche
   const expected = expectedSetupItems(bindingId, catalog, schema);
   let pending = expected;
   while (Date.now() < deadline) {
-    const run = await workspace.call('GET', `/api/2.2/jobs/runs/get?run_id=${runId}`, undefined, { signal });
+    let run;
+    let view;
+    try {
+      run = await workspace.call('GET', `/api/2.2/jobs/runs/get?run_id=${runId}`, undefined, { signal });
+    } catch (error) {
+      // The deadline passed during a read: report what the last finished poll was waiting for.
+      if (signal.aborted && error?.inconclusive) break;
+      throw error;
+    }
     // A known failed run is a definite answer: report it before any later read can fail.
     const finished = ['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'].includes(run.state?.life_cycle_state);
     if (finished && run.state.result_state !== 'SUCCESS') throw new Error('The agent job did not finish successfully. Check the recorded job in Databricks.');
-    const view = connectBindingRead(await br({ ...customerPaths.databricksBinding(bindingId), signal }), spId);
+    try {
+      view = connectBindingRead(await br({ ...customerPaths.databricksBinding(bindingId), signal }), spId);
+    } catch (error) {
+      if (signal.aborted && error?.inconclusive) break;
+      throw error;
+    }
     const items = parseDatabricksSetupItems(view.setup_items);
     observe(view);
     const failed = items.find((item) => item.state === 'failed');
@@ -333,7 +347,7 @@ async function waitForAgent(workspace, br, bindingId, runId, spId, catalog, sche
     pending = expected.filter(({ kind, target }) => !items.some((item) => item.kind === kind && item.state === 'done'
       && (kind === 'volume' || kind === 'results_table' ? item.target.toLowerCase() === target.toLowerCase() : item.target === target)));
     if (finished && view.binding.state === 'verified' && pending.length === 0) return { ...view, setup_items: items };
-    try { await delay(Math.min(1000, Math.max(0, deadline - Date.now())), undefined, { signal }); }
+    try { await delay(Math.min(timing.pollMs, Math.max(0, deadline - Date.now())), undefined, { signal }); }
     catch (error) { if (!signal.aborted) throw error; break; }
   }
   const waiting = pending.length ? ` Waiting for missing or incomplete setup items: ${pending.map((item) => `${item.kind} ${item.target}`).join(', ')}.` : '';
