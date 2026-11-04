@@ -78,7 +78,8 @@ function normalizeRoute(route, index) {
     evalArchetype: optionalString(metadata.eval_archetype),
     evalMode,
     configPath: optionalString(evalPack.config_path),
-    scorerPath: evalPack.scorer === undefined ? "" : requiredString(evalPack.scorer, `${prefix}.eval_pack.scorer`),
+    // EVAL-012: an executable pack has no scorer (its runtime reads result_path); isolated replay may declare one.
+    scorerPath: evalMode === "repository_executable" || evalPack.scorer === undefined ? "" : requiredString(evalPack.scorer, `${prefix}.eval_pack.scorer`),
     casesPath: caseRefs[0],
     caseRefs,
     workflowPath: requiredString(evalPack.workflow, `${prefix}.eval_pack.workflow`),
