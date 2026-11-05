@@ -438,6 +438,7 @@ export function renderEvalsStatus(payload) {
         `  ${model.model.padEnd(width)}  score ${metric(model.score, (v) => v.toFixed(3))}  cost ${metric(model.cost_usd, (v) => `$${v.toFixed(4)}`)}` +
         `  p95 ${metric(model.p95_ms, (v) => `${Math.round(v)}ms`)}  ${verdict}${roles}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`
       );
+      if (typeof model.artifacts_url === "string" && model.artifacts_url !== "") out.push(`    artifacts: ${model.artifacts_url}`);
     }
   }
   process.stdout.write(`${out.join("\n")}\n`);

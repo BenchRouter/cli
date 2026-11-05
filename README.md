@@ -236,7 +236,7 @@ that declares its own.
 The `lockfile` is `package-lock.json`, `npm-shrinkwrap.json` or `pnpm-lock.yaml`
 for runtime `node`, and `bun.lock` or `bun.lockb` for runtime `bun`.
 
-Three fields are optional:
+Four fields are optional:
 
 - `working_directory`: the repository-relative directory where `argv` runs, such
   as `apps/web`. Leave it out for the repository root; `.` is refused. The
@@ -247,6 +247,13 @@ Three fields are optional:
 - `isolation`: `process` (the default) or `job`. Use `job` when the evaluator
   starts children that leave its process group, for example containers started
   through a Docker daemon.
+- `artifacts`: files the evaluator writes that you want to keep from each model
+  run, as repository-relative paths or globs (`*`, `**`, `?`), for example
+  `"artifacts": [".benchrouter/composer-drafts.json", "out/drafts/**"]`. The runtime
+  copies them into your repository's GitHub Actions artifacts; they never go to
+  BenchRouter. At most 16 entries; each run keeps at most 32 files and 8 MiB per
+  model. Linux runners only. The files need not exist when you run init.
+  `evals status` shows each model's artifacts link when there is one.
 - `runtime_version`: informational only. The job's `node` or `bun` runs, and the
   runtime records its version. When present, it must be an exact version.
 

@@ -35,6 +35,7 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "lockfile",
   "working_directory",
   "isolation",
+  "artifacts",
   "input_refs",
   "acceptance_refs",
   "result_path",
@@ -1730,6 +1731,7 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   if (pack.isolation !== undefined && pack.isolation !== null && pack.isolation !== "process" && pack.isolation !== "job") {
     fail(`${at}.isolation must be process or job.`);
   }
+  validateEvalPackArtifacts(pack.artifacts, `${at}.artifacts`);
   if (pack.result_schema !== "benchrouter.executable_result.v1") {
     fail(`${at}.result_schema must be benchrouter.executable_result.v1.`);
   }
@@ -1819,6 +1821,29 @@ function requireNonEmptyStringArray(value, label) {
 function requirePositiveInteger(value, label) {
   if (!Number.isInteger(value) || value <= 0) {
     fail(`${label} must be a positive integer.`);
+  }
+}
+
+// EVAL-012: optional files the runtime copies into the run's GitHub Actions artifacts. They may not
+// exist yet (the evaluator writes them), so only their shape is checked: at most 16 distinct,
+// normalized repository-relative paths or globs (* ** ?), each at most 256 characters.
+function validateEvalPackArtifacts(value, label) {
+  if (value === undefined || value === null) return;
+  if (!Array.isArray(value)) fail(`${label} must be a list of repository paths or globs.`);
+  if (value.length > 16) fail(`${label} may list at most 16 entries.`);
+  const refused = new Set(['"', ":", "<", ">", "|", "[", "]", "{", "}", "+", "\\"]);
+  for (const [index, entry] of value.entries()) {
+    const at = `${label}[${index}]`;
+    if (typeof entry !== "string" || entry === "" || entry.trim() !== entry) fail(`${at} must be a non-empty string without surrounding whitespace.`);
+    if (entry.length > 256) fail(`${at} must be at most 256 characters.`);
+    if ([...entry].some((char) => refused.has(char) || char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) {
+      fail(`${at} contains a character that is not allowed; use a path with only the * ** ? wildcards.`);
+    }
+    if (entry.startsWith("/") || entry.startsWith("~") || entry.startsWith("!")
+      || entry.split("/").some((segment) => segment === "" || segment === "." || segment === ".." || segment === ".git")) {
+      fail(`${at} must be a normalized repository-relative path or glob such as out/drafts/**.`);
+    }
+    if (value.indexOf(entry) !== index) fail(`${label} lists ${entry} twice.`);
   }
 }
 
