@@ -46,7 +46,7 @@ test("setup approve shows an approval from its link, and approves a baseline aft
 
   const refused = await runCli(["setup", "approve", "sac_demo", "--model", "openai/gpt-5.4-mini", "--json", "--api-url", replay.url, ...token]);
   assert.notEqual(refused.status, 0);
-  assert.match(refused.stderr, /requires --yes/);
+  assert.match(refused.stderr, /rerun with --yes to confirm/);
 
   const approve = await runCli(["setup", "approve", "sac_demo", "--model", "openai/gpt-5.4-mini", "--yes", "--api-url", replay.url, ...token]);
   assert.equal(approve.status, 0, approve.stderr);

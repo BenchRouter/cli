@@ -386,8 +386,11 @@ Repo-read commands keep using the setup/read token. Tokens are never
 auto-substituted across scopes. Runtime API keys never authorize control-plane
 commands.
 
-Mutations print an exact action summary and prompt unless `--yes`. JSON mode
-never prompts and requires `--yes`. Billing top-up prints a checkout URL; it
+Mutations print their plan (`Plan: <action>: <details>`) and then prompt unless
+`--yes`. A shell that cannot answer a prompt, and JSON mode, print the plan,
+change nothing and ask you to rerun with `--yes`. If another eval already holds
+the route (409 `route_context_busy`), the CLI names the open result set and,
+when BenchRouter knows it, the time it expects that eval to finish. Billing top-up prints a checkout URL; it
 does not open a browser. `billing show` reads billing fields from
 `GET /v1/dashboard/summary`.
 

@@ -31,14 +31,19 @@ export function adminRequest(ctx, spec) {
   return apiRequest({ ...adminClient(ctx), ...spec });
 }
 
+/**
+ * Every confirming command states its plan before it asks, so a shell that cannot answer
+ * still sees what would happen and how to confirm it.
+ */
 export async function requireMutationConfirmation(ctx, summary) {
   const json = Boolean(ctx.args.json);
   const yes = Boolean(ctx.args.yes);
-  if (json && !yes) {
-    ctx.fail("JSON mode requires --yes for mutations (no interactive prompts).", "confirmation_required");
-  }
   if (yes) return;
-  const confirmed = await ctx.confirmPrompt(`${summary}. Continue? [y/N] `);
+  if (json) {
+    ctx.fail(`Plan: ${summary}. Nothing was changed. JSON mode cannot prompt; rerun with --yes to confirm.`, "confirmation_required");
+  }
+  process.stdout.write(`Plan: ${summary}\n`);
+  const confirmed = await ctx.confirmPrompt("Continue? [y/N] ");
   if (!confirmed) {
     process.stdout.write("Declined. No changes made.\n");
     process.exit(0);

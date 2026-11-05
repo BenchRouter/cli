@@ -469,7 +469,8 @@ async function upgrade() {
   } else if (dryRun) {
     fail("--dry-run requires --upgrade-token; the API-key apply endpoint consumes nothing but cannot be safely previewed without a token.");
   } else if (!autoYes) {
-    const confirmed = await confirmPrompt(`Apply BenchRouter kit upgrade to ${repoFullName} / ${routeId}? [y/N] `);
+    process.stdout.write(`Plan: apply the current BenchRouter kit to ${repoFullName} / ${routeId}\n`);
+    const confirmed = await confirmPrompt("Apply these changes? [y/N] ");
     if (!confirmed) {
       process.stdout.write("Declined. No changes written.\n");
       return;
@@ -654,7 +655,8 @@ function isTokenInvalid(status, parsed) {
 
 async function confirmPrompt(question) {
   if (!process.stdin.isTTY) {
-    fail("Cannot prompt for confirmation in a non-interactive shell. Pass --yes to auto-confirm.");
+    // The caller printed the plan first; say how to confirm it.
+    fail("Nothing was changed: this shell cannot answer a confirmation prompt. Rerun with --yes to confirm.", "confirmation_required");
   }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {

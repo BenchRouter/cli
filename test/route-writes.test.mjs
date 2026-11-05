@@ -45,7 +45,7 @@ test("routes pin shows the pin, and a re-pin sends the read generation as expect
 
   const refused = await runCli(["routes", "pin", "support/triage", "--model", "deepseek/deepseek-v4-flash", "--api-url", replay.url, ...token, "--json"]);
   assert.notEqual(refused.status, 0);
-  assert.match(refused.stderr, /requires --yes/);
+  assert.match(refused.stderr, /rerun with --yes to confirm/);
 
   const pin = await runCli(["routes", "pin", "support/triage", "--model", "deepseek/deepseek-v4-flash", "--yes", "--api-url", replay.url, ...token]);
   assert.equal(pin.status, 0, pin.stderr);
