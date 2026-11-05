@@ -116,6 +116,24 @@ test("evals status shows a model's artifacts link when the server sends one", as
   assert.equal(lines.filter((line) => line.startsWith("    artifacts:")).length, 1);
 });
 
+// The reason texts are server #830's wording (POLICY); no live PR view with them is readable from our account.
+test("evals status --pr prints why each untested or failed model has no result", async (t) => {
+  const view = structuredClone(catalog.view_evidence[0]);
+  view.id = "pr-76";
+  view.label = "PR #76 preview";
+  const [first, second, third] = view.search_status.models;
+  Object.assign(first, { verdict: "not_comparable", reason: "Unavailable at its provider.", score: null, cost_usd: null, p95_ms: null });
+  Object.assign(second, { verdict: "failed", reason: "The latest attempt failed: timeout." });
+  Object.assign(third, { verdict: "not_comparable", reason: "untested", score: null, cost_usd: null, p95_ms: null });
+  const replay = await startFixtureServer(t, { ...catalog, view_evidence: [view] });
+  const human = await runCli(["evals", "status", "validation/request-router", "--pr", "76", "--api-url", replay.url, ...token]);
+  assert.equal(human.status, 0, human.stderr);
+  const row = (model) => human.stdout.split("\n").find((line) => line.startsWith(`  ${model} `));
+  assert.match(row(first.model), /  p95 -  not_comparable: Unavailable at its provider\.( \[|$)/);
+  assert.match(row(second.model), /  failed: The latest attempt failed: timeout\.( \[|$)/);
+  assert.match(row(third.model), /  p95 -  not_comparable( \[|$)/);
+});
+
 test("evals status --pr names a missing preview, and evals list leads with each context's summary", async (t) => {
   const replay = await startFixtureServer(t, catalog);
   const missing = await runCli(["evals", "status", "validation/request-router", "--pr", "76", "--api-url", replay.url, ...token]);

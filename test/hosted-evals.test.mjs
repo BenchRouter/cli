@@ -102,6 +102,22 @@ test("evals results --pr reads that pull request's view and prints its quality t
   ]);
 });
 
+// The reason texts are server #830's wording (POLICY); no live PR view with them is readable from our account.
+test("evals results --pr lists why each unmeasured model has no result", async (t) => {
+  const view = structuredClone(resultsPrView);
+  const unmeasured = view.models.filter((model) => model.pass_rate === null);
+  assert.ok(unmeasured.length >= 1);
+  unmeasured[0].untested_reason = "Can't serve your request (response_format).";
+  const replay = await startServer(t, { "GET /v1/hosted-evals/iphonesize%2Fcomparison-copy/results?view=pr-99": view });
+  const human = await runCli(["evals", "results", "iphonesize/comparison-copy", "--pr", "99", "--api-url", replay.url, ...token]);
+  assert.equal(human.status, 0, human.stderr);
+  const lines = human.stdout.split("\n");
+  const at = lines.indexOf(`${unmeasured.length} model(s) not measured.`);
+  assert.notEqual(at, -1, human.stdout);
+  assert.equal(lines[at + 1], `  ${unmeasured[0].model}: Can't serve your request (response_format).`);
+  assert.equal(lines.filter((line) => line.includes("Can't serve")).length, 1);
+});
+
 test("evals results and evals model refuse an answer for a different view than --pr asked for", async (t) => {
   const replay = await startServer(t, {
     "GET /v1/hosted-evals/timeywimey%2Fvoice-places/results?view=pr-5": { ...results, view_id: "production" },
