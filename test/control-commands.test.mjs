@@ -110,7 +110,7 @@ test("JSON mutations require --yes and never prompt", async () => {
     "--json"
   ]);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /JSON mode requires --yes/);
+  assert.match(result.stderr, /Nothing was changed\. JSON mode cannot prompt; rerun with --yes to confirm\./);
 
   const admin = await runCli([
     "proposals",
@@ -121,7 +121,7 @@ test("JSON mutations require --yes and never prompt", async () => {
     "--json"
   ]);
   assert.equal(admin.status, 1);
-  assert.match(admin.stderr, /JSON mode requires --yes/);
+  assert.match(admin.stderr, /Nothing was changed\. JSON mode cannot prompt; rerun with --yes to confirm\./);
 });
 
 test("admin keys mint stays browser-session only; list and revoke are wired", async () => {
@@ -146,7 +146,7 @@ test("admin keys mint stays browser-session only; list and revoke are wired", as
   // admin keys revoke is a mutation, so JSON mode must still refuse without --yes.
   const revoke = await runCli(["admin", "keys", "revoke", "adm_1", "--admin-token", "bradm_recorded", "--json"]);
   assert.equal(revoke.status, 1);
-  assert.match(revoke.stderr, /JSON mode requires --yes/);
+  assert.match(revoke.stderr, /Nothing was changed\. JSON mode cannot prompt; rerun with --yes to confirm\./);
 });
 
 test("customer request construction uses exact service methods, paths, and bodies", () => {
@@ -425,7 +425,7 @@ test("mutating commands refuse JSON mode without --yes before building a request
   for (const argv of mutations) {
     const result = await runCli([...argv, "--account-token", "br_ctrl_recorded_fixture", "--json"]);
     assert.equal(result.status, 1, argv.join(" "));
-    assert.match(result.stderr, /JSON mode requires --yes/, argv.join(" "));
+    assert.match(result.stderr, /Nothing was changed\. JSON mode cannot prompt; rerun with --yes to confirm\./, argv.join(" "));
   }
 });
 
@@ -449,7 +449,7 @@ test("catalog outbox drain validates its bounded limit before authentication", a
     "admin", "catalog", "drain-outbox", "--admin-token", "bradm_recorded", "--json"
   ]);
   assert.equal(confirmation.status, 1);
-  assert.match(confirmation.stderr, /JSON mode requires --yes/);
+  assert.match(confirmation.stderr, /Nothing was changed\. JSON mode cannot prompt; rerun with --yes to confirm\./);
 });
 
 test("token namespaces stay strict across every control command group", async () => {

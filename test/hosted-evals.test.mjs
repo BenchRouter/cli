@@ -190,7 +190,7 @@ test("evals approve needs --yes in JSON mode, then posts the card hash for the d
 
   const refused = await runCli([...args, "--json"]);
   assert.notEqual(refused.status, 0);
-  assert.match(refused.stderr, /requires --yes/);
+  assert.match(refused.stderr, /rerun with --yes to confirm/);
   assert.equal(replay.requests.length, 0);
 
   const human = await runCli([...args, "--yes"]);

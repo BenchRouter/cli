@@ -1401,6 +1401,31 @@ test("upgrade validates canonical YAML before any preview or token consumption",
   assert.equal(server.requests.length, 0);
 });
 
+test("upgrade in JSON mode without --yes refuses with its plan and applies nothing", async (t) => {
+  const root = await createUpgradeTarget(t);
+  const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
+  const apiKey = await runCli([
+    "upgrade", "--api-key", "br_live_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--json"
+  ], root);
+  assert.equal(apiKey.status, 1);
+  assert.deepEqual(JSON.parse(apiKey.stderr).error, {
+    code: "confirmation_required",
+    message: `Plan: apply the current BenchRouter kit to example/app / ${routeId}. Nothing was changed. JSON mode cannot prompt; rerun with --yes to confirm.`
+  });
+  assert.equal(server.requests.length, 0);
+
+  const token = await runCli([
+    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--json"
+  ], root);
+  assert.equal(token.status, 1);
+  assert.equal(JSON.parse(token.stderr.trim().split("\n").at(-1)).error.code, "confirmation_required");
+  assert.match(token.stderr, /Plan: apply BenchRouter kit .* as listed above\. Nothing was changed\./);
+  assert.equal(server.requests.length, 1);
+  assert.equal(server.requests[0].url, "/v1/setup/upgrade-packet/preview");
+});
+
 test("upgrade revalidates canonical YAML immediately before apply", async (t) => {
   const root = await createUpgradeTarget(t);
   const server = await startFixtureProxy(t, {

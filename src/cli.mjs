@@ -35,6 +35,7 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
   "lockfile",
   "working_directory",
   "isolation",
+  "artifacts",
   "input_refs",
   "acceptance_refs",
   "result_path",
@@ -459,7 +460,10 @@ async function upgrade() {
     }
 
     if (!autoYes) {
-      const confirmed = await confirmPrompt("Apply these changes? [y/N] ");
+      const confirmed = await confirmPlan(
+        `apply BenchRouter kit ${preview.setup_kit_version} to ${preview.repo_full_name} / ${preview.route_id} as listed above`,
+        "Apply these changes? [y/N] "
+      );
       if (!confirmed) {
         process.stdout.write("Declined. No changes written.\n");
         return;
@@ -468,7 +472,7 @@ async function upgrade() {
   } else if (dryRun) {
     fail("--dry-run requires --upgrade-token; the API-key apply endpoint consumes nothing but cannot be safely previewed without a token.");
   } else if (!autoYes) {
-    const confirmed = await confirmPrompt(`Apply BenchRouter kit upgrade to ${repoFullName} / ${routeId}? [y/N] `);
+    const confirmed = await confirmPlan(`apply the current BenchRouter kit to ${repoFullName} / ${routeId}`, "Apply these changes? [y/N] ");
     if (!confirmed) {
       process.stdout.write("Declined. No changes written.\n");
       return;
@@ -653,7 +657,8 @@ function isTokenInvalid(status, parsed) {
 
 async function confirmPrompt(question) {
   if (!process.stdin.isTTY) {
-    fail("Cannot prompt for confirmation in a non-interactive shell. Pass --yes to auto-confirm.");
+    // The caller printed the plan first; say how to confirm it.
+    fail("Nothing was changed: this shell cannot answer a confirmation prompt. Rerun with --yes to confirm.", "confirmation_required");
   }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -664,13 +669,24 @@ async function confirmPrompt(question) {
   }
 }
 
+/** State the plan, then ask. JSON mode never prompts: it refuses with the plan and names --yes. */
+async function confirmPlan(plan, question) {
+  if (args.json) {
+    fail(`Plan: ${plan}. Nothing was changed. JSON mode cannot prompt; rerun with --yes to confirm.`, "confirmation_required");
+  }
+  process.stdout.write(`Plan: ${plan}\n`);
+  return confirmPrompt(question);
+}
+
 async function maybeSaveRepoReadToken(token, repoFullName) {
   if (!token?.startsWith("br_setup_") || !repoFullName) {
     return;
   }
   let approved = Boolean(args["save-token"]);
-  if (!approved && process.stdin.isTTY) {
-    approved = await confirmPrompt(`Save repo read access for ${repoFullName} on this computer? [y/N] `);
+  // Optional: only an interactive human run asks; everyone else gets the hint below.
+  if (!approved && process.stdin.isTTY && !args.json) {
+    process.stdout.write(`Plan: save repo read access for ${repoFullName} on this computer\n`);
+    approved = await confirmPrompt("Save it? [y/N] ");
   }
   if (!approved) {
     process.stdout.write("Setup key not saved. The read commands (status, frontier, failures, explain) need it: set BENCHROUTER_SETUP_KEY or pass --setup-key, or rerun init with --save-token.\n");
@@ -1730,6 +1746,7 @@ function validateExecutableEvalPack(pack, routeId, outputDir) {
   if (pack.isolation !== undefined && pack.isolation !== null && pack.isolation !== "process" && pack.isolation !== "job") {
     fail(`${at}.isolation must be process or job.`);
   }
+  validateEvalPackArtifacts(pack.artifacts, `${at}.artifacts`);
   if (pack.result_schema !== "benchrouter.executable_result.v1") {
     fail(`${at}.result_schema must be benchrouter.executable_result.v1.`);
   }
@@ -1819,6 +1836,29 @@ function requireNonEmptyStringArray(value, label) {
 function requirePositiveInteger(value, label) {
   if (!Number.isInteger(value) || value <= 0) {
     fail(`${label} must be a positive integer.`);
+  }
+}
+
+// EVAL-012: optional files the runtime copies into the run's GitHub Actions artifacts. They may not
+// exist yet (the evaluator writes them), so only their shape is checked: at most 16 distinct,
+// normalized repository-relative paths or globs (* ** ?), each at most 256 characters.
+function validateEvalPackArtifacts(value, label) {
+  if (value === undefined || value === null) return;
+  if (!Array.isArray(value)) fail(`${label} must be a list of repository paths or globs.`);
+  if (value.length > 16) fail(`${label} may list at most 16 entries.`);
+  const refused = new Set(['"', ":", "<", ">", "|", "[", "]", "{", "}", "+", "\\"]);
+  for (const [index, entry] of value.entries()) {
+    const at = `${label}[${index}]`;
+    if (typeof entry !== "string" || entry === "" || entry.trim() !== entry) fail(`${at} must be a non-empty string without surrounding whitespace.`);
+    if (entry.length > 256) fail(`${at} must be at most 256 characters.`);
+    if ([...entry].some((char) => refused.has(char) || char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) {
+      fail(`${at} contains a character that is not allowed; use a path with only the * ** ? wildcards.`);
+    }
+    if (entry.startsWith("/") || entry.startsWith("~") || entry.startsWith("!")
+      || entry.split("/").some((segment) => segment === "" || segment === "." || segment === ".." || segment === ".git")) {
+      fail(`${at} must be a normalized repository-relative path or glob such as out/drafts/**.`);
+    }
+    if (value.indexOf(entry) !== index) fail(`${label} lists ${entry} twice.`);
   }
 }
 

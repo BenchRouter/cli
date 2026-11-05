@@ -101,6 +101,21 @@ test("evals status --pr redacts the login token from a setup failure", async (t)
   }
 });
 
+test("evals status shows a model's artifacts link when the server sends one", async (t) => {
+  const view = structuredClone(catalog.view_evidence[0]);
+  view.id = "pr-76";
+  view.label = "PR #76 preview";
+  view.search_status.models[0].artifacts_url = "https://github.com/example/app/actions/runs/3/artifacts/9";
+  view.search_status.models[1].artifacts_url = null;
+  const replay = await startFixtureServer(t, { ...catalog, view_evidence: [view] });
+  const human = await runCli(["evals", "status", "validation/request-router", "--pr", "76", "--api-url", replay.url, ...token]);
+  assert.equal(human.status, 0, human.stderr);
+  const lines = human.stdout.split("\n");
+  const at = lines.findIndex((line) => line.includes("deepseek/deepseek-v4-flash"));
+  assert.equal(lines[at + 1], "    artifacts: https://github.com/example/app/actions/runs/3/artifacts/9");
+  assert.equal(lines.filter((line) => line.startsWith("    artifacts:")).length, 1);
+});
+
 test("evals status --pr names a missing preview, and evals list leads with each context's summary", async (t) => {
   const replay = await startFixtureServer(t, catalog);
   const missing = await runCli(["evals", "status", "validation/request-router", "--pr", "76", "--api-url", replay.url, ...token]);

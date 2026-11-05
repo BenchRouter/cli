@@ -139,6 +139,49 @@ test("the overlap error names the file and explains both lists, exactly", async 
   assert.equal(bodies.length, 0);
 });
 
+test("artifacts accepts paths and globs that do not exist yet", async (t) => {
+  const root = await monorepo(t);
+  for (const artifacts of [[".benchrouter/composer-drafts.json", "out/drafts/**", "out/run-?.log", "logs/*.txt"], [], null]) {
+    const { result, bodies } = await initWith(t, root, pack({ artifacts }));
+    assert.equal(bodies.length, 1, `${JSON.stringify(artifacts)}: ${result.stderr}`);
+    assert.deepEqual(bodies[0].route.eval_pack.artifacts, artifacts);
+  }
+});
+
+test("artifacts rules stop before any request", async (t) => {
+  const root = await monorepo(t);
+  const many = Array.from({ length: 17 }, (_, i) => `out/${i}.json`);
+  const cases = [
+    ["out/a.json", "must be a list of repository paths or globs"],
+    [many, "may list at most 16 entries"],
+    [["out/a.json", "out/a.json"], "lists out/a.json twice"],
+    [[""], "must be a non-empty string without surrounding whitespace"],
+    [[" out/a.json"], "must be a non-empty string without surrounding whitespace"],
+    [[`out/${"a".repeat(260)}`], "must be at most 256 characters"],
+    [["/abs/a.json"], "must be a normalized repository-relative path or glob"],
+    [["~/a.json"], "must be a normalized repository-relative path or glob"],
+    [["!out/a.json"], "must be a normalized repository-relative path or glob"],
+    [["out//a.json"], "must be a normalized repository-relative path or glob"],
+    [["out/./a.json"], "must be a normalized repository-relative path or glob"],
+    [["../a.json"], "must be a normalized repository-relative path or glob"],
+    [[".git/config"], "must be a normalized repository-relative path or glob"],
+    [["out/"], "must be a normalized repository-relative path or glob"],
+    [["out/[ab].json"], "contains a character that is not allowed"],
+    [["out/{a,b}.json"], "contains a character that is not allowed"],
+    [["out/a+b.json"], "contains a character that is not allowed"],
+    [["out\\draft.json"], "contains a character that is not allowed"],
+    [["c:/a.json"], "contains a character that is not allowed"],
+    [["out/a\tb.json"], "contains a character that is not allowed"],
+    [[7], "must be a non-empty string without surrounding whitespace"]
+  ];
+  for (const [artifacts, message] of cases) {
+    const { result, bodies } = await initWith(t, root, pack({ artifacts }));
+    assert.equal(result.status, 1, JSON.stringify(artifacts));
+    assert.ok(result.stderr.includes(message), `${JSON.stringify(artifacts)}: ${result.stderr}`);
+    assert.equal(bodies.length, 0, JSON.stringify(artifacts));
+  }
+});
+
 test("null optional fields mean the repository root and process isolation", async (t) => {
   const root = await monorepo(t);
   const evalPack = pack({ working_directory: null, isolation: null, lockfile: "pnpm-lock.yaml", argv: ["node", "apps/web/eval/run.mjs"] });

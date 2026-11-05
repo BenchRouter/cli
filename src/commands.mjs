@@ -91,10 +91,25 @@ export async function runControlCommand(ctx) {
     ctx.usage(1, "all", `Unknown command: ${command}`);
   } catch (error) {
     if (error instanceof ApiError) {
-      ctx.fail(error.message, error.code ?? "command_failed");
+      const nextStep = error.code === "route_context_busy" ? routeContextBusyNextStep(error.body) : null;
+      ctx.fail(nextStep ? `${error.message}\n${nextStep}` : error.message, error.code ?? "command_failed");
     }
     ctx.fail(error instanceof Error ? error.message : "BenchRouter command failed.");
   }
+}
+
+/**
+ * 409 route_context_busy: another eval holds the route. The server names the open result set
+ * (with its PR number, null for production) and, when it knows, when that set is expected to close (an ISO-8601 UTC time).
+ */
+function routeContextBusyNextStep(body) {
+  const detail = body?.error && typeof body.error === "object" ? body.error : {};
+  const pr = Number.isSafeInteger(detail.pr_number) && detail.pr_number > 0 ? ` for PR #${detail.pr_number}` : "";
+  const setId = typeof detail.open_result_set_id === "string" && detail.open_result_set_id ? ` (${detail.open_result_set_id})` : "";
+  const closeAt = typeof detail.expected_close_at === "string" ? detail.expected_close_at : null;
+  const closeMs = closeAt === null ? Number.NaN : Date.parse(closeAt);
+  const when = Number.isFinite(closeMs) ? `; it is expected to finish around ${new Date(closeMs).toISOString()}` : "";
+  return `An eval is already running${pr}${setId}${when}. Rerun this command after that.`;
 }
 
 async function runAccount(ctx) {
