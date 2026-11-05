@@ -429,7 +429,9 @@ export function renderEvalsStatus(payload) {
     for (const model of models) {
       const shown = model.roles.filter((role) => role !== model.verdict);
       const roles = shown.length > 0 ? ` [${shown.join(", ")}]` : "";
-      const verdict = model.verdict === "failed" && model.reason ? `failed: ${model.reason}` : model.verdict;
+      // A PR view's untested and failed rows carry the reason text in `reason`; production keeps the code "untested".
+      const why = model.verdict === "failed" || (model.verdict === "not_comparable" && model.reason !== "untested") ? model.reason : null;
+      const verdict = typeof why === "string" && why !== "" ? `${model.verdict}: ${why}` : model.verdict;
       const notes = [
         model.reused ? "reused" : null,
         model.breaker_open_until ? `breaker open until ${utcMinute(model.breaker_open_until)}` : null
@@ -477,6 +479,9 @@ export function renderEvalsResults(body) {
     }
   }
   if (models.length > measured.length) out.push(`${models.length - measured.length} model(s) not measured.`);
+  // A PR view says why each unmeasured model has no result (untested_reason); production sends null.
+  const explained = models.filter((model) => model.pass_rate === null && typeof model.untested_reason === "string" && model.untested_reason !== "");
+  for (const model of explained) out.push(`  ${model.model}: ${model.untested_reason}`);
   const untested = Array.isArray(body.not_tested_yet) ? body.not_tested_yet : [];
   if (untested.length > 0) {
     out.push("Not tested yet:");
