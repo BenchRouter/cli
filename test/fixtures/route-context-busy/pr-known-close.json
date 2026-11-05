@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "route_context_busy",
+    "message": "Another eval is open on this route.",
+    "open_result_set_id": "ers_open",
+    "pr_number": 12,
+    "expected_close_at": "2026-11-04T23:30:00Z"
+  }
+}

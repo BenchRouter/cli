@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
@@ -35,21 +36,17 @@ test("JSON mode puts the plan in the confirmation_required error", async (t) => 
 });
 
 test("409 route_context_busy prints the server message and when to rerun", async (t) => {
-  const busy = (detail) => ({
+  const busy = async (name) => ({
     status: 409,
-    body: { error: { code: "route_context_busy", message: "Another eval is open on this route.", ...detail } }
+    body: JSON.parse(await readFile(path.join(testDir, "fixtures/route-context-busy", name), "utf8"))
   });
-  const known = await startServer(t, {
-    [`POST ${refreshPath}`]: busy({ open_result_set_id: "ers_open", pr_number: 12, expected_close_at: "2026-11-04T23:30:00Z" })
-  });
+  const known = await startServer(t, { [`POST ${refreshPath}`]: await busy("pr-known-close.json") });
   const withTime = await runCli(["evals", "refresh-preview", "app/chat", "ers_1", "--yes", "--api-url", known.url, ...token]);
   assert.equal(withTime.status, 1);
   assert.match(withTime.stderr, /^BenchRouter evals refresh-preview failed \(409\): Another eval is open on this route\.\n/);
   assert.match(withTime.stderr, /\nAn eval is already running for PR #12 \(ers_open\); it is expected to finish around 2026-11-04T23:30:00\.000Z\. Rerun this command after that\.\n/);
 
-  const unknown = await startServer(t, {
-    [`POST ${refreshPath}`]: busy({ open_result_set_id: "ers_open", pr_number: null, expected_close_at: null })
-  });
+  const unknown = await startServer(t, { [`POST ${refreshPath}`]: await busy("production-unknown-close.json") });
   const noTime = await runCli(["evals", "refresh-preview", "app/chat", "ers_1", "--yes", "--api-url", unknown.url, ...token]);
   assert.equal(noTime.status, 1);
   assert.match(noTime.stderr, /\nAn eval is already running \(ers_open\)\. Rerun this command after that\.\n/);

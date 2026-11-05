@@ -460,7 +460,10 @@ async function upgrade() {
     }
 
     if (!autoYes) {
-      const confirmed = await confirmPrompt("Apply these changes? [y/N] ");
+      const confirmed = await confirmPlan(
+        `apply BenchRouter kit ${preview.setup_kit_version} to ${preview.repo_full_name} / ${preview.route_id} as listed above`,
+        "Apply these changes? [y/N] "
+      );
       if (!confirmed) {
         process.stdout.write("Declined. No changes written.\n");
         return;
@@ -469,8 +472,7 @@ async function upgrade() {
   } else if (dryRun) {
     fail("--dry-run requires --upgrade-token; the API-key apply endpoint consumes nothing but cannot be safely previewed without a token.");
   } else if (!autoYes) {
-    process.stdout.write(`Plan: apply the current BenchRouter kit to ${repoFullName} / ${routeId}\n`);
-    const confirmed = await confirmPrompt("Apply these changes? [y/N] ");
+    const confirmed = await confirmPlan(`apply the current BenchRouter kit to ${repoFullName} / ${routeId}`, "Apply these changes? [y/N] ");
     if (!confirmed) {
       process.stdout.write("Declined. No changes written.\n");
       return;
@@ -667,13 +669,24 @@ async function confirmPrompt(question) {
   }
 }
 
+/** State the plan, then ask. JSON mode never prompts: it refuses with the plan and names --yes. */
+async function confirmPlan(plan, question) {
+  if (args.json) {
+    fail(`Plan: ${plan}. Nothing was changed. JSON mode cannot prompt; rerun with --yes to confirm.`, "confirmation_required");
+  }
+  process.stdout.write(`Plan: ${plan}\n`);
+  return confirmPrompt(question);
+}
+
 async function maybeSaveRepoReadToken(token, repoFullName) {
   if (!token?.startsWith("br_setup_") || !repoFullName) {
     return;
   }
   let approved = Boolean(args["save-token"]);
-  if (!approved && process.stdin.isTTY) {
-    approved = await confirmPrompt(`Save repo read access for ${repoFullName} on this computer? [y/N] `);
+  // Optional: only an interactive human run asks; everyone else gets the hint below.
+  if (!approved && process.stdin.isTTY && !args.json) {
+    process.stdout.write(`Plan: save repo read access for ${repoFullName} on this computer\n`);
+    approved = await confirmPrompt("Save it? [y/N] ");
   }
   if (!approved) {
     process.stdout.write("Setup key not saved. The read commands (status, frontier, failures, explain) need it: set BENCHROUTER_SETUP_KEY or pass --setup-key, or rerun init with --save-token.\n");
