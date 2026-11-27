@@ -5,7 +5,7 @@ import { access, lstat, mkdir, open, realpath, rename, rm, rmdir } from "node:fs
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { CST, isAlias, isMap, isSeq, parseDocument, visit } from "yaml";
+import { CST, isAlias, isMap, isSeq, parse as parseYaml, parseDocument, visit } from "yaml";
 import { readRouteManifest } from "./route-manifest.mjs";
 
 // The local runtime files. Local capture and calibrate write the CLI's vendored copies here
@@ -851,4 +851,27 @@ export function inspectSignedKit(root, failures) {
     const steps = evalSteps(doc);
     validateCustomerSteps(steps, stubBounds(steps));
   } catch (error) { failures.push(`${WORKFLOW_PATH}: ${error.message}`); }
+}
+
+/** The kit version the workflow stub declares, or undefined when there is none. */
+export function readKitVersion(root = process.cwd()) {
+  try {
+    const workflow = parseYaml(readFileSync(path.join(root, WORKFLOW_PATH), "utf8"));
+    for (const job of Object.values(workflow?.jobs ?? {})) {
+      if (!Array.isArray(job?.steps)) continue;
+      const version = job.steps.find((step) => step?.id === "benchrouter_runtime")?.env?.BENCHROUTER_KIT_VERSION;
+      if (isKitVersion(version)) return version;
+    }
+  } catch {
+    // Optional context must not prevent reporting a broken or absent workflow.
+  }
+  return undefined;
+}
+
+function isKitVersion(value) {
+  if (typeof value !== "string") return false;
+  const parts = value.split(".");
+  return parts.length === 3 && parts.every((part) => part.length > 0
+    && [...part].every((char) => char >= "0" && char <= "9")
+    && Number.isSafeInteger(Number(part)) && String(Number(part)) === part);
 }

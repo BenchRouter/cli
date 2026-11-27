@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { rmSync } from "node:fs";
+import { mkdtemp, readFile } from "node:fs/promises";
+import os from "node:os";
 import http from "node:http";
 import path from "node:path";
 import test from "node:test";
@@ -11,6 +13,8 @@ const testDir = path.dirname(fileURLToPath(import.meta.url));
 const cliPath = path.resolve(testDir, "../bin/benchrouter.mjs");
 const fixtureDir = path.join(testDir, "fixtures/repo-read");
 const repoToken = "br_setup_recorded_fixture";
+const emptyConfigDir = await mkdtemp(path.join(os.tmpdir(), "br-read-config-"));
+process.on("exit", () => rmSync(emptyConfigDir, { recursive: true, force: true }));
 
 const fixtures = Object.fromEntries(
   await Promise.all(
@@ -127,7 +131,7 @@ test("repo reads give actionable errors for missing and invalid access", async (
   assert.equal(missing.status, 1);
   assert.equal(
     missing.stderr,
-    "Missing the repository's setup key (br_setup_). Set BENCHROUTER_SETUP_KEY to the key you gave init, pass --setup-key, or rerun init with --save-token to keep it for this repository on this computer. With an account token from `benchrouter login`, `benchrouter routes show <route>` shows what a route serves and `benchrouter evals status <route>` shows its evaluation.\n" +
+    "Not signed in. Run `npx --yes benchrouter@latest login`, then rerun this command. (A repository setup key also works: --setup-key or BENCHROUTER_SETUP_KEY.)\n" +
       "If BenchRouter's docs don't explain this, report it: benchrouter feedback --kind doc_gap '<what happened>'\n"
   );
   assert.equal(replay.requests.length, 0);
@@ -146,6 +150,27 @@ test("repo reads give actionable errors for missing and invalid access", async (
   assert.equal(flag.status, 1);
   assert.equal(replay.requests.length, 2);
   assert.equal(replay.requests[1].authorization, `Bearer ${repoToken}`);
+});
+
+test("repo reads use the CLI login and name the repository; a setup key keeps its old request", async (t) => {
+  const replay = await startReplayServer(t);
+  const common = ["--repo", "example/app", "--api-url", replay.url];
+  const login = { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_recorded_fixture", BENCHROUTER_SETUP_KEY: undefined };
+
+  const status = await runCli(["status", ...common, "--json"], login);
+  assert.equal(status.status, 0, status.stderr);
+  assert.deepEqual(JSON.parse(status.stdout), fixtures.status);
+  const failures = await runCli(["failures", "app/chat", "minimax/minimax-m2.7", ...common, "--json"], login);
+  assert.equal(failures.status, 0, failures.stderr);
+  assert.deepEqual(replay.requests.map(({ authorization, rawUrl }) => [authorization, rawUrl]), [
+    ["Bearer br_ctrl_recorded_fixture", "/v1/repo/status?repo_full_name=example%2Fapp"],
+    ["Bearer br_ctrl_recorded_fixture", "/v1/repo/app%2Fchat/failures?model=minimax%2Fminimax-m2.7&repo_full_name=example%2Fapp"]
+  ]);
+
+  // A setup key passed on the command line wins over the login and sends no repo parameter.
+  const setupKey = await runCli(["status", ...common, "--setup-key", repoToken], login);
+  assert.equal(setupKey.status, 0, setupKey.stderr);
+  assert.deepEqual([replay.requests[2].authorization, replay.requests[2].rawUrl], [`Bearer ${repoToken}`, "/v1/repo/status"]);
 });
 
 async function startReplayServer(t, options = {}) {
@@ -189,7 +214,8 @@ function sendJson(response, status, body) {
 
 function runCli(cliArgs, envOverrides = {}) {
   return new Promise((resolve, reject) => {
-    const env = { ...process.env, ...envOverrides };
+    // An empty config dir and no account env, so a login saved on this computer never answers.
+    const env = { ...process.env, BENCHROUTER_CONFIG_DIR: emptyConfigDir, BENCHROUTER_ACCOUNT_TOKEN: "", ...envOverrides };
     if (Object.hasOwn(envOverrides, "BENCHROUTER_SETUP_KEY") && envOverrides.BENCHROUTER_SETUP_KEY === undefined) {
       delete env.BENCHROUTER_SETUP_KEY;
     }

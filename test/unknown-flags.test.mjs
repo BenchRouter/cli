@@ -41,11 +41,11 @@ test("upgrade --force stops before any request or file change and names the flag
   const apiUrl = `http://127.0.0.1:${server.address().port}`;
 
   const result = await runAsync(["upgrade", "--force", "--repo", "example/app",
-    "--route-id", "app/chat", "--api-url", apiUrl, "--output-dir", root, "--yes"], root);
+    "--route", "app/chat", "--api-url", apiUrl, "--output-dir", root, "--yes"], root);
 
   assert.equal(result.status, 1);
   assert.ok(result.stderr.startsWith("Unknown flag for benchrouter upgrade: --force. Nothing was changed.\n"), result.stderr);
-  assert.ok(result.stderr.includes("benchrouter upgrade --repo"), result.stderr);
+  assert.ok(result.stderr.includes("benchrouter upgrade [--repo"), result.stderr);
   assert.equal(requests, 0);
   assert.equal(await readFile(readme, "utf8"), "# Old\n");
 });

@@ -1,8 +1,7 @@
-import { readFileSync } from "node:fs";
-import { parse as parseYaml } from "yaml";
-import { resolveAccountToken, resolveRepoToken } from "./config.mjs";
+import { LOGIN_COMMAND, resolveAccountToken, resolveRepoToken } from "./config.mjs";
 import { apiRequest, ApiError, defaultApiUrl } from "./http.mjs";
 import { CLI_VERSION } from "./version.mjs";
+import { readKitVersion } from "./generated-kit.mjs";
 
 const KINDS = new Set(["question", "doc_gap", "bug", "other"]);
 const AUTH_CODES = new Set(["auth_required", "control_token_invalid", "control_token_expired"]);
@@ -23,7 +22,7 @@ export async function runFeedback(ctx) {
   for (const [field, value] of Object.entries({
     repo_full_name: repo,
     route: ctx.stringArg("route"),
-    kit_version: kitVersion(),
+    kit_version: readKitVersion(),
     command,
     error_code: ctx.stringArg("error-code")
   })) {
@@ -43,7 +42,7 @@ export async function runFeedback(ctx) {
   } catch {
     return ctx.fail("Feedback requires an account login or a repository setup key. Run benchrouter login or supply --setup-key.", "auth_required");
   }
-  if (!credential) return ctx.fail("Run benchrouter login or supply a repository setup key with --setup-key.", "auth_required");
+  if (!credential) return ctx.fail(`Not signed in. Run \`${LOGIN_COMMAND}\`, or supply a repository setup key with --setup-key.`, "auth_required");
   try {
     const result = await apiRequest({
       apiUrl: defaultApiUrl(ctx.stringArg("api-url")), token: credential.token,
@@ -79,28 +78,6 @@ function isRepoName(value) {
   const parts = value.split("/");
   return parts.length === 2 && parts.every((part) => part.length > 0 && part !== "." && part !== ".."
     && [...part.toLowerCase()].every((char) => (char >= "a" && char <= "z") || (char >= "0" && char <= "9") || "_.-".includes(char)));
-}
-
-function kitVersion() {
-  try {
-    const workflow = parseYaml(readFileSync(".github/workflows/benchrouter-evals.yml", "utf8"));
-    for (const job of Object.values(workflow?.jobs ?? {})) {
-      if (!Array.isArray(job?.steps)) continue;
-      const version = job.steps.find((step) => step?.id === "benchrouter_runtime")?.env?.BENCHROUTER_KIT_VERSION;
-      if (isVersion(version)) return version;
-    }
-  } catch {
-    // Optional context must not prevent reporting a broken or absent workflow.
-  }
-  return undefined;
-}
-
-function isVersion(value) {
-  if (typeof value !== "string") return false;
-  const parts = value.split(".");
-  return parts.length === 3 && parts.every((part) => part.length > 0
-    && [...part].every((char) => char >= "0" && char <= "9")
-    && Number.isSafeInteger(Number(part)) && String(Number(part)) === part);
 }
 
 function retryHint(value) {

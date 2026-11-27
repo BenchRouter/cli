@@ -76,7 +76,7 @@ function pack(overrides = {}) {
 async function initWith(t, root, evalPack) {
   const server = await setupServer(t);
   await writeFile(path.join(root, "eval-pack.json"), `${JSON.stringify(evalPack)}\n`);
-  const result = await runCli(["init", "--setup-key", "br_setup_fixture", "--route-id", "app/web", "--name", "Web",
+  const result = await runCli(["init", "--setup-key", "br_setup_fixture", "--route", "app/web", "--name", "Web",
     "--incumbent-model", "openai/gpt-4o-mini", "--eval-pack", "eval-pack.json", "--api-family", "openai_chat_completions",
     "--repo", "example/app", "--api-url", server.url, "--output-dir", root], root);
   return { result, bodies: server.bodies };

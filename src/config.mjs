@@ -71,6 +71,26 @@ export function resolveRepoToken(repoFullName, explicitToken) {
   return { token: parsed.token, source: "config", path: target };
 }
 
+export const LOGIN_COMMAND = "npx --yes benchrouter@latest login";
+
+/**
+ * The credential for init and the repo reads (status, frontier, failures, explain). The CLI
+ * login (br_ctrl_) serves every repository the person can see, so no setup key is needed after
+ * `benchrouter login`. Order: --setup-key, --account-token, BENCHROUTER_SETUP_KEY, then
+ * BENCHROUTER_ACCOUNT_TOKEN or the saved login, then a setup key `init --save-token` saved.
+ * Runtime keys are never accepted. Returns null when nothing is available.
+ */
+export function resolveRepoCredential(repoFullName, { setupKey, accountToken } = {}) {
+  if (setupKey?.trim()) return { ...resolveRepoToken(repoFullName, setupKey), kind: "setup" };
+  if (accountToken?.trim()) return { ...resolveAccountToken(accountToken), kind: "account" };
+  if (process.env.BENCHROUTER_SETUP_KEY?.trim()) return { ...resolveRepoToken(repoFullName), kind: "setup" };
+  const account = resolveAccountToken();
+  if (account) return { ...account, kind: "account" };
+  if (!repoFullName) return null;
+  const saved = resolveRepoToken(repoFullName);
+  return saved ? { ...saved, kind: "setup" } : null;
+}
+
 /** Owner-only local account control token (br_ctrl_). Never stores runtime keys. */
 export async function saveAccountToken(token, meta = {}) {
   assertAccountToken(token);

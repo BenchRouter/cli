@@ -576,6 +576,17 @@ test("nested help answers every level without a token or a request", async () =>
 
 });
 
+test("default help leaves out BenchRouter-internal commands; --help --all lists them", async () => {
+  const brief = await runCli(["--help"]);
+  assert.equal(brief.status, 0);
+  assert.doesNotMatch(brief.stdout, /benchrouter (proposals|admin) /);
+  assert.match(brief.stdout, /Run `benchrouter --help --all` to include BenchRouter-internal commands\./);
+  const all = await runCli(["--help", "--all"]);
+  assert.equal(all.status, 0);
+  assert.match(all.stdout, /benchrouter proposals list\|approve\|reject/);
+  assert.match(all.stdout, /benchrouter admin providers\|catalog\|keys\|token/);
+});
+
 function restoreEnv(name, previous) {
   if (previous === undefined) delete process.env[name];
   else process.env[name] = previous;

@@ -49,7 +49,7 @@ for (const phase of ["evaluation", "activation"]) {
       BENCHROUTER_SETUP_KEY: "br_setup_unused",
       BENCHROUTER_API_KEY: "br_test_unused",
       BENCHROUTER_ADMIN_TOKEN: "bradm_unused"
-    }, ["--phase", phase, "--route-id", routeId]);
+    }, ["--phase", phase, "--route", routeId]);
     assert.equal(result.status, 0, result.stderr);
     assert.ok(result.stdout.split("\n").includes("doctor passed: manifest check: BenchRouter accepted benchrouter.yml"));
     assert.equal(proxy.requests.length, 1);
@@ -97,7 +97,7 @@ test("doctor skips manifest rules without credentials and never sends runtime or
     BENCHROUTER_API_KEY: "br_test_unused", BENCHROUTER_ADMIN_TOKEN: "bradm_unused"
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.split("\n").includes("doctor skipped: manifest rules not checked (no credential)"));
+  assert.ok(result.stdout.split("\n").includes("doctor skipped (matters for this repo): manifest rules not checked (no credential); run `npx --yes benchrouter@latest login`"));
   assert.equal(proxy.requests.length, 0);
 });
 
@@ -144,9 +144,9 @@ for (const status of [400, 401, 403, 413, 503]) {
     if (status === 401 || status === 403) {
       assert.ok(output.includes("doctor failed: manifest check: this credential cannot check this repo; run benchrouter login or use the repo's setup key"));
     } else if (status === 503) {
-      assert.ok(output.includes("doctor skipped: manifest check: BenchRouter is unavailable or the request failed; retry later"));
+      assert.ok(output.includes("doctor skipped (matters for this repo): manifest check: BenchRouter is unavailable or the request failed; retry later"));
     } else {
-      assert.ok(output.includes(`doctor failed: manifest check: HTTP ${status} (manifest_check_refused); check benchrouter.yml, its size, and --route-id`));
+      assert.ok(output.includes(`doctor failed: manifest check: HTTP ${status} (manifest_check_refused); check benchrouter.yml, its size, and --route`));
     }
     assert.ok(!output.includes("private remote message"));
     assert.equal(proxy.requests.length, 1);
@@ -160,16 +160,16 @@ test("doctor handles a manifest network failure", { timeout: 4900 }, async (t) =
   });
   const result = await runManifestDoctor(root, proxy.url, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_manifest" });
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.includes("doctor skipped: manifest check: BenchRouter is unavailable or the request failed; retry later"));
+  assert.ok(result.stdout.includes("doctor skipped (matters for this repo): manifest check: BenchRouter is unavailable or the request failed; retry later"));
   assert.equal(proxy.requests.length, 1);
 });
 
 test("doctor retains server errors when the route filter is unknown locally", { timeout: 4900 }, async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
   const proxy = await startFixtureProxy(t, { status: 400, body: { error: "unknown_route_id" } });
-  const result = await runManifestDoctor(root, proxy.url, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_manifest" }, ["--route-id", "app/missing"]);
+  const result = await runManifestDoctor(root, proxy.url, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_manifest" }, ["--route", "app/missing"]);
   assert.equal(result.status, 1);
-  assert.ok(result.stderr.includes("doctor failed: manifest check: HTTP 400 (unknown_route_id); check benchrouter.yml, its size, and --route-id"));
+  assert.ok(result.stderr.includes("doctor failed: manifest check: HTTP 400 (unknown_route_id); check benchrouter.yml, its size, and --route"));
   assert.ok(result.stderr.includes("Expected one declared route matching app/missing."));
   assert.equal(proxy.requests.length, 1);
   assert.equal(proxy.requests[0].body.route_id, "app/missing");
@@ -219,7 +219,7 @@ for (const phase of ["evaluation", "activation"]) {
       other.code_refs = ["src/other-missing.js"];
       manifest.routes.push(other);
       await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), stringifyYaml(manifest));
-      const result = await runCli(["doctor", "--phase", phase, "--route-id", routeId, "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
+      const result = await runCli(["doctor", "--phase", phase, "--route", routeId, "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
       assert.equal(result.status, 1);
       for (const ref of refs) {
         const message = `route ${routeId}: missing declared file ${ref}`;
@@ -278,7 +278,7 @@ test("RUN-001 init and upgrade reject invalid packages or unwritable destination
       const extra = command === "init"
         ? ["--setup-key", "br_setup_fixture", "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini"]
         : ["--account-token", "br_ctrl_fixture", "--yes"];
-      const result = await runCli([command, "--repo", "example/app", "--route-id", routeId, "--output-dir", root, "--api-url", "http://127.0.0.1:9", ...extra], root);
+      const result = await runCli([command, "--repo", "example/app", "--route", routeId, "--output-dir", root, "--api-url", "http://127.0.0.1:9", ...extra], root);
       assert.equal(result.status, 1, result.stdout);
       assert.match(result.stderr, /JSON|package.json scripts|EACCES/);
       assert.doesNotMatch(result.stderr, /fetch failed/);
@@ -291,10 +291,10 @@ test("RUN-001 init and upgrade reject invalid packages or unwritable destination
 
 test("activation rejects absent or unknown route before making a request", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
-  for (const extra of [[], ["--route-id", "app/missing"]]) {
+  for (const extra of [[], ["--route", "app/missing"]]) {
     const result = await runCli(["doctor", "--phase", "activation", "--live-chat-completions", "--output-dir", root, "--api-url", "http://127.0.0.1:9", ...extra], root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /require --route-id|Expected one declared route/);
+    assert.match(result.stderr, /require --route |Expected one declared route/);
     assert.doesNotMatch(result.stderr, /fetch failed/);
   }
 });
@@ -317,9 +317,9 @@ test("doctor passes with wired code_refs and a proxy fixture replay", async (t) 
   assert.match(result.stdout, /runtime wiring/);
   assert.match(result.stdout, /doctor passed: live proxy authentication: runtime BENCHROUTER_API_KEY/);
   assert.match(result.stdout, /doctor passed: live proxy model resolution: configured route app\/chat selected minimax\/minimax-m2\.7 and returned usage/);
-  assert.match(result.stdout, /doctor skipped: GitHub workflow state: --skip-github-workflow was passed/);
-  assert.match(result.stdout, /doctor skipped: default-branch config/);
-  assert.match(result.stdout, /doctor skipped: production readiness: run benchrouter setup status/);
+  assert.match(result.stdout, /doctor skipped \(matters for this repo\): GitHub workflow state: --skip-github-workflow was passed/);
+  assert.match(result.stdout, /doctor skipped \(matters for this repo\): default-branch config/);
+  assert.match(result.stdout, /doctor skipped \(matters for this repo\): production readiness: pass --full/);
   assert.match(result.stdout, /doctor skipped: evaluation quality: local files, calibration, and wiring do not certify/);
   assert.match(result.stdout, /BenchRouter doctor passed all checks that ran/);
   assert.match(result.stdout, /does not certify evaluation quality or production readiness/);
@@ -592,6 +592,66 @@ test("doctor confirms active BenchRouter Evals workflow from gh", async (t) => {
   assert.match(result.stdout, /BenchRouter Evals uses keyless OIDC/);
 });
 
+// #961 item 7 and 8: --full runs every free check, and the last line says what is left.
+async function startDoctorServer(t) {
+  const decided = JSON.parse(await readFile(path.join(testDir, "fixtures/setup-diagnostic/production-decided.json"), "utf8"));
+  const seen = [];
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      seen.push(`${request.method} ${request.url} ${request.headers.authorization}`);
+      const body = request.url === "/v1/repo/manifest-check" ? acceptedManifest
+        : request.url === "/v1/setup/diagnostic?repo=example%2Fapp" ? decided : null;
+      response.writeHead(body ? 200 : 404, { "content-type": "application/json" });
+      response.end(JSON.stringify(body ?? { error: { code: "not_found", message: "not recorded" } }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return { url: `http://127.0.0.1:${server.address().port}`, seen };
+}
+
+test("doctor --full runs the default-branch and readiness checks and says nothing is left", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  const ghBin = await createFixtureGh(t);
+  const server = await startDoctorServer(t);
+  const env = { PATH: `${ghBin}${path.delimiter}${process.env.PATH ?? ""}` };
+
+  const partial = await runCli(["doctor", "--output-dir", root, "--api-url", server.url, "--repo", "example/app"], root, env);
+  assert.equal(partial.status, 0, partial.stderr);
+  assert.match(partial.stdout, /doctor skipped \(matters for this repo\): manifest rules not checked \(no credential\); run `npx --yes benchrouter@latest login`/);
+  assert.equal(partial.stdout.trimEnd().split("\n").at(-1), "Left to do: kit 0.1.0 · 1 route OK · run doctor --full for 3 skipped checks that matter");
+
+  const full = await runCli(["doctor", "--full", "--output-dir", root, "--api-url", server.url, "--repo", "example/app"], root,
+    { ...env, BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_doctor" });
+  assert.equal(full.status, 0, full.stderr);
+  assert.match(full.stdout, /doctor passed: default-branch config: .benchrouter\/benchrouter.yml is readable on main/);
+  assert.match(full.stdout, /doctor passed: production readiness \(server\): registered yes; evaluation decided; production eligible yes; observed serving no/);
+  assert.doesNotMatch(full.stdout, /matters for this repo/);
+  assert.equal(full.stdout.trimEnd().split("\n").at(-1), "Done: kit 0.1.0 · 1 route OK · nothing left to do");
+  assert.deepEqual(server.seen.slice(-2), [
+    "POST /v1/repo/manifest-check Bearer br_ctrl_doctor",
+    "GET /v1/setup/diagnostic?repo=example%2Fapp Bearer br_ctrl_doctor"
+  ]);
+});
+
+test("doctor --full fails a check it cannot run and refuses to skip the workflow check", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  const ghBin = await createFixtureGh(t);
+  const server = await startDoctorServer(t);
+  const env = { PATH: `${ghBin}${path.delimiter}${process.env.PATH ?? ""}` };
+
+  const signedOut = await runCli(["doctor", "--full", "--output-dir", root, "--api-url", server.url, "--repo", "example/app"], root, env);
+  assert.equal(signedOut.status, 1);
+  assert.match(signedOut.stderr, /doctor failed: production readiness: not checked without a login; run `npx --yes benchrouter@latest login`/);
+  assert.match(signedOut.stderr.trimEnd().split("\n").at(-1), /^Left to do: kit 0\.1\.0 · 1 route · fix 2 failed checks$/);
+  assert.equal(server.seen.length, 0);
+
+  const skip = await runCli(["doctor", "--full", "--skip-github-workflow", "--output-dir", root, "--api-url", server.url, "--repo", "example/app"], root, env);
+  assert.equal(skip.status, 1);
+  assert.match(skip.stderr, /--full runs every check, so it cannot skip the GitHub workflow check/);
+});
+
 test("doctor accepts a local workflow before GitHub registers the first push", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
   const ghBin = await createFixtureGh(t);
@@ -664,7 +724,7 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
       "init",
       "--setup-key",
       "br_setup_fixture",
-      "--route-id",
+      "--route",
       routeId,
       "--name",
       "Chat",
@@ -789,8 +849,8 @@ routes:
   });
   const command = [
     "init", "--setup-key", "br_setup_add_route", "--repo", "example/app",
-    "--route-id", "app/summarize", "--name", "Summarize", "--incumbent-model", "openai/gpt-5.4-nano",
-    "--route-id", "app/classify", "--name", "Classify", "--incumbent-model", "google/gemini-2.5-flash-lite",
+    "--route", "app/summarize", "--name", "Summarize", "--incumbent-model", "openai/gpt-5.4-nano",
+    "--route", "app/classify", "--name", "Classify", "--incumbent-model", "google/gemini-2.5-flash-lite",
     "--api-url", setupServer.url, "--output-dir", root
   ];
 
@@ -836,7 +896,7 @@ test("init does not commit the server packet before local file application succe
 
   const result = await runCli([
     "init", "--setup-key", "br_setup_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
+    "--route", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
     "--api-url", setupServer.url, "--output-dir", root
   ], root);
 
@@ -869,7 +929,7 @@ test("init dry run lists what it would write apart from what it would skip", asy
 
   const result = await runCli([
     "init", "--setup-key", "br_setup_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
+    "--route", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
     "--api-url", setupServer.url, "--output-dir", root, "--dry-run"
   ], root);
 
@@ -902,7 +962,7 @@ test("re-init without --force keeps a customer .gitignore and merges the local r
   });
   const result = await runCli([
     "init", "--setup-key", "br_setup_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
+    "--route", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
     "--api-url", setupServer.url, "--output-dir", root, "--dry-run"
   ], root);
   assert.equal(result.status, 0, result.stderr);
@@ -920,7 +980,7 @@ test("init requires direct-provider identity flags together", async (t) => {
       "init",
       "--setup-key",
       "br_setup_fixture",
-      "--route-id",
+      "--route",
       routeId,
       "--name",
       "Chat",
@@ -956,7 +1016,7 @@ test("init gives an actionable initial-setup key expiry error", async (t) => {
       "init",
       "--setup-key",
       "br_setup_expired_fixture",
-      "--route-id",
+      "--route",
       routeId,
       "--name",
       "Chat",
@@ -997,7 +1057,7 @@ test("init sends expired add-route setup scope back to the add-route flow", asyn
       "init",
       "--setup-key",
       "br_setup_expired_fixture",
-      "--route-id",
+      "--route",
       routeId,
       "--name",
       "Chat",
@@ -1032,7 +1092,7 @@ test("init prints the recorded browser approval URL and preserves the exact obse
     [
       "init",
       "--setup-key", "br_setup_model_choice_fixture",
-      "--route-id", routeId,
+      "--route", routeId,
       "--name", "Chat",
       "--incumbent-model", "grok-4-1-fast-reasoning-latest",
       "--provider-id", "xai",
@@ -1078,12 +1138,12 @@ test("init maps recorded browser approval to the matching additional route", asy
   const result = await runCli([
     "init",
     "--setup-key", "br_setup_additional_model_choice_fixture",
-    "--route-id", routeId,
+    "--route", routeId,
     "--name", "Chat",
     "--incumbent-model", "openai/gpt-4o-mini",
     "--provider-id", "openai",
     "--provider-ref", "gpt-4o-mini-2024-07-18",
-    "--route-id", "app/reasoning",
+    "--route", "app/reasoning",
     "--name", "Reasoning",
     "--incumbent-model", "grok-4-1-fast-reasoning-latest",
     "--provider-id", "xai",
@@ -1129,12 +1189,12 @@ test("init preserves a route-bound browser URL when routes share one observed tu
   const result = await runCli([
     "init",
     "--setup-key", "br_setup_shared_model_choice_fixture",
-    "--route-id", "app/reasoning-primary",
+    "--route", "app/reasoning-primary",
     "--name", "Primary reasoning",
     "--incumbent-model", "grok-4-1-fast-reasoning-latest",
     "--provider-id", "xai",
     "--provider-ref", "grok-4-1-fast-reasoning-latest",
-    "--route-id", "app/reasoning-secondary",
+    "--route", "app/reasoning-secondary",
     "--name", "Secondary reasoning",
     "--incumbent-model", "grok-4-1-fast-reasoning-latest",
     "--provider-id", "xai",
@@ -1178,7 +1238,7 @@ test("init sends an unknown provider identity to review without offering substit
   const result = await runCli([
     "init",
     "--setup-key", "br_setup_provider_review_fixture",
-    "--route-id", routeId,
+    "--route", routeId,
     "--name", "Synopsis",
     "--incumbent-model", "claude-haiku-4-5-20991231",
     "--provider-id", "anthropic",
@@ -1242,12 +1302,12 @@ test("init maps validated repository-executable eval packs to matching routes", 
   const result = await runCli([
     "init",
     "--setup-key", "br_setup_executable_pack_fixture",
-    "--route-id", "app/route-a",
+    "--route", "app/route-a",
     "--name", "Route A",
     "--incumbent-model", "openai/gpt-4o-mini",
     "--eval-pack", "route-a-pack.json",
     "--api-family", "anthropic_messages",
-    "--route-id", "app/route-b",
+    "--route", "app/route-b",
     "--name", "Route B",
     "--incumbent-model", "openai/gpt-4o-mini",
     "--eval-pack", "route-b-pack.json",
@@ -1277,7 +1337,7 @@ test("init rejects an unsafe or mutable executable eval pack before HTTP", async
   const command = [
     "init",
     "--setup-key", "br_setup_invalid_executable_pack",
-    "--route-id", routeId,
+    "--route", routeId,
     "--name", "Chat",
     "--incumbent-model", "openai/gpt-4o-mini",
     "--eval-pack", "eval-pack.json",
@@ -1358,7 +1418,7 @@ test("init completes evaluation files when its runtime key was already provision
       "init",
       "--setup-key",
       "br_setup_used_fixture",
-      "--route-id",
+      "--route",
       routeId,
       "--name",
       "Chat",
@@ -1388,7 +1448,7 @@ test("upgrade validates canonical YAML before any preview or token consumption",
   });
   const args = [
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
   ];
 
   const missing = await runCli(args, root);
@@ -1408,7 +1468,7 @@ test("upgrade in JSON mode without --yes refuses with its plan and applies nothi
   const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
   const signedOut = await runCli([
     "upgrade", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--json"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--json"
   ], root);
   assert.equal(signedOut.status, 1);
   assert.match(signedOut.stderr, /npx --yes benchrouter@latest login/);
@@ -1416,7 +1476,7 @@ test("upgrade in JSON mode without --yes refuses with its plan and applies nothi
 
   const token = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--json"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--json"
   ], root);
   assert.equal(token.status, 1);
   assert.equal(JSON.parse(token.stderr.trim().split("\n").at(-1)).error.code, "confirmation_required");
@@ -1445,10 +1505,71 @@ test("upgrade refreshes stale GitHub access once, retries, and applies", async (
   const apiUrl = `http://127.0.0.1:${server.address().port}`;
   const result = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", apiUrl, "--output-dir", root, "--yes"
+    "--route", routeId, "--api-url", apiUrl, "--output-dir", root, "--yes"
   ], root);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(seen, ["POST /v1/setup/upgrade-packet", "POST /v1/setup/repos/refresh", "GET /v1/setup/repos", "POST /v1/setup/upgrade-packet"]);
+});
+
+test("upgrade is repo-wide: it needs no route, and its last line says what is left", async (t) => {
+  const root = await createUpgradeTarget(t);
+  const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
+  const args = ["upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app", "--api-url", server.url, "--output-dir", root, "--yes"];
+
+  const applied = await runCli(args, root);
+  assert.equal(applied.status, 0, applied.stderr);
+  // The server authorizes through a route, so the CLI sends the first declared one.
+  assert.deepEqual(server.requests[0].body, { repo_full_name: "example/app", route_id: routeId });
+  assert.match(applied.stdout.trimEnd().split("\n").at(-1), /^Left to do: kit 0\.0\.10 · 1 route · review and commit \d+ changed files?; run doctor; open the PR$/);
+
+  const again = await runCli(args, root);
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(again.stdout.trimEnd().split("\n").at(-1), "Done: kit 0.0.10 · 1 route · nothing left to do");
+});
+
+test("--route-id still works for init, doctor and upgrade with a deprecation note", async (t) => {
+  const root = await createUpgradeTarget(t);
+  const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
+  const result = await runCli(["upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app", "--route-id", routeId,
+    "--api-url", server.url, "--output-dir", root, "--dry-run"], root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "Note: --route-id is deprecated; use --route <route-key>.\n");
+  assert.equal(server.requests[0].body.route_id, routeId);
+
+  const both = await runCli(["doctor", "--route-id", routeId, "--route", routeId, "--output-dir", root], root);
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /Pass --route only; --route-id is its old name/);
+});
+
+test("init with the CLI login sends it as the bearer and needs a repository", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-init-login-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: { repo_full_name: "example/app", setup_packet: { files: [{ path: ".benchrouter/README.md", content: "# BenchRouter\n" }] } }
+  });
+  const route = ["--route", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini", "--api-url", setupServer.url, "--output-dir", root, "--dry-run"];
+
+  const noRepo = await runCli(["init", ...route], root, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_init" });
+  assert.equal(noRepo.status, 1);
+  assert.match(noRepo.stderr, /Missing --repo .* Your login covers several repositories/);
+  assert.equal(setupServer.requests.length, 0);
+
+  const signedOut = await runCli(["init", "--repo", "example/app", ...route], root);
+  assert.equal(signedOut.status, 1);
+  assert.match(signedOut.stderr, /Not signed in\. Run `npx --yes benchrouter@latest login`, then rerun init/);
+  assert.equal(setupServer.requests.length, 0);
+
+  const loggedIn = await runCli(["init", "--repo", "example/app", ...route], root, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_init" });
+  assert.equal(loggedIn.status, 0, loggedIn.stderr);
+  assert.equal(setupServer.requests[0].url, "/v1/control/setup-packet");
+  assert.equal(setupServer.requests[0].authorization, "Bearer br_ctrl_init");
+  assert.equal(setupServer.requests[0].body.repo_full_name, "example/app");
+
+  // An explicit setup key from the setup page still wins over the login.
+  const setupKey = await runCli(["init", "--repo", "example/app", "--setup-key", "br_setup_init", ...route], root, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_init" });
+  assert.equal(setupKey.status, 0, setupKey.stderr);
+  assert.equal(setupServer.requests[1].authorization, "Bearer br_setup_init");
 });
 
 test("upgrade prints the refresh command when the refresh fails, and does not loop", async (t) => {
@@ -1466,7 +1587,7 @@ test("upgrade prints the refresh command when the refresh fails, and does not lo
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const result = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", `http://127.0.0.1:${server.address().port}`, "--output-dir", root, "--yes"
+    "--route", routeId, "--api-url", `http://127.0.0.1:${server.address().port}`, "--output-dir", root, "--yes"
   ], root);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /npx --yes benchrouter@latest repos refresh/);
@@ -1487,7 +1608,7 @@ test("upgrade revalidates canonical YAML immediately before apply", async (t) =>
 
   const result = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
   ], root);
 
   assert.equal(result.status, 1);
@@ -1512,7 +1633,7 @@ test("upgrade rejects subset and duplicate generated packets before writes", asy
       });
       const result = await runCli([
         "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-        "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+        "--route", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
       ], root);
 
       assert.equal(result.status, 1);
@@ -1533,7 +1654,7 @@ test("upgrade applies the exact signed kit while preserving canonical YAML", asy
 
   const result = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
@@ -1558,7 +1679,7 @@ test("upgrade preview separates changed and unchanged files and diffs the change
 
   const result = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
@@ -1589,7 +1710,7 @@ test("upgrade preview names the same changes that apply makes, with customer ste
 
   const result = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
@@ -1619,7 +1740,7 @@ test("upgrade preview warns before replacing a customer script or customer READM
 
   const result = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
@@ -1652,7 +1773,7 @@ test("ownership warnings use per-script history and CommonMark fences", async (t
 
   const result = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
@@ -1673,7 +1794,7 @@ test("upgrade preview does not warn when the old README and scripts are BenchRou
 
   const result = await runCli([
     "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
-    "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
+    "--route", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
@@ -1836,6 +1957,14 @@ if (args[0] === "api" && args[1] === "repos/example/app/actions/workflows") {
   }));
   process.exit(0);
 }
+if (args[0] === "repo" && args[1] === "view" && args[2] === "example/app") {
+  process.stdout.write(JSON.stringify({ defaultBranchRef: { name: "main" } }));
+  process.exit(0);
+}
+if (args[0] === "api" && args[3] === "repos/example/app/contents/.benchrouter/benchrouter.yml" && args[5] === "ref=main") {
+  process.stdout.write("{}");
+  process.exit(0);
+}
 process.stderr.write("unexpected gh fixture args: " + args.join(" ") + "\\n");
 process.exit(1);
 `
@@ -1869,8 +1998,8 @@ test("init pairs --api-family with routes and sends it on each call_site", async
     body: { error: "setup_scope_expired", message: "BenchRouter setup access has expired" }
   });
   const routes = [
-    "--route-id", "app/route-a", "--name", "Route A", "--incumbent-model", "openai/gpt-4o-mini",
-    "--route-id", "app/route-b", "--name", "Route B", "--incumbent-model", "openai/gpt-4o-mini"
+    "--route", "app/route-a", "--name", "Route A", "--incumbent-model", "openai/gpt-4o-mini",
+    "--route", "app/route-b", "--name", "Route B", "--incumbent-model", "openai/gpt-4o-mini"
   ];
   const base = ["init", "--setup-key", "br_setup_api_family", "--api-url", setupServer.url, "--output-dir", root, ...routes];
 
@@ -1888,7 +2017,7 @@ test("init pairs --api-family with routes and sends it on each call_site", async
 
   const mismatched = await runCli([...base, "--api-family", "openai_chat_completions", "--api-family", "anthropic_messages", "--api-family", "openai_responses"], root);
   assert.equal(mismatched.status, 1);
-  assert.match(mismatched.stderr, /When repeating --api-family, pass one value per --route-id/);
+  assert.match(mismatched.stderr, /When repeating --api-family, pass one value per --route/);
   assert.equal(setupServer.requests.length, 2);
 });
 
@@ -1925,7 +2054,7 @@ routes:
 
   const result = await runCli([
     "init", "--setup-key", "br_setup_api_family_merge", "--repo", "example/app",
-    "--route-id", "app/chat", "--name", "Chat", "--incumbent-model", "anthropic/claude-haiku-4.5",
+    "--route", "app/chat", "--name", "Chat", "--incumbent-model", "anthropic/claude-haiku-4.5",
     "--base-url-env", "MY_CLAUDE_URL", "--api-family", "anthropic_messages",
     "--api-url", setupServer.url, "--output-dir", root
   ], root);
@@ -2108,7 +2237,7 @@ async function startFixtureProxy(t, responseFixture) {
 }
 
 function runDoctor(root, apiUrl, envOverrides = {}) {
-  return runCli(["doctor", "--phase", "activation", "--route-id", routeId, "--live-chat-completions", "--output-dir", root, "--api-url", apiUrl, "--skip-github-workflow"], root, {
+  return runCli(["doctor", "--phase", "activation", "--route", routeId, "--live-chat-completions", "--output-dir", root, "--api-url", apiUrl, "--skip-github-workflow"], root, {
     BENCHROUTER_API_KEY: "br_test_fixture",
     ...envOverrides
   });

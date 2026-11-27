@@ -1,32 +1,40 @@
 import { apiRequest, ApiError } from "./http.mjs";
+import { ACCOUNT_CONTROL_TOKEN_PREFIX, LOGIN_COMMAND } from "./config.mjs";
 
-/** Exact repo-read path construction for regression tests / request planning. */
-export function repoReadPath(kind, { routeKey, modelId } = {}) {
-  if (kind === "status") return "/v1/repo/status";
-  if (kind === "frontier") return `/v1/repo/${encodeURIComponent(routeKey)}/frontier`;
-  if (kind === "failures") {
-    const query = modelId ? `?model=${encodeURIComponent(modelId)}` : "";
-    return `/v1/repo/${encodeURIComponent(routeKey)}/failures${query}`;
-  }
+/**
+ * Exact repo-read path construction for regression tests / request planning. A setup key names
+ * its repository itself; the CLI login (br_ctrl_) serves many, so its reads name the repository
+ * in `repo_full_name`.
+ */
+export function repoReadPath(kind, { routeKey, modelId, repoFullName } = {}) {
+  const query = new URLSearchParams();
+  if (kind === "failures" && modelId) query.set("model", modelId);
+  if (repoFullName) query.set("repo_full_name", repoFullName);
+  const suffix = query.toString() ? `?${query}` : "";
+  if (kind === "status") return `/v1/repo/status${suffix}`;
+  if (kind === "frontier") return `/v1/repo/${encodeURIComponent(routeKey)}/frontier${suffix}`;
+  if (kind === "failures") return `/v1/repo/${encodeURIComponent(routeKey)}/failures${suffix}`;
   if (kind === "explain") {
-    return `/v1/repo/${encodeURIComponent(routeKey)}/models/${encodeURIComponent(modelId)}`;
+    return `/v1/repo/${encodeURIComponent(routeKey)}/models/${encodeURIComponent(modelId)}${suffix}`;
   }
   throw new Error(`Unknown repo-read kind: ${kind}`);
 }
 
 export async function runRepoRead(options) {
   const { kind, routeKey, modelId, route, apiUrl, token, json } = options;
+  // Only the login needs the repository named; a setup key's request stays as it was.
+  const repoFullName = options.credentialKind === "account" ? options.repoFullName : undefined;
   if (kind === "status") {
-    const body = await fetchRepoJson(apiUrl, repoReadPath("status"), token, kind);
+    const body = await fetchRepoJson(apiUrl, repoReadPath("status", { repoFullName }), token, kind);
     printStatus(body, json);
     return;
   }
 
   if (kind === "explain") {
-    const resolvedRoute = route || await onlyRoute(apiUrl, token);
+    const resolvedRoute = route || await onlyRoute(apiUrl, token, repoFullName);
     const body = await fetchRepoJson(
       apiUrl,
-      repoReadPath("explain", { routeKey: resolvedRoute, modelId }),
+      repoReadPath("explain", { routeKey: resolvedRoute, modelId, repoFullName }),
       token,
       kind
     );
@@ -37,7 +45,7 @@ export async function runRepoRead(options) {
   if (kind === "frontier") {
     const body = await fetchRepoJson(
       apiUrl,
-      repoReadPath("frontier", { routeKey }),
+      repoReadPath("frontier", { routeKey, repoFullName }),
       token,
       kind
     );
@@ -47,15 +55,15 @@ export async function runRepoRead(options) {
 
   const body = await fetchRepoJson(
     apiUrl,
-    repoReadPath("failures", { routeKey, modelId }),
+    repoReadPath("failures", { routeKey, modelId, repoFullName }),
     token,
     kind
   );
   printFailures(body, json);
 }
 
-async function onlyRoute(apiUrl, token) {
-  const status = await fetchRepoJson(apiUrl, "/v1/repo/status", token, "status");
+async function onlyRoute(apiUrl, token, repoFullName) {
+  const status = await fetchRepoJson(apiUrl, repoReadPath("status", { repoFullName }), token, "status");
   const routes = Array.isArray(status.routes) ? status.routes : [];
   if (routes.length !== 1) {
     throw new CliUsageError("Pass --route when this repository has zero or multiple routes.");
@@ -74,6 +82,9 @@ async function fetchRepoJson(apiUrl, pathname, token, label) {
     if (["read_scope_expired", "read_token_invalid", "read_token_missing"].includes(failed?.error)) {
       const url = typeof failed.authorize_url === "string" ? failed.authorize_url : "https://benchrouter.com/cli";
       throw new Error(`BenchRouter repo access expired or is invalid. Open ${url} to create a new repo token.`);
+    }
+    if (token.startsWith(ACCOUNT_CONTROL_TOKEN_PREFIX) && error.status === 401) {
+      throw new Error(`BenchRouter did not accept your login. Run \`${LOGIN_COMMAND}\`, then rerun this command.`);
     }
     const message = typeof failed?.message === "string" ? failed.message : error.text.slice(0, 800);
     throw new Error(`BenchRouter ${label} failed (${error.status}): ${message}`);

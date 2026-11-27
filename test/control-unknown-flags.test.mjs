@@ -10,7 +10,7 @@ const cli = fileURLToPath(new URL("../bin/benchrouter.mjs", import.meta.url));
 
 // Flags a help text names in its prose for another command, not as its own option.
 const MENTIONED_FOR_OTHER_COMMANDS = {
-  "setup create": ["setup-key", "route-id", "name", "incumbent-model"]
+  "setup create": ["setup-key", "route", "name", "incumbent-model"]
 };
 
 function flagsNamedIn(text) {
