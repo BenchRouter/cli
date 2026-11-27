@@ -4,7 +4,7 @@ import { access, lstat, mkdir, open, realpath, rename, rm, rmdir } from "node:fs
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { parseDocument } from "yaml";
+import { CST, isAlias, isMap, isSeq, parseDocument, visit } from "yaml";
 import { readRouteManifest } from "./route-manifest.mjs";
 
 export const BOOTSTRAP_PATH = ".benchrouter/bootstrap.mjs";
@@ -34,8 +34,8 @@ const INTERPRETER_SCRIPT = [
   ""
 ].join("\n");
 
-function workflowDocument(source) {
-  const doc = parseDocument(source);
+function workflowDocument(source, options) {
+  const doc = parseDocument(source, options);
   if (doc.errors.length > 0) throw new Error(`${WORKFLOW_PATH} is not valid YAML: ${doc.errors[0].message}`);
   return doc;
 }
@@ -106,11 +106,135 @@ function validRunsOn(value) {
   return Object.entries(value).every(([key, item]) => key === "group" ? label(item) : key === "labels" && labels(item));
 }
 
+const runsOnPath = ["jobs", "eval", "runs-on"];
+const setupEnd = "---- end customer-setup ----";
+const lineStart = (source, offset) => offset === 0 ? 0 : source.lastIndexOf("\n", offset - 1) + 1;
+
+function isSetupGuide(line) {
+  return line.startsWith("---- customer-setup (customer-owned).") ||
+    line.startsWith("Every customer setup step must use:") ||
+    line.startsWith("Replay-only repos need no customer setup.") ||
+    line === setupEnd;
+}
+
+function additionalComment(existing, template) {
+  if (!existing) return "";
+  const lines = (comment) => comment?.replaceAll("\r\n", "\n").replaceAll("\r", "").split("\n");
+  const current = new Set(lines(template));
+  return lines(existing).filter((line) => !current.has(line)).join("\n");
+}
+
+function standaloneComments(doc, source) {
+  const comments = new Map();
+  // YAML may attach a dedented comment to the preceding collection. Use CST offsets to find its key.
+  CST.visit({ start: [], value: doc.contents?.srcToken }, (item) => {
+    for (const token of [...item.start, ...(item.sep ?? []), ...(item.value?.end ?? [])]) {
+      if (token.type !== "comment") continue;
+      const from = lineStart(source, token.offset);
+      if (!source.slice(from, token.offset).trim()) comments.set(from, token);
+    }
+  });
+  return comments;
+}
+
+function commentAboveKey(key, source, comments) {
+  const offset = key.range?.[0];
+  if (offset === undefined) return key.commentBefore;
+  let start = lineStart(source, offset);
+  const indent = offset - start;
+  if (source.slice(start, offset).trim()) return key.commentBefore;
+  const lines = [];
+  while (start > 0) {
+    const end = start - 1;
+    start = lineStart(source, end);
+    const token = comments.get(start);
+    if (token?.offset === start + indent) lines.push(token.source.slice(1));
+    else if (source.slice(start, end).trim()) break;
+    else if (lines.length > 0) lines.push("");
+  }
+  return lines.length ? lines.reverse().join("\n").trimEnd() : key.commentBefore;
+}
+
+function mergeLeadingComments(existing, oldSource, generated, source) {
+  const edits = [];
+  const oldComments = standaloneComments(existing, oldSource);
+  const newComments = standaloneComments(generated, source);
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  let stringify = false;
+  const copy = (newNode, previous, current = newNode?.commentBefore) => {
+    const comment = additionalComment(previous, current);
+    if (!comment) return;
+    newNode.commentBefore = [newNode.commentBefore, comment].filter(Boolean).join("\n");
+    const offset = newNode.range?.[0];
+    if (offset === undefined) {
+      stringify = true;
+      return;
+    }
+    const from = lineStart(source, offset);
+    const indent = source.slice(from, offset);
+    if (indent.trim()) {
+      stringify = true;
+      return;
+    }
+    edits.push({ from, to: from, text: comment.split("\n").map((line) => (line ? indent + "#" + line : "") + newline).join("") });
+  };
+  const merge = (oldNode, newNode) => {
+    if (isMap(oldNode) && isMap(newNode)) {
+      for (const { key, value } of newNode.items) {
+        const oldPair = oldNode.items.find((pair) => pair.key?.value === key?.value);
+        if (!oldPair || !key || !oldPair.key) continue;
+        copy(key, commentAboveKey(oldPair.key, oldSource, oldComments), commentAboveKey(key, source, newComments));
+        merge(oldPair.value, value);
+      }
+    } else if (isSeq(oldNode) && isSeq(newNode)) {
+      for (const [index, item] of newNode.items.entries()) {
+        const id = isMap(item) ? item.get("id") ?? item.get("name") : undefined;
+        const previous = id === undefined ? oldNode.items[index] : oldNode.items.find(
+          (candidate) => isMap(candidate) && (candidate.get("id") ?? candidate.get("name")) === id
+        );
+        merge(previous, item);
+      }
+    }
+  };
+  merge(existing.contents, generated.contents);
+  copy(generated, existing.commentBefore);
+  return stringify ? generated.toString({ lineWidth: 0 }) : applySourceEdits(source, edits);
+}
+
+function customerRunner(existing, generated) {
+  const value = existing.toJS().jobs.eval["runs-on"];
+  if (!validRunsOn(value)) return null;
+  const copy = existing.getIn(runsOnPath, true).clone();
+  let hasComments = false;
+  let hasAliases = false;
+  visit(copy, { Node(_, node) {
+    hasComments ||= Boolean(node.comment || node.commentBefore);
+    hasAliases ||= isAlias(node);
+  } });
+  if (!hasComments && isDeepStrictEqual(value, generated.toJS().jobs.eval["runs-on"])) return null;
+  // Resolve aliases against the existing workflow. Their anchors may be replaced by the template.
+  const resolveAlias = (_, alias) => {
+    const node = generated.createNode(alias.toJS(existing));
+    node.comment = alias.comment;
+    node.commentBefore = alias.commentBefore;
+    return node;
+  };
+  if (isAlias(copy)) return { node: resolveAlias(null, copy), hasAliases };
+  if (hasAliases) visit(copy, { Alias: resolveAlias });
+  return { node: copy, hasAliases };
+}
+
+function postCommentTokens(steps) {
+  const last = steps.srcToken?.items?.at(-1);
+  if (!last || last.value || last.start.some((token) => token.type === "seq-item-ind")) return [];
+  return last.start.filter((token) => token.type === "comment" && token.indent >= steps.srcToken.indent);
+}
+
 // RUN-001: preserve customer setup after the generated recorder and postprocessing after runtime.
 // SETUP-001: also keep the customer's valid eval-job runs-on.
 export function preserveCustomerSetup(existingSource, generatedSource) {
-  const existing = workflowDocument(existingSource);
-  const generated = workflowDocument(generatedSource);
+  const existing = workflowDocument(existingSource, { keepSourceTokens: true });
+  const generated = workflowDocument(generatedSource, { keepSourceTokens: true });
   const previousSteps = evalSteps(existing);
   const nextSteps = evalSteps(generated);
   const previous = setupBounds(previousSteps);
@@ -119,42 +243,88 @@ export function preserveCustomerSetup(existingSource, generatedSource) {
   validateCustomerSteps(nextSteps, next);
   const customerSteps = previousSteps.items.slice(previous.interpreter + 1, previous.run);
   const customerPostSteps = previousSteps.items.slice(previous.run + 1);
-  const runsOn = existing.toJS().jobs.eval["runs-on"];
-  const customerRunsOn = validRunsOn(runsOn) && JSON.stringify(runsOn) !== JSON.stringify(generated.toJS().jobs.eval["runs-on"]);
-  if (!customerRunsOn && customerSteps.length === 0 && customerPostSteps.length === 0) return generatedSource;
-  const spliced = spliceCustomerSource(existingSource, existing, previousSteps, previous, generatedSource, generated, nextSteps, next, customerRunsOn);
-  if (customerRunsOn) generated.setIn(["jobs", "eval", "runs-on"], generated.createNode(runsOn));
+  const runner = customerRunner(existing, generated);
+  const spliced = runner?.hasAliases ? null : spliceCustomerSource(
+    existingSource, existing, previousSteps, previous, generatedSource, generated, nextSteps, next, Boolean(runner)
+  );
+  if (runner) generated.setIn(runsOnPath, runner.node);
+  const guide = setupGuideTokens(nextSteps, next).map((token) => token.source.slice(1).trim());
+  const withoutGuide = (comment) => comment?.split("\n").filter((line) => !isSetupGuide(line.trim()) && !guide.includes(line.trim())).join("\n");
+  const setup = customerSteps.map((step) => step.clone());
+  for (const step of setup) step.commentBefore = withoutGuide(step.commentBefore);
+  const runtime = nextSteps.items[next.run];
+  const runtimeComment = withoutGuide(previousSteps.items[previous.run].commentBefore);
+  runtime.commentBefore = [runtime.commentBefore, additionalComment(runtimeComment, runtime.commentBefore)].filter(Boolean).join("\n");
+  if (customerPostSteps.length > 0) {
+    const postComment = postCommentTokens(previousSteps).map((token) => token.source.slice(1).trimEnd()).join("\n");
+    nextSteps.comment = [nextSteps.comment, additionalComment(postComment, nextSteps.comment)].filter(Boolean).join("\n");
+  }
   nextSteps.items.splice(next.run + 1, nextSteps.items.length - next.run - 1, ...customerPostSteps.map((step) => step.clone()));
-  nextSteps.items.splice(next.interpreter + 1, next.run - next.interpreter - 1, ...customerSteps.map((step) => step.clone()));
+  nextSteps.items.splice(next.interpreter + 1, next.run - next.interpreter - 1, ...setup);
   setupBounds(nextSteps);
   // Prefer the text splice: BenchRouter's bytes stay as sent and the customer's sections keep their
   // own formatting. Use it only when the parser reads it as exactly the merged workflow.
   if (spliced !== null) {
-    const check = parseDocument(spliced);
-    if (check.errors.length === 0 && isDeepStrictEqual(check.toJS(), generated.toJS())) return spliced;
+    const check = parseDocument(spliced, { keepSourceTokens: true });
+    if (check.errors.length === 0 && isDeepStrictEqual(check.toJS(), generated.toJS())) {
+      return mergeLeadingComments(existing, existingSource, check, spliced);
+    }
   }
-  return generated.toString({ lineWidth: 0 });
+  const rendered = generated.toString({ lineWidth: 0 });
+  return mergeLeadingComments(existing, existingSource, workflowDocument(rendered, { keepSourceTokens: true }), rendered);
+}
+
+function setupGuideTokens(steps, { interpreter, run }) {
+  if (steps.srcToken?.type !== "block-seq") return [];
+  return steps.srcToken.items.slice(interpreter + 1, run + 1)
+    .flatMap((item) => item.start.filter((token) => token.type === "comment" && token.indent === steps.srcToken.indent));
+}
+
+function applySourceEdits(source, edits) {
+  let result = source;
+  for (const { from, to, text } of edits.sort((left, right) => right.from - left.from)) {
+    result = result.slice(0, from) + text + result.slice(to);
+  }
+  return result;
 }
 
 // Copies the customer's sections of the old workflow text into BenchRouter's new workflow text:
 // the setup region between the interpreter recorder and the runtime step (with its comments),
 // the steps after the runtime step, and a customer runs-on value.
 function spliceCustomerSource(oldSource, oldDoc, oldSteps, oldBounds, newSource, newDoc, newSteps, newBounds, customerRunsOn) {
-  const lineStart = (source, offset) => source.lastIndexOf("\n", offset - 1) + 1;
-  const sameEndings = (text) => (newSource.includes("\r") ? text : text.replaceAll("\r\n", "\n"));
+  const newline = newSource.includes("\r\n") ? "\r\n" : "\n";
+  const sameEndings = (text) => text.replaceAll("\r\n", "\n").replaceAll("\n", newline);
   const oldItems = oldSteps.items;
   const newItems = newSteps.items;
+  if (oldSteps.srcToken?.type !== "block-seq" || newSteps.srcToken?.type !== "block-seq") return null;
   if ([...oldItems, ...newItems].some((item) => !Array.isArray(item?.range))) return null;
+  const fromSetup = oldItems[oldBounds.interpreter].range[2];
+  const toSetup = lineStart(oldSource, oldItems[oldBounds.run].range[0]);
+  const guide = setupGuideTokens(newSteps, newBounds);
+  const templateLines = new Set(guide.map((token) => token.source.trimEnd()));
+  const oldGuideEdits = setupGuideTokens(oldSteps, oldBounds)
+    .filter((token) => isSetupGuide(token.source.slice(1).trim()) || templateLines.has(token.source.trimEnd()))
+    .map((token) => ({
+      from: lineStart(oldSource, token.offset) - fromSetup,
+      to: oldSource.indexOf("\n", token.offset) + 1 - fromSetup,
+      text: ""
+    }));
+  const customerSetup = applySourceEdits(oldSource.slice(fromSetup, toSetup), oldGuideEdits);
+  const guideLine = (token) => " ".repeat(token.indent) + token.source + newline;
+  const setupOpen = guide.filter((token) => token.source.slice(1).trim() !== setupEnd).map(guideLine).join("");
+  const setupClose = guide.filter((token) => token.source.slice(1).trim() === setupEnd).map(guideLine).join("");
+  const postComment = oldBounds.run < oldItems.length - 1 ? postCommentTokens(oldSteps).at(-1) : undefined;
+  const oldPostEnd = postComment ? oldSource.indexOf("\n", postComment.offset) + 1 || oldSource.length : oldItems.at(-1).range[2];
   const edits = [
     {
       from: newItems[newBounds.run].range[2],
       to: newItems.at(-1).range[2],
-      text: oldSource.slice(oldItems[oldBounds.run].range[2], oldItems.at(-1).range[2])
+      text: oldSource.slice(oldItems[oldBounds.run].range[2], oldPostEnd)
     },
     {
       from: newItems[newBounds.interpreter].range[2],
       to: lineStart(newSource, newItems[newBounds.run].range[0]),
-      text: oldSource.slice(oldItems[oldBounds.interpreter].range[2], lineStart(oldSource, oldItems[oldBounds.run].range[0]))
+      text: setupOpen + customerSetup + setupClose
     }
   ];
   if (customerRunsOn) {
@@ -176,12 +346,8 @@ function spliceCustomerSource(oldSource, oldDoc, oldSteps, oldBounds, newSource,
       text: oldSource.slice(oldPair.key.range[1], lineEnd(oldSource, oldPair.value.range[1]))
     });
   }
-  let result = newSource;
-  for (const edit of edits.sort((left, right) => right.from - left.from)) {
-    if (edit.to < edit.from) return null;
-    result = result.slice(0, edit.from) + sameEndings(edit.text) + result.slice(edit.to);
-  }
-  return result;
+  if (edits.some((edit) => edit.to < edit.from)) return null;
+  return applySourceEdits(newSource, edits.map((edit) => ({ ...edit, text: sameEndings(edit.text) })));
 }
 
 export function validateUpgradeFiles(files) {
