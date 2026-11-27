@@ -502,6 +502,8 @@ test("RUN-001 local commands write the vendored bootstrap and trust into .benchr
   await writeFile(path.join(root, ".benchrouter/trust.json"), legacyKit.get(".benchrouter/trust.json"));
   // A proxy that refuses connections stops the real bootstrap at its first fetch, with no network access.
   const env = { ...process.env, NODE_USE_ENV_PROXY: "1", HTTPS_PROXY: "http://127.0.0.1:9", NO_PROXY: "" };
+  // Actions sets GITHUB_REPOSITORY_ID, which the bootstrap appends to the pointer URL.
+  delete env.GITHUB_REPOSITORY_ID;
   const result = spawnSync(process.execPath, [cli.pathname, "calibrate"], { cwd: root, encoding: "utf8", env });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /::error title=BenchRouter bootstrap::https:\/\/runtime\.benchrouter\.com\/v1\/pointer is unreachable/);
