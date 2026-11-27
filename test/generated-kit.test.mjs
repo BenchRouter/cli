@@ -7,14 +7,18 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseDocument } from "yaml";
-import { applyUpgradePacket, inspectSignedKit, preparePackageJson, preserveCustomerSetup, stageFileApplication, WORKFLOW_PATH } from "../src/generated-kit.mjs";
+import { applyUpgradePacket, inspectSignedKit, LOCAL_SCRIPTS, preparePackageJson, preserveCustomerSetup, stageFileApplication, WORKFLOW_PATH } from "../src/generated-kit.mjs";
 
 const fixtureRoot = new URL("./fixtures/signed-kit/", import.meta.url);
-const kit = new Map(await Promise.all([
-  [".benchrouter/bootstrap.mjs", "bootstrap.mjs.txt"],
-  [".benchrouter/trust.json", "trust.json"],
-  [WORKFLOW_PATH, "workflow.yml"]
-].map(async ([name, file]) => [name, await readFile(new URL(file, fixtureRoot), "utf8")])));
+const fixture = (file) => readFile(new URL(file, fixtureRoot), "utf8");
+const kit = new Map([[WORKFLOW_PATH, await fixture("workflow.yml")]]);
+// The kit before the eval-action stub: committed bootstrap and trust, and the long workflow.
+const legacyKit = new Map([
+  [".benchrouter/bootstrap.mjs", await fixture("bootstrap.mjs.txt")],
+  [".benchrouter/trust.json", await fixture("trust.json")],
+  [WORKFLOW_PATH, await fixture("workflow-legacy.yml")]
+]);
+const vendored = (file) => readFile(new URL(`../src/vendor/${file}`, import.meta.url), "utf8");
 const cli = new URL("../bin/benchrouter.mjs", import.meta.url);
 
 // A real concurrent writer scheduled between awaited filesystem operations.
@@ -31,10 +35,11 @@ function observeWrite(target, expected, action) {
 }
 
 
-async function targetRepo(t) {
+async function targetRepo(t, files = kit) {
   const root = await mkdtemp(path.join(os.tmpdir(), "br-cli-kit-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  for (const [name, content] of kit) {
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  for (const [name, content] of files) {
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await writeFile(path.join(root, name), content);
   }
@@ -50,7 +55,7 @@ function packetFiles() {
 function customerWorkflow() {
   const doc = parseDocument(kit.get(WORKFLOW_PATH));
   const steps = doc.getIn(["jobs", "eval", "steps"]);
-  steps.items.splice(3, 0, doc.createNode({
+  steps.items.splice(1, 0, doc.createNode({
     name: "Install evaluator tools", if: "github.event_name == 'workflow_dispatch'",
     run: "python --version", env: { EVALUATOR_TOOL_ROOT: ".br-control" }
   }));
@@ -65,7 +70,7 @@ test("RUN-001 refresh keeps customer setup and rejects a step with broader autho
   const existing = customerWorkflow();
   const next = preserveCustomerSetup(existing, kit.get(WORKFLOW_PATH));
   const parsed = parseDocument(next).toJS();
-  assert.deepEqual(parsed.jobs.eval.steps[3], parseDocument(existing).toJS().jobs.eval.steps[3]);
+  assert.deepEqual(parsed.jobs.eval.steps[1], parseDocument(existing).toJS().jobs.eval.steps[1]);
   assert.deepEqual(parsed.jobs.eval.steps.at(-1), parseDocument(existing).toJS().jobs.eval.steps.at(-1));
   const root = await targetRepo(t);
   await writeFile(path.join(root, WORKFLOW_PATH), next);
@@ -73,7 +78,7 @@ test("RUN-001 refresh keeps customer setup and rejects a step with broader autho
   inspectSignedKit(root, failures);
   assert.deepEqual(failures, []);
   const invalid = parseDocument(existing);
-  invalid.setIn(["jobs", "eval", "steps", 3, "if"], "always()");
+  invalid.setIn(["jobs", "eval", "steps", 1, "if"], "always()");
   assert.throws(() => preserveCustomerSetup(invalid.toString(), kit.get(WORKFLOW_PATH)), /Every customer setup step/);
 });
 
@@ -105,8 +110,8 @@ test("refresh copies customer sections as written and keeps BenchRouter's bytes"
   const generated = kit.get(WORKFLOW_PATH);
   const existing = handFormattedCustomerWorkflow(generated);
   assert.equal(preserveCustomerSetup(existing, generated), existing);
-  const runtimeLine = '          BENCHROUTER_JOB_CEILING_MIN: "120"\n';
-  const marked = runtimeLine + "          BENCHROUTER_KIT_VERSION: 0.0.11\n";
+  const runtimeLine = "          BENCHROUTER_KIT_VERSION: 0.1.0\n";
+  const marked = "          BENCHROUTER_KIT_VERSION: 0.1.1\n";
   const nextKit = generated.replace(runtimeLine, marked);
   assert.notEqual(nextKit, generated);
   assert.equal(preserveCustomerSetup(existing, nextKit), existing.replace(runtimeLine, marked));
@@ -209,7 +214,7 @@ test("SETUP-001 doctor and refresh keep a customer runs-on and still check the r
     [["jobs", "eval", "runs-on"], [], /runs-on/],
     [["jobs", "eval", "runs-on"], { group: "gcp-runners", env: "prod" }, /runs-on/],
     [["jobs", "eval", "timeout-minutes"], 360, /120-minute job ceiling/],
-    [["jobs", "eval", "steps", 0, "with", "persist-credentials"], true, /persist-credentials/]
+    [["jobs", "eval", "steps", 0, "uses"], "BenchRouter/eval-action/prepare@main", /v1 or commit SHA/]
   ]) {
     const doc = parseDocument(canonical);
     doc.setIn(["jobs", "eval", "runs-on"], ["self-hosted", "gcp"]);
@@ -223,10 +228,10 @@ test("SETUP-001 doctor and refresh keep a customer runs-on and still check the r
   assert.equal(preserveCustomerSetup(invalid.toString(), canonical), canonical);
 });
 
-test("RUN-001 doctor refuses unsafe checkout, fork access, or a parallel job", async (t) => {
+test("RUN-001 doctor refuses fork access, a parallel job, or concurrency", async (t) => {
   const root = await targetRepo(t);
   for (const [keys, value, message] of [
-    [["jobs", "eval", "steps", 0, "with", "persist-credentials"], true, /persist-credentials/],
+    [["concurrency"], "evals", /no concurrency or matrix/],
     [["jobs", "eval", "if"], "always()", /same-repository PR guard/],
     [["jobs", "other"], { "runs-on": "ubuntu-24.04", steps: [] }, /exactly one eval job/]
   ]) {
@@ -240,23 +245,43 @@ test("RUN-001 doctor refuses unsafe checkout, fork access, or a parallel job", a
   }
 });
 
-test("RUN-001 doctor and refresh refuse altered interpreter wiring before customer writes", async (t) => {
+test("SETUP-001 doctor accepts the stub at v1 or one pinned commit SHA, with BenchRouter's runtime env", async (t) => {
+  const root = await targetRepo(t);
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const doc = parseDocument(kit.get(WORKFLOW_PATH));
+  doc.setIn(["jobs", "eval", "steps", 0, "uses"], `BenchRouter/eval-action/prepare@${sha}`);
+  doc.setIn(["jobs", "eval", "steps", 1, "uses"], `BenchRouter/eval-action@${sha}`);
+  doc.setIn(["jobs", "eval", "steps", 1, "env", "EVAL_API_KEY"], "${{ github.event_name == 'workflow_dispatch' && secrets.EVAL_API_KEY || '' }}");
+  doc.setIn(["jobs", "eval", "steps", 1, "env", "BENCHROUTER_INSTALL_NPM_TOKEN"], "${{ github.event_name == 'workflow_dispatch' && secrets.NPM_TOKEN || '' }}");
+  for (const source of [kit.get(WORKFLOW_PATH), doc.toString()]) {
+    await writeFile(path.join(root, WORKFLOW_PATH), source);
+    const failures = [];
+    inspectSignedKit(root, failures);
+    assert.deepEqual(failures, []);
+    assert.equal(preserveCustomerSetup(source, source), source);
+  }
+});
+
+test("RUN-001 doctor and refresh refuse altered stub wiring before customer writes", async (t) => {
   const root = await targetRepo(t);
   const customerFile = path.join(root, ".benchrouter/customer-report.mjs");
   await writeFile(customerFile, "Customer-authored report\n");
   const canonical = kit.get(WORKFLOW_PATH);
+  const sha = "0123456789abcdef0123456789abcdef01234567";
   for (const [keys, value, message] of [
-    [["jobs", "eval", "steps", 1, "id"], "customer_node", /canonical Node 24 prefix/],
-    [["jobs", "eval", "steps", 1, "with", "node-version"], "22.18.0", /pinned Node 24/],
-    [["jobs", "eval", "steps", 1, "with", "cache"], "npm", /pinned Node 24/],
-    [["jobs", "eval", "steps", 2, "id"], "benchrouter_node24", /unique step IDs/],
-    [["jobs", "eval", "steps", 2, "if"], "always()", /exact unconditional/],
-    [["jobs", "eval", "steps", 2, "shell"], "sh", /exact unconditional/],
-    [["jobs", "eval", "steps", 2, "run"], "echo node=node >> $GITHUB_OUTPUT", /exact unconditional/],
-    [["jobs", "eval", "steps", 3, "run"], "node .br-control/.benchrouter/bootstrap.mjs run", /saved Node 24/],
-    [["jobs", "eval", "steps", 3, "run"], '"$BENCHROUTER_BOOTSTRAP_NODE" .br-control/.benchrouter/bootstrap.mjs run; echo done', /saved Node 24/],
-    [["jobs", "eval", "steps", 3, "env", "BENCHROUTER_BOOTSTRAP_NODE"], "${{ steps.customer_node.outputs.node }}", /saved Node 24/],
-    [["jobs", "eval", "steps", 3, "continue-on-error"], true, /saved Node 24/]
+    [["jobs", "eval", "steps", 0, "id"], "customer_prepare", /prepare step first/],
+    [["jobs", "eval", "steps", 0, "uses"], "BenchRouter/eval-action/prepare@v2", /v1 or commit SHA/],
+    [["jobs", "eval", "steps", 0, "uses"], "BenchRouter/eval-action/prepare@0123456789ABCDEF0123456789ABCDEF01234567", /v1 or commit SHA/],
+    [["jobs", "eval", "steps", 0, "if"], "always()", /unconditional/],
+    [["jobs", "eval", "steps", 0, "with"], { ref: "main" }, /unconditional/],
+    [["jobs", "eval", "steps", 1, "uses"], `BenchRouter/eval-action@${sha}`, /must run BenchRouter\/eval-action@v1/],
+    [["jobs", "eval", "steps", 1, "uses"], "Customer/eval-action@v1", /must run/],
+    [["jobs", "eval", "steps", 1, "with", "node"], "${{ steps.customer_node.outputs.node }}", /prepared Node 24/],
+    [["jobs", "eval", "steps", 1, "continue-on-error"], true, /prepared Node 24/],
+    [["jobs", "eval", "steps", 1, "env", "BENCHROUTER_BOOTSTRAP_NODE"], "/usr/bin/node", /runtime step env/],
+    [["jobs", "eval", "steps", 1, "env", "EVAL_API_KEY"], "${{ secrets.EVAL_API_KEY }}", /runtime step env/],
+    [["jobs", "eval", "steps", 1, "env", "BENCHROUTER_JOB_CEILING_MIN"], "360", /runtime step env/],
+    [["jobs", "eval", "steps", 1, "id"], "benchrouter_prepare", /unique step IDs/]
   ]) {
     const doc = parseDocument(canonical);
     doc.setIn(keys, value);
@@ -264,38 +289,44 @@ test("RUN-001 doctor and refresh refuse altered interpreter wiring before custom
     await writeFile(path.join(root, WORKFLOW_PATH), invalid);
     const failures = [];
     inspectSignedKit(root, failures);
-    assert.equal(failures.length, 1);
+    assert.equal(failures.length, 1, String(value));
     assert.match(failures[0], message);
     assert.throws(() => preserveCustomerSetup(invalid, canonical), message);
     assert.equal(await readFile(customerFile, "utf8"), "Customer-authored report\n");
   }
+  // A legacy workflow is readable for the upgrade, but doctor names the upgrade.
+  await writeFile(path.join(root, WORKFLOW_PATH), legacyKit.get(WORKFLOW_PATH));
+  const failures = [];
+  inspectSignedKit(root, failures);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /before the BenchRouter eval action\. Run benchrouter upgrade/);
 });
 
 test("RUN-001 refresh preserves customer Node22 and post-step AST without new secret grants", async (t) => {
   const doc = parseDocument(customerWorkflow());
   const steps = doc.getIn(["jobs", "eval", "steps"]);
-  steps.items.splice(3, 0, doc.createNode({
+  steps.items.splice(1, 0, doc.createNode({
     name: "Evaluator Node", id: "customer_node22", if: "${{ github.event_name == 'workflow_dispatch' }}",
     uses: "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
     with: { "node-version": "22.18.0", "package-manager-cache": false }
   }));
   const before = doc.toJS().jobs.eval.steps;
   const refreshed = preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH));
-  assert.deepEqual(parseDocument(refreshed).toJS().jobs.eval.steps.slice(3), before.slice(3));
+  assert.deepEqual(parseDocument(refreshed).toJS().jobs.eval.steps.slice(1), before.slice(1));
   const root = await targetRepo(t);
   await writeFile(path.join(root, WORKFLOW_PATH), refreshed);
   const failures = [];
   inspectSignedKit(root, failures);
   assert.deepEqual(failures, []);
-  doc.setIn(["jobs", "eval", "steps", 6, "id"], "benchrouter_runtime");
+  doc.setIn(["jobs", "eval", "steps", 4, "id"], "benchrouter_runtime");
   assert.throws(() => preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH)), /unique step IDs/);
-  doc.setIn(["jobs", "eval", "steps", 6, "id"], "customer_metrics");
+  doc.setIn(["jobs", "eval", "steps", 4, "id"], "customer_metrics");
   for (const expression of [
     "${{ secrets.REPORT_SECRET }}", "${{ secrets['REPORT_SECRET'] }}",
     "${{ secrets [ 'REPORT_SECRET' ] }}", "${{ toJSON(secrets) }}",
     "${{ SECRETS.REPORT_SECRET }}", "${{ format('}} {0}', secrets['REPORT_SECRET']) }}"
   ]) {
-    doc.setIn(["jobs", "eval", "steps", 6, "env", "ADDED_SECRET"], expression);
+    doc.setIn(["jobs", "eval", "steps", 4, "env", "ADDED_SECRET"], expression);
     const invalid = doc.toString();
     assert.throws(() => preserveCustomerSetup(invalid, kit.get(WORKFLOW_PATH)), /must not add secret grants/);
     await writeFile(path.join(root, WORKFLOW_PATH), invalid);
@@ -304,12 +335,12 @@ test("RUN-001 refresh preserves customer Node22 and post-step AST without new se
     assert.equal(failures.length, 1);
     assert.match(failures[0], /must not add secret grants/);
   }
-  doc.deleteIn(["jobs", "eval", "steps", 6, "env", "ADDED_SECRET"]);
-  doc.setIn(["jobs", "eval", "steps", 6, "if"], "always() && secrets['REPORT_SECRET'] != ''");
+  doc.deleteIn(["jobs", "eval", "steps", 4, "env", "ADDED_SECRET"]);
+  doc.setIn(["jobs", "eval", "steps", 4, "if"], "always() && secrets['REPORT_SECRET'] != ''");
   assert.throws(() => preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH)), /must not add secret grants/);
-  doc.setIn(["jobs", "eval", "steps", 6, "if"], "always()");
-  doc.setIn(["jobs", "eval", "steps", 6, "name"], "Report secrets inventory");
-  doc.setIn(["jobs", "eval", "steps", 6, "run"], "node scripts/report-secrets-inventory.mjs");
+  doc.setIn(["jobs", "eval", "steps", 4, "if"], "always()");
+  doc.setIn(["jobs", "eval", "steps", 4, "name"], "Report secrets inventory");
+  doc.setIn(["jobs", "eval", "steps", 4, "run"], "node scripts/report-secrets-inventory.mjs");
   assert.equal(parseDocument(preserveCustomerSetup(doc.toString(), kit.get(WORKFLOW_PATH))).toJS().jobs.eval.steps.at(-1).name, "Report secrets inventory");
 });
 
@@ -328,30 +359,105 @@ test("RUN-001 exact kit apply preserves customer files and checks every digest b
   }
   await writeFile(path.join(root, WORKFLOW_PATH), customerWorkflow());
   const files = packetFiles();
-  files[3] = { ...files[3], sha256: "0".repeat(64) };
+  files[1] = { ...files[1], sha256: "0".repeat(64) };
   await assert.rejects(applyUpgradePacket({ outputDir: root, files }), /sha256 does not match/);
   assert.equal(existsSync(path.join(root, ".benchrouter/README.md")), false);
   await applyUpgradePacket({ outputDir: root, files: packetFiles() });
   for (const [name, content] of preserved) assert.equal(await readFile(path.join(root, name), "utf8"), content);
   assert.equal(existsSync(path.join(root, ".benchrouter/.kit-state.json")), false);
   const workflow = parseDocument(await readFile(path.join(root, WORKFLOW_PATH), "utf8")).toJS();
-  assert.equal(workflow.jobs.eval.steps[3].name, "Install evaluator tools");
+  assert.equal(workflow.jobs.eval.steps[1].name, "Install evaluator tools");
   assert.equal(workflow.jobs.eval.steps.at(-1).name, "Report speaker metrics");
 });
 
-test("RUN-001 local commands execute the canonical bootstrap and refuse invalid trust before network access", async (t) => {
-  const root = await targetRepo(t);
-  await writeFile(path.join(root, ".benchrouter/trust.json"), "{}\n");
-  for (const command of ["capture", "calibrate", "run"]) {
-    const result = spawnSync(process.execPath, [cli.pathname, command], { cwd: root, encoding: "utf8" });
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /trust|schema/);
-    assert.doesNotMatch(result.stderr, /Unknown command|fetch failed/);
+// A legacy workflow as a customer edited it: setup steps, post steps, a self-hosted runner, comments.
+function legacyCustomerWorkflow() {
+  const marker = "      # ---- end customer-setup ----\n";
+  const source = legacyKit.get(WORKFLOW_PATH);
+  assert.ok(source.includes(marker) && source.includes("    runs-on: ubuntu-24.04\n"));
+  return source
+    .replace("    runs-on: ubuntu-24.04\n", "    # Chrome is preinstalled on this pool.\n    runs-on: [self-hosted, gcp-chrome] # our pool\n")
+    .replace(marker, [
+      "      # Our evaluator needs Python.",
+      "      - name: Install evaluator tools",
+      "        if: github.event_name == 'workflow_dispatch'",
+      "        run: python --version",
+      ""
+    ].join("\n") + marker) + [
+    "      - name: Upload BenchRouter results",
+    "        if: always()",
+    "        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "        with:",
+    "          name: benchrouter-results-${{ github.run_id }}-${{ github.run_attempt }}",
+    "          path: .br-results",
+    "      # Report these even if the eval fails.",
+    "      - name: Report speaker metrics",
+    "        if: always()",
+    "        run: node scripts/report.mjs",
+    ""
+  ].join("\n");
+}
+
+test("SETUP-001 upgrade migrates a legacy kit: setup, post steps, runner and comments move into the stub", async (t) => {
+  const root = await targetRepo(t, legacyKit);
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), `version: 1\nproduct: {slug: app, repo: example/app, default_branch: main}\nroutes:\n  - id: chat\n    route_id: app/chat\n    name: Chat\n    code_refs: [src/app.js]\n    seed: {incumbent_model: openai/gpt-4o-mini}\n    call_site: {base_url_env: OPENAI_BASE_URL}\n    eval_pack:\n      workflow: .github/workflows/benchrouter-evals.yml\n      scorer: .benchrouter/scorer.chat.js\n      result_schema: benchrouter.result.v1\n      case_refs: [.benchrouter/cases.chat.json]\n`);
+  await writeFile(path.join(root, ".benchrouter/.gitignore"), "results*.jsonl\nresults/\n");
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
+    test: "node --test", "benchrouter:capture": "node .benchrouter/bootstrap.mjs capture", "benchrouter:calibrate": "node .benchrouter/bootstrap.mjs calibrate"
+  } }));
+  await writeFile(path.join(root, WORKFLOW_PATH), legacyCustomerWorkflow());
+  const changes = [];
+  await applyUpgradePacket({ outputDir: root, files: packetFiles(), onFile: (action, file) => changes.push(`${action} ${file}`) });
+  const migrated = await readFile(path.join(root, WORKFLOW_PATH), "utf8");
+  const steps = parseDocument(migrated).toJS().jobs.eval.steps;
+  assert.deepEqual(steps.map((step) => step.name), ["Prepare BenchRouter", "Install evaluator tools", "Run BenchRouter", "Report speaker metrics"]);
+  assert.deepEqual(parseDocument(migrated).toJS().jobs.eval["runs-on"], ["self-hosted", "gcp-chrome"]);
+  for (const text of ["    # Chrome is preinstalled on this pool.\n", "runs-on: [self-hosted, gcp-chrome] # our pool\n",
+    "      # Our evaluator needs Python.\n", "      # Report these even if the eval fails.\n", "      # ---- end customer-setup ----\n"]) {
+    assert.ok(migrated.includes(text), text);
   }
+  assert.equal(migrated.split("---- end customer-setup ----").length, 2);
+  const failures = [];
+  inspectSignedKit(root, failures);
+  assert.deepEqual(failures, []);
+  assert.equal(existsSync(path.join(root, ".benchrouter/bootstrap.mjs")), false);
+  assert.equal(existsSync(path.join(root, ".benchrouter/trust.json")), false);
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).scripts, { test: "node --test", ...LOCAL_SCRIPTS });
+  assert.equal(await readFile(path.join(root, ".benchrouter/.gitignore"), "utf8"), "results*.jsonl\nresults/\nbootstrap.mjs\ntrust.json\n");
+  assert.ok(changes.includes("deleted .benchrouter/bootstrap.mjs") && changes.includes("deleted .benchrouter/trust.json"), changes.join(", "));
+  // A second upgrade of the migrated repo changes nothing.
+  assert.equal(preserveCustomerSetup(migrated, kit.get(WORKFLOW_PATH)), migrated);
 });
 
-test("RUN-001 read-only trust fails preflight without changing an earlier kit file", async (t) => {
+test("upgrade keeps a bootstrap or trust file that is not BenchRouter's", async (t) => {
   const root = await targetRepo(t);
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), `version: 1\nproduct: {slug: app, repo: example/app, default_branch: main}\nroutes:\n  - id: chat\n    route_id: app/chat\n    name: Chat\n    code_refs: [src/app.js]\n    seed: {incumbent_model: openai/gpt-4o-mini}\n    call_site: {base_url_env: OPENAI_BASE_URL}\n    eval_pack:\n      workflow: .github/workflows/benchrouter-evals.yml\n      scorer: .benchrouter/scorer.chat.js\n      result_schema: benchrouter.result.v1\n      case_refs: [.benchrouter/cases.chat.json]\n`);
+  await writeFile(path.join(root, ".benchrouter/bootstrap.mjs"), "console.log('customer tool');\n");
+  await writeFile(path.join(root, ".benchrouter/trust.json"), '{"customer": true}\n');
+  await applyUpgradePacket({ outputDir: root, files: packetFiles() });
+  assert.equal(await readFile(path.join(root, ".benchrouter/bootstrap.mjs"), "utf8"), "console.log('customer tool');\n");
+  assert.equal(await readFile(path.join(root, ".benchrouter/trust.json"), "utf8"), '{"customer": true}\n');
+});
+
+test("RUN-001 local commands write the vendored bootstrap and trust into .benchrouter and run them", async (t) => {
+  const root = await targetRepo(t);
+  await writeFile(path.join(root, ".benchrouter/trust.json"), "{}\n");
+  // A proxy that refuses connections stops the real bootstrap at its first fetch, with no network access.
+  const env = { ...process.env, NODE_USE_ENV_PROXY: "1", HTTPS_PROXY: "http://127.0.0.1:9", NO_PROXY: "" };
+  const result = spawnSync(process.execPath, [cli.pathname, "calibrate"], { cwd: root, encoding: "utf8", env });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /::error title=BenchRouter bootstrap::https:\/\/runtime\.benchrouter\.com\/v1\/pointer is unreachable/);
+  assert.equal(await readFile(path.join(root, ".benchrouter/bootstrap.mjs"), "utf8"), await vendored("bootstrap.mjs"));
+  assert.equal(await readFile(path.join(root, ".benchrouter/trust.json"), "utf8"), await vendored("trust.json"));
+  const empty = await mkdtemp(path.join(os.tmpdir(), "br-cli-empty-"));
+  t.after(() => rm(empty, { recursive: true, force: true }));
+  const missing = spawnSync(process.execPath, [cli.pathname, "capture"], { cwd: empty, encoding: "utf8" });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /Run benchrouter init/);
+});
+
+test("RUN-001 a read-only legacy trust fails preflight without changing an earlier kit file", async (t) => {
+  const root = await targetRepo(t, legacyKit);
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), `version: 1\nproduct: {slug: app, repo: example/app, default_branch: main}\nroutes:\n  - id: chat\n    route_id: app/chat\n    name: Chat\n    code_refs: [src/app.js]\n    seed: {incumbent_model: openai/gpt-4o-mini}\n    call_site: {base_url_env: OPENAI_BASE_URL}\n    eval_pack:\n      workflow: .github/workflows/benchrouter-evals.yml\n      scorer: .benchrouter/scorer.chat.js\n      result_schema: benchrouter.result.v1\n      case_refs: [.benchrouter/cases.chat.json]\n`);
   const before = new Map(packetFiles().map((file) => [file.path, file.content + "\n"]));
   for (const [name, content] of before) await writeFile(path.join(root, name), content);
@@ -361,7 +467,7 @@ test("RUN-001 read-only trust fails preflight without changing an earlier kit fi
 });
 
 test("RUN-001 stale destination preflight preserves kit and package bytes without writing", async (t) => {
-  const root = await targetRepo(t);
+  const root = await targetRepo(t, legacyKit);
   const readme = ".benchrouter/README.md";
   await writeFile(path.join(root, readme), "Customer README before upgrade\n");
   await chmod(path.join(root, readme), 0o640);
@@ -371,7 +477,7 @@ test("RUN-001 stale destination preflight preserves kit and package bytes withou
     { path: readme, content: "Generated README\n" },
     ...preparePackageJson(root, { scripts: { "benchrouter:capture": "node .benchrouter/bootstrap.mjs capture" } }),
     { path: ".benchrouter/new-file.txt", content: "New generated file\n" },
-    { path: ".benchrouter/trust.json", content: kit.get(".benchrouter/trust.json") + "\n" }
+    { path: ".benchrouter/trust.json", content: legacyKit.get(".benchrouter/trust.json") + "\n" }
   ] });
   // A real destination change after staging refuses the entire stale transaction.
   const trust = path.join(root, ".benchrouter/trust.json");
@@ -404,7 +510,7 @@ test("RUN-001 staging refuses package edits made after planning or before commit
 });
 
 test("RUN-001 a newly created destination or an edited unchanged file refuses the whole commit", async (t) => {
-  const root = await targetRepo(t);
+  const root = await targetRepo(t, legacyKit);
   const unchanged = ".benchrouter/trust.json";
   const before = await readFile(path.join(root, unchanged), "utf8");
   for (const change of ["create", "edit unchanged"]) {
@@ -484,7 +590,7 @@ test("RUN-001 rollback refuses an ancestor replacement and leaves its referent u
   await writeFile(readme, "Old README\n");
   const application = await stageFileApplication({ outputDir: root, files: [
     { path: ".benchrouter/README.md", content: "Generated README\n" },
-    { path: ".benchrouter/trust.json", content: kit.get(".benchrouter/trust.json") + "\n" }
+    { path: ".benchrouter/trust.json", content: legacyKit.get(".benchrouter/trust.json") + "\n" }
   ] });
   let moved = false;
   const observer = observeWrite(readme, "Generated README\n", () => {

@@ -312,16 +312,25 @@ benchrouter capture
 benchrouter calibrate
 ```
 
-Both commands execute `.benchrouter/bootstrap.mjs`. The bootstrap verifies the
-signed release before it starts. Capture starts a local proxy. Run the existing
-application test command separately against that proxy. Calibrate checks local
-evidence. Neither command proves production readiness.
+The CLI carries the signed runtime bootstrap and its trust file. Before each
+command it writes them to `.benchrouter/bootstrap.mjs` and `.benchrouter/trust.json`
+in the repository, then runs the bootstrap. `.benchrouter/.gitignore` lists both
+files, so they are never committed. The bootstrap verifies the signed release
+before it starts. Capture starts a local proxy. Run the existing application test
+command separately against that proxy. Calibrate checks local evidence. Neither
+command proves production readiness. The kit's `benchrouter:capture` and
+`benchrouter:calibrate` scripts run `npx --yes benchrouter@latest capture` and
+`calibrate`.
 
-The generated GitHub Action uses `bootstrap.mjs run`. The `benchrouter run`
-entrypoint forwards to the same bootstrap and requires GitHub Actions OIDC.
-The workflow uses one Node 24 job with a 120-minute ceiling. It grants evaluator
-secrets and customer setup only to server-dispatched work. The trust file carries
-current and next signing keys, with digest pins empty by default.
+The generated workflow is a short stub. Its `benchrouter_prepare` step uses
+`BenchRouter/eval-action/prepare@v1`, and its `benchrouter_runtime` step uses
+`BenchRouter/eval-action@v1` with the same ref. A team that pins strictly can
+replace `v1` in both steps with one full commit SHA; `doctor` accepts either.
+The action carries the bootstrap and trust file in CI. `benchrouter run` uses the
+same bootstrap and requires GitHub Actions OIDC. The workflow uses one Node 24 job
+with a 120-minute ceiling. It grants evaluator secrets and customer setup only to
+server-dispatched work. The trust file carries current and next signing keys, with
+digest pins empty.
 
 ## Commands
 
@@ -561,11 +570,15 @@ have one positionally matching file.
 
 ## Upgrade
 
-`upgrade` previews the bootstrap, trust file, workflow, and README, asks for
+`upgrade` previews the workflow, the README, the `benchrouter:` package scripts,
+the `.benchrouter/.gitignore` lines, and the removal of a committed legacy
+`.benchrouter/bootstrap.mjs` and `.benchrouter/trust.json`, asks for
 confirmation, then applies them. It preserves `.benchrouter/benchrouter.yml`
 byte-for-byte. That YAML is the single route declaration. Upgrade validates
 each file hash before it writes any file. It preserves customer setup steps
-between Setup Node.js and Run BenchRouter. Each customer step must use
+between the prepare step and Run BenchRouter, customer steps after Run BenchRouter,
+and customer comments. A workflow from before the eval action migrates to the
+stub with its setup steps, post steps, `runs-on`, and comments. Each customer step must use
 `if: github.event_name == 'workflow_dispatch'`. It keeps the eval job's
 `runs-on`, so a job moved to self-hosted runners stays there; `doctor` accepts
 any `runs-on` label, label list, or `group`/`labels` object. It never replaces cases,
