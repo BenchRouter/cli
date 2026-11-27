@@ -206,11 +206,14 @@ have one positionally matching file.
 
 ## Upgrade
 
-`upgrade` previews the workflow, the README, the `benchrouter:` package scripts,
+`upgrade` previews the workflow, the `benchrouter:` package script values,
 the `.benchrouter/.gitignore` lines, and the removal of a committed legacy
 `.benchrouter/bootstrap.mjs` and `.benchrouter/trust.json`, and the removal of an
 old `benchrouter:eval` script that ran `bootstrap.mjs run`, asks for
-confirmation, then applies them. It preserves `.benchrouter/benchrouter.yml`
+confirmation, then applies them. It leaves `.benchrouter/README.md` alone; only
+`init` writes it. It edits the script values in `package.json` in place, so the
+file keeps its other bytes, key order and indentation, and no empty
+`devDependencies` appears. It preserves `.benchrouter/benchrouter.yml`
 byte-for-byte. That YAML is the single route declaration. Upgrade validates
 each file hash before it writes any file. It preserves customer setup steps
 between the prepare step and Run BenchRouter, customer steps after Run BenchRouter,

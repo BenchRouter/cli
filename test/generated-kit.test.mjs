@@ -57,7 +57,7 @@ function gitTrack(root, files) {
 const legacyManifest = `version: 1\nproduct: {slug: app, repo: example/app, default_branch: main}\nroutes:\n  - id: chat\n    route_id: app/chat\n    name: Chat\n    code_refs: [src/app.js]\n    seed: {incumbent_model: openai/gpt-4o-mini}\n    call_site: {base_url_env: OPENAI_BASE_URL}\n    eval_pack:\n      workflow: .github/workflows/benchrouter-evals.yml\n      scorer: .benchrouter/scorer.chat.js\n      result_schema: benchrouter.result.v1\n      case_refs: [.benchrouter/cases.chat.json]\n`;
 
 function packetFiles() {
-  return [...kit, [".benchrouter/README.md", "# BenchRouter\n"]].map(([name, content]) => ({
+  return [...kit].map(([name, content]) => ({
     path: name, content, sha256: createHash("sha256").update(content).digest("hex")
   }));
 }
@@ -369,9 +369,9 @@ test("RUN-001 exact kit apply preserves customer files and checks every digest b
   }
   await writeFile(path.join(root, WORKFLOW_PATH), customerWorkflow());
   const files = packetFiles();
-  files[1] = { ...files[1], sha256: "0".repeat(64) };
+  files[0] = { ...files[0], sha256: "0".repeat(64) };
   await assert.rejects(applyUpgradePacket({ outputDir: root, files }), /sha256 does not match/);
-  assert.equal(existsSync(path.join(root, ".benchrouter/README.md")), false);
+  assert.equal(await readFile(path.join(root, WORKFLOW_PATH), "utf8"), customerWorkflow());
   await applyUpgradePacket({ outputDir: root, files: packetFiles() });
   for (const [name, content] of preserved) assert.equal(await readFile(path.join(root, name), "utf8"), content);
   assert.equal(existsSync(path.join(root, ".benchrouter/.kit-state.json")), false);
@@ -677,6 +677,20 @@ test("RUN-001 rollback refuses an ancestor replacement and leaves its referent u
   finally { observer.close(); }
   assert.equal(moved, true);
   assert.equal(await readFile(path.join(outside, "README.md"), "utf8"), "Unrelated customer README\n");
+});
+
+test("upgrade edits only benchrouter: script values in package.json and keeps its layout (spec 7(8))", async (t) => {
+  const root = await targetRepo(t);
+  const original = '{\r\n\t"name": "app",\r\n\t"scripts": {\r\n\t\t"test": "node --test",\r\n\t\t"benchrouter:capture": "node .benchrouter/bootstrap.mjs capture",\r\n' +
+    '\t\t"benchrouter:eval": "node .benchrouter/bootstrap.mjs run"\r\n\t},\r\n\t"dependencies": {"yaml": "2.8.1"}\r\n}\r\n';
+  await writeFile(path.join(root, "package.json"), original);
+  const [planned] = preparePackageJson(root, { scripts: LOCAL_SCRIPTS });
+  assert.equal(planned.content,
+    '{\r\n\t"name": "app",\r\n\t"scripts": {\r\n\t\t"test": "node --test",\r\n\t\t"benchrouter:capture": "npx --yes benchrouter@latest capture",\r\n' +
+    '\t\t"benchrouter:calibrate": "npx --yes benchrouter@latest calibrate"\r\n\t},\r\n\t"dependencies": {"yaml": "2.8.1"}\r\n}\r\n');
+  // Already current: nothing to write, so no reformatting either.
+  await writeFile(path.join(root, "package.json"), planned.content);
+  assert.deepEqual(preparePackageJson(root, { scripts: LOCAL_SCRIPTS }), []);
 });
 
 test("RUN-001 staged package merge keeps customer commands and dependencies", async (t) => {

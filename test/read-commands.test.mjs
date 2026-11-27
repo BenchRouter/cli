@@ -173,6 +173,39 @@ test("repo reads use the CLI login and name the repository; a setup key keeps it
   assert.deepEqual([replay.requests[2].authorization, replay.requests[2].rawUrl], [`Bearer ${repoToken}`, "/v1/repo/status"]);
 });
 
+test("login reads refresh stale GitHub access once on the nested error shape, and print nested messages", async (t) => {
+  const seen = [];
+  let statusCalls = 0;
+  const server = http.createServer((request, response) => {
+    seen.push(`${request.method} ${new URL(request.url ?? "/", "http://127.0.0.1").pathname}`);
+    request.resume();
+    const reply = (status, body) => sendJson(response, status, body);
+    if (request.url?.startsWith("/v1/repo/status")) {
+      statusCalls += 1;
+      // The server's controlTokenRepoRead error envelope: { error: { code, message } }.
+      return statusCalls === 1
+        ? reply(403, { error: { code: "repo_access_stale", message: "Your GitHub access sync is stale. Run `npx --yes benchrouter@latest repos refresh`." } })
+        : reply(200, fixtures.status);
+    }
+    if (request.url === "/v1/setup/repos/refresh") return reply(200, { ok: true });
+    if (request.url === "/v1/setup/repos") return reply(200, { ok: true, repos: [], installations: [] });
+    if (request.url?.startsWith("/v1/repo/app%2Fchat/frontier")) return reply(404, { error: { code: "route_not_found", message: "No route app/chat for example/app." } });
+    return reply(500, { error: { code: "unexpected", message: "unexpected" } });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const common = ["--repo", "example/app", "--api-url", `http://127.0.0.1:${server.address().port}`];
+  const login = { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_recorded_fixture", BENCHROUTER_SETUP_KEY: undefined };
+
+  const status = await runCli(["status", ...common, "--json"], login);
+  assert.equal(status.status, 0, status.stderr);
+  assert.deepEqual(seen, ["GET /v1/repo/status", "POST /v1/setup/repos/refresh", "GET /v1/setup/repos", "GET /v1/repo/status"]);
+
+  const missing = await runCli(["frontier", "app/chat", ...common], login);
+  assert.equal(missing.status, 1);
+  assert.ok(missing.stderr.startsWith("BenchRouter frontier failed (404): No route app/chat for example/app.\n"), missing.stderr);
+});
+
 async function startReplayServer(t, options = {}) {
   const requests = [];
   const server = http.createServer((request, response) => {

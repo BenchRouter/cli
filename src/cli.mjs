@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
 import { isMap, isSeq, parseDocument } from "yaml";
 import { LOGIN_COMMAND, normalizeRepoFullName, resolveAccountToken, resolveRepoCredential, resolveRepoToken, saveRepoToken } from "./config.mjs";
-import { apiRequest, ApiError } from "./http.mjs";
+import { apiRequest, ApiError, responseError } from "./http.mjs";
 import { isRepoAccessStale, refreshRepoAccess, refreshFailureLine } from "./control-helpers.mjs";
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, internalControlUsageLines, topLevelControlUsageLines } from "./usage-text.mjs";
@@ -668,11 +668,11 @@ async function fetchUpgradePacketOnce({ apiUrl, bearer, repoFullName, routeId })
   const responseText = await response.text();
 
   if (!response.ok) {
-    const parsedError = parseJson(responseText);
-    if (isRepoAccessStale({ status: response.status, code: parsedError?.error?.code, message: parsedError?.error?.message })) {
+    const { code, message } = responseError(parseJson(responseText), responseText);
+    if (isRepoAccessStale({ status: response.status, code, message })) {
       throw new StaleRepoAccess();
     }
-    fail(`Setup kit upgrade request failed (${response.status}): ${responseText.slice(0, 800)}`);
+    fail(`Setup kit upgrade request failed (${response.status}): ${message}`);
   }
 
   const body = parseJson(responseText);
@@ -801,9 +801,9 @@ async function fetchSetupPacketOnce({ apiUrl, credential, repoFullName, routeSpe
   if (!response.ok) {
     const parsed = parseJson(responseText);
     const error = parsed?.error;
-    const errorCode = typeof error === "string" ? error : error?.code;
+    const { code: errorCode, message: errorText } = responseError(parsed, responseText);
     if (credential.kind === "account") {
-      if (isRepoAccessStale({ status: response.status, code: errorCode, message: error?.message })) throw new StaleRepoAccess();
+      if (isRepoAccessStale({ status: response.status, code: errorCode, message: errorText })) throw new StaleRepoAccess();
       if (response.status === 401) fail(`BenchRouter did not accept your login. Run \`${LOGIN_COMMAND}\`, then rerun init.`);
     }
     if (errorCode === "setup_code_expired" || errorCode === "setup_scope_expired") {
@@ -824,7 +824,7 @@ async function fetchSetupPacketOnce({ apiUrl, credential, repoFullName, routeSpe
     if (errorCode === "incumbent_observation_changed") {
       fail(incumbentObservationChangedMessage(primary));
     }
-    fail(`Setup packet request failed (${response.status}): ${responseText.slice(0, 800)}`);
+    fail(`Setup packet request failed (${response.status}): ${errorText}`);
   }
 
   return JSON.parse(responseText);
@@ -2139,10 +2139,11 @@ prints \`npx --yes benchrouter@latest repos refresh\`.
 
 Upgrade preserves the existing .benchrouter/benchrouter.yml byte-for-byte
 and preserves all route-owned assets and dispatch-only customer setup steps.
-It replaces only the workflow and README content, sets the benchrouter: package
-scripts (and removes the old benchrouter:eval script that ran \`bootstrap.mjs run\`), adds the local runtime files to .benchrouter/.gitignore, and deletes a
+It replaces only the workflow, sets the benchrouter: package script values in
+place (the rest of package.json keeps its formatting; it removes the old benchrouter:eval script that ran \`bootstrap.mjs run\`), adds the local runtime files to .benchrouter/.gitignore, and deletes a
 committed legacy .benchrouter/bootstrap.mjs and .benchrouter/trust.json.
-Upgrade has no --force flag: it always replaces those BenchRouter-owned files.
+It leaves .benchrouter/README.md alone. Upgrade has no --force flag: it always
+replaces those BenchRouter-owned files.
 (--force belongs to init, where it replaces differing BenchRouter kit files.)
 It validates all generated-file hashes before it writes files.
 

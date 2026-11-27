@@ -272,7 +272,11 @@ test("RUN-001 init and upgrade reject invalid packages or unwritable destination
       const workflowFile = path.join(root, ".github/workflows/benchrouter-evals.yml");
       if (problem === "invalid JSON") await writeFile(packagePath, "{broken");
       if (problem === "invalid scripts") await writeFile(packagePath, '{"scripts":"not-an-object"}');
-      if (problem === "read-only package") await chmod(packagePath, 0o400);
+      // A package.json the kit must change (an older script value); read-only, it fails before HTTP.
+      if (problem === "read-only package") {
+        await writeFile(packagePath, '{"scripts":{"benchrouter:capture":"node .benchrouter/bootstrap.mjs capture"}}\n');
+        await chmod(packagePath, 0o400);
+      }
       if (problem === "read-only workflow") await chmod(workflowFile, 0o400);
       const before = await readFile(path.join(root, ".benchrouter/README.md"), "utf8");
       const extra = command === "init"
@@ -1572,6 +1576,19 @@ test("init with the CLI login sends it as the bearer and needs a repository", as
   assert.equal(setupServer.requests[1].authorization, "Bearer br_setup_init");
 });
 
+test("upgrade and init print the nested error message, not raw JSON", async (t) => {
+  const root = await createUpgradeTarget(t);
+  const server = await startFixtureProxy(t, { status: 409, body: { error: { code: "kit_conflict", message: "Kit refused for example/app." } } });
+  const upgrade = await runCli(["upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
+    "--api-url", server.url, "--output-dir", root, "--yes"], root);
+  assert.equal(upgrade.status, 1);
+  assert.ok(upgrade.stderr.startsWith("Setup kit upgrade request failed (409): Kit refused for example/app.\n"), upgrade.stderr);
+  const init = await runCli(["init", "--account-token", "br_ctrl_fixture", "--repo", "example/app", "--route", routeId, "--name", "Chat",
+    "--incumbent-model", "openai/gpt-4o-mini", "--api-url", server.url, "--output-dir", root, "--dry-run"], root);
+  assert.equal(init.status, 1);
+  assert.ok(init.stderr.startsWith("Setup packet request failed (409): Kit refused for example/app.\n"), init.stderr);
+});
+
 test("upgrade prints the refresh command when the refresh fails, and does not loop", async (t) => {
   const root = await createUpgradeTarget(t);
   const seen = [];
@@ -1617,14 +1634,16 @@ test("upgrade revalidates canonical YAML immediately before apply", async (t) =>
   assert.equal(existsSync(path.join(root, ".benchrouter/bootstrap.mjs")), false);
 });
 
-test("upgrade rejects subset and duplicate generated packets before writes", async (t) => {
+test("upgrade rejects empty, duplicate and README packets before writes", async (t) => {
   const exact = exactUpgradeFiles();
   const cases = [
-    ["one-file subset", exact.slice(0, 1)],
-    ["duplicate path", [...exact.slice(0, 1), exact[0]]]
+    ["empty", [], /must contain exactly one of each generated path/],
+    ["duplicate path", [...exact, exact[0]], /must contain exactly one of each generated path/],
+    // The server stopped sending the kit README (it is init-only); one in a packet is refused.
+    ["kit README", [...exact, generatedUpgradeFile(".benchrouter/README.md", "# BenchRouter\n")], /unsupported path \.benchrouter\/README\.md/]
   ];
 
-  for (const [label, files] of cases) {
+  for (const [label, files, refusal] of cases) {
     await t.test(label, async (subtest) => {
       const root = await createUpgradeTarget(subtest);
           const server = await startFixtureProxy(subtest, {
@@ -1637,7 +1656,7 @@ test("upgrade rejects subset and duplicate generated packets before writes", asy
       ], root);
 
       assert.equal(result.status, 1);
-      assert.match(result.stderr, /must contain exactly one of each generated path/);
+      assert.match(result.stderr, refusal);
       assert.equal(server.requests.length, 1);
         });
   }
@@ -1674,7 +1693,9 @@ test("upgrade preview separates changed and unchanged files and diffs the change
     await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
     await writeFile(path.join(root, filePath), content);
   }
-  await writeFile(path.join(root, ".benchrouter/README.md"), "# BenchRouter\nOld line\n");
+  // Four-space JSON with one older script: only that value changes, in place.
+  await writeFile(path.join(root, "package.json"), '{\n    "name": "app",\n    "scripts": {\n        "test": "node --test",\n        "benchrouter:capture": "node .benchrouter/bootstrap.mjs capture",\n        "benchrouter:calibrate": "npx --yes benchrouter@latest calibrate"\n    }\n}\n');
+  await writeFile(path.join(root, ".benchrouter/README.md"), "# BenchRouter\nCustomer-edited kit README\n");
   const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
 
   const result = await runCli([
@@ -1684,10 +1705,15 @@ test("upgrade preview separates changed and unchanged files and diffs the change
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(server.requests.length, 1);
-  assert.ok(result.stdout.includes("Would change 1 file(s):\n  update .benchrouter/README.md\n"), result.stdout);
+  assert.ok(result.stdout.includes("Would change 1 file(s):\n  update package.json\n"), result.stdout);
   assert.ok(result.stdout.includes(`Unchanged (${signedKitFixture.size}):\n`), result.stdout);
   for (const filePath of signedKitFixture.keys()) assert.ok(result.stdout.includes(`\n  ${filePath}\n`), filePath);
-  assert.ok(result.stdout.includes("--- a/.benchrouter/README.md\n+++ b/.benchrouter/README.md\n@@ -1,2 +1,1 @@\n # BenchRouter\n-Old line\n"), result.stdout);
+  assert.ok(result.stdout.includes(
+    '-        "benchrouter:capture": "node .benchrouter/bootstrap.mjs capture",\n' +
+    '+        "benchrouter:capture": "npx --yes benchrouter@latest capture",\n'
+  ), result.stdout);
+  // The kit README is init-only: upgrade never previews or rewrites it.
+  assert.ok(!result.stdout.includes(".benchrouter/README.md"), result.stdout);
   assert.ok(!result.stdout.includes("would write"), result.stdout);
 });
 
@@ -1717,14 +1743,17 @@ test("upgrade preview names the same changes that apply makes, with customer ste
   const lines = result.stdout.split("\n");
   const previewChanged = lines.filter((line) => line.startsWith("  update ") || line.startsWith("  create ")).map((line) => line.trim().split(" ")[1]).sort();
   const applied = lines.filter((line) => line.startsWith("updated ") || line.startsWith("created ")).map((line) => line.split(" ")[1]).sort();
-  assert.deepEqual(previewChanged, [".benchrouter/README.md", workflowPath, "package.json"].sort());
+  assert.deepEqual(previewChanged, [workflowPath, "package.json"].sort());
+  // Only the benchrouter: scripts were added; no empty devDependencies and the same 2-space layout.
+  assert.equal(await readFile(path.join(root, "package.json"), "utf8"),
+    JSON.stringify({ name: "app", private: true, scripts: LOCAL_SCRIPTS }, null, 2) + "\n");
   assert.deepEqual(applied, previewChanged);
   const written = await readFile(path.join(root, workflowPath), "utf8");
   assert.ok(written.includes(customer + marker), written);
   assert.ok(written.includes("BENCHROUTER_KIT_VERSION: 0.1.1\n"), written);
 });
 
-test("upgrade preview warns before replacing a customer script or customer README sections", async (t) => {
+test("upgrade preview warns before replacing a customer script and leaves the kit README alone", async (t) => {
   const root = await createUpgradeTarget(t);
   for (const [filePath, content] of signedKitFixture) {
     await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
@@ -1746,9 +1775,9 @@ test("upgrade preview warns before replacing a customer script or customer READM
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.includes(
     "\nWarning: this replaces content BenchRouter did not write:\n" +
-    "  - replaces .benchrouter/README.md, which has content BenchRouter did not write (sections: ## Speaker scorer notes; ### Calibration log). Move your notes to a file BenchRouter does not write\n" +
     "  - replaces your script benchrouter:calibrate (node .benchrouter/verify-speaker-scorer.cjs); keep your own scripts under another name\n"
   ), result.stdout);
+  assert.ok(!result.stdout.includes(".benchrouter/README.md"), result.stdout);
   assert.ok(!result.stdout.includes("benchrouter:capture ("), result.stdout);
 });
 
@@ -1777,9 +1806,18 @@ test("ownership warnings use per-script history and CommonMark fences", async (t
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.includes("(sections: ## Tabbed notes)"), result.stdout);
   assert.ok(result.stdout.includes("replaces your script benchrouter:capture (node .benchrouter/bootstrap.mjs calibrate)"), result.stdout);
   assert.ok(!result.stdout.includes("benchrouter:calibrate ("), result.stdout);
+
+  // Only init writes the kit README, so init --force carries the README-section warning.
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: { repo_full_name: "example/app", setup_packet: { files: [{ path: ".benchrouter/README.md", content: "# BenchRouter\n" }] } }
+  });
+  const init = await runCli(["init", "--setup-key", "br_setup_fixture", "--repo", "example/app", "--route", routeId, "--name", "Chat",
+    "--incumbent-model", "openai/gpt-4o-mini", "--api-url", setupServer.url, "--output-dir", root, "--force", "--dry-run"], root);
+  assert.equal(init.status, 0, init.stderr);
+  assert.ok(init.stdout.includes("(sections: ## Tabbed notes)"), init.stdout);
 });
 
 test("upgrade preview does not warn when the old README and scripts are BenchRouter's", async (t) => {
@@ -1798,7 +1836,7 @@ test("upgrade preview does not warn when the old README and scripts are BenchRou
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.includes("update .benchrouter/README.md"), result.stdout);
+  assert.ok(!result.stdout.includes(".benchrouter/README.md"), result.stdout);
   assert.ok(!result.stdout.includes("Warning:"), result.stdout);
 });
 
@@ -1882,8 +1920,7 @@ async function createUpgradeTarget(t, { writeManifest = true } = {}) {
 
 function exactUpgradeFiles() {
   return [
-    ...[...signedKitFixture].map(([filePath, content]) => generatedUpgradeFile(filePath, content)),
-    generatedUpgradeFile(".benchrouter/README.md", "# BenchRouter\n")
+    ...[...signedKitFixture].map(([filePath, content]) => generatedUpgradeFile(filePath, content))
   ];
 }
 

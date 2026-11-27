@@ -1,4 +1,5 @@
-import { apiRequest, ApiError } from "./http.mjs";
+import { apiRequest, ApiError, responseError } from "./http.mjs";
+import { isRepoAccessStale, refreshFailureLine, refreshRepoAccess } from "./control-helpers.mjs";
 import { ACCOUNT_CONTROL_TOKEN_PREFIX, LOGIN_COMMAND } from "./config.mjs";
 
 /**
@@ -71,6 +72,9 @@ async function onlyRoute(apiUrl, token, repoFullName) {
   return routes[0].route_key;
 }
 
+// One command refreshes a stale GitHub access sync at most once, then retries once.
+let refreshedRepoAccess = false;
+
 /** Repo reads go through the shared client, so a 503 with a short Retry-After is retried once like every other read. */
 async function fetchRepoJson(apiUrl, pathname, token, label) {
   let body;
@@ -79,14 +83,26 @@ async function fetchRepoJson(apiUrl, pathname, token, label) {
   } catch (error) {
     if (!(error instanceof ApiError)) throw error;
     const failed = error.body;
-    if (["read_scope_expired", "read_token_invalid", "read_token_missing"].includes(failed?.error)) {
-      const url = typeof failed.authorize_url === "string" ? failed.authorize_url : "https://benchrouter.com/cli";
+    const { code, message } = responseError(failed, error.text);
+    if (["read_scope_expired", "read_token_invalid", "read_token_missing"].includes(code)) {
+      const authorizeUrl = failed?.error?.authorize_url ?? failed?.authorize_url;
+      const url = typeof authorizeUrl === "string" ? authorizeUrl : "https://benchrouter.com/cli";
       throw new Error(`BenchRouter repo access expired or is invalid. Open ${url} to create a new repo token.`);
     }
-    if (token.startsWith(ACCOUNT_CONTROL_TOKEN_PREFIX) && error.status === 401) {
+    const login = token.startsWith(ACCOUNT_CONTROL_TOKEN_PREFIX);
+    if (login && isRepoAccessStale(error)) {
+      if (refreshedRepoAccess) throw new Error(refreshFailureLine(null));
+      refreshedRepoAccess = true;
+      try {
+        await refreshRepoAccess({ apiUrl, token });
+      } catch (refreshError) {
+        throw new Error(refreshFailureLine(refreshError));
+      }
+      return fetchRepoJson(apiUrl, pathname, token, label);
+    }
+    if (login && error.status === 401) {
       throw new Error(`BenchRouter did not accept your login. Run \`${LOGIN_COMMAND}\`, then rerun this command.`);
     }
-    const message = typeof failed?.message === "string" ? failed.message : error.text.slice(0, 800);
     throw new Error(`BenchRouter ${label} failed (${error.status}): ${message}`);
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {

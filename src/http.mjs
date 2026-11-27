@@ -150,6 +150,19 @@ export function parseJson(text) {
   }
 }
 
+/**
+ * The code and readable message of an error body in either shape the server uses: nested
+ * `{ error: { code, message } }` or flat `{ error: "<code>", message }`. Never the raw JSON
+ * of a parsed body; raw text only when the body is not JSON.
+ */
+export function responseError(parsed, text = "") {
+  const nested = parsed?.error && typeof parsed.error === "object" ? parsed.error : null;
+  const code = errorCode(parsed);
+  const message = [nested?.message, parsed?.message].find((value) => typeof value === "string" && value.length > 0)
+    ?? (parsed && typeof parsed === "object" ? code ?? "request failed" : text.slice(0, 800) || "request failed");
+  return { code, message };
+}
+
 function errorMessage(parsed, text) {
   if (parsed && typeof parsed === "object") {
     if (typeof parsed.error === "string") return parsed.error;
