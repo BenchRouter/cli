@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, open, realpath, rename, rm, rmdir } from "node:fs/promises";
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
@@ -119,7 +120,7 @@ function stubBounds(steps) {
     throw new Error(`must run ${RUNTIME_ACTION}${ref} with the prepared Node 24 interpreter`);
   }
   if (!validRuntimeEnv(runtime.env)) throw new Error("the runtime step env must hold only BenchRouter's job ceiling, fetch token, kit version and dispatch-only secrets");
-  return { open: prepare, run, postStart: run + 1 };
+  return { open: prepare, run, postStart: run + 1, ref };
 }
 
 // Reads the workflow from before the eval-action stub, for migration only.
@@ -138,7 +139,7 @@ function legacyBounds(steps) {
   // The generated uploads directly after the runtime step are BenchRouter's, not customer post steps.
   let postStart = run + 1;
   while (postStart < steps.items.length && isLegacyUpload(steps.items[postStart].toJSON())) postStart += 1;
-  return { open: interpreter, run, postStart };
+  return { open: interpreter, run, postStart, legacy: true };
 }
 
 function isLegacyUpload(step) {
@@ -318,8 +319,11 @@ function postCommentTokens(steps) {
 // RUN-001: preserve customer setup after the prepare step and postprocessing after runtime.
 // SETUP-001: also keep the customer's valid eval-job runs-on. A legacy workflow migrates: its setup
 // between the interpreter recorder and the runtime step, and its post steps, move into the stub.
-export function preserveCustomerSetup(existingSource, generatedSource) {
+export function preserveCustomerSetup(existingSource, templateSource) {
   const existing = workflowDocument(existingSource, { keepSourceTokens: true });
+  // SETUP-001: a customer's pinned eval-action ref (a commit SHA) survives the refresh.
+  const pinned = workflowBounds(evalSteps(existing)).ref;
+  const generatedSource = pinned && pinned !== "v1" ? withActionRef(templateSource, pinned) : templateSource;
   const generated = workflowDocument(generatedSource, { keepSourceTokens: true });
   const previousSteps = evalSteps(existing);
   const nextSteps = evalSteps(generated);
@@ -328,7 +332,9 @@ export function preserveCustomerSetup(existingSource, generatedSource) {
   validateCustomerSteps(previousSteps, previous);
   validateCustomerSteps(nextSteps, next);
   const customerSteps = previousSteps.items.slice(previous.open + 1, previous.run);
-  const customerPostSteps = previousSteps.items.slice(previous.postStart);
+  // A legacy generated upload anywhere after the runtime step is BenchRouter's; the action uploads now.
+  const customerPostSteps = previousSteps.items.slice(previous.postStart)
+    .filter((step) => !(previous.legacy && isLegacyUpload(step.toJSON())));
   const runner = customerRunner(existing, generated);
   const spliced = runner?.hasAliases ? null : spliceCustomerSource(
     existingSource, existing, previousSteps, previous, generatedSource, generated, nextSteps, next, Boolean(runner)
@@ -358,6 +364,18 @@ export function preserveCustomerSetup(existingSource, generatedSource) {
   }
   const rendered = generated.toString({ lineWidth: 0 });
   return mergeLeadingComments(existing, existingSource, workflowDocument(rendered, { keepSourceTokens: true }), rendered);
+}
+
+// Sets both eval-action steps to one ref, editing only the two uses values.
+function withActionRef(source, ref) {
+  const doc = workflowDocument(source, { keepSourceTokens: true });
+  const steps = evalSteps(doc);
+  const bounds = stubBounds(steps);
+  if (bounds.ref === ref) return source;
+  return applySourceEdits(source, [[bounds.open, PREPARE_ACTION], [bounds.run, RUNTIME_ACTION]].map(([index, action]) => {
+    const node = steps.items[index].get("uses", true);
+    return { from: node.range[0], to: node.range[1], text: action + ref };
+  }));
 }
 
 function setupGuideTokens(steps, { open, run }) {
@@ -697,12 +715,12 @@ export async function stageFileApplication({ outputDir, files, onFile }) {
 
 // The CLI-side kit changes an upgrade makes besides the server's files: the local scripts, the
 // .gitignore lines for the local runtime files, and deletion of the committed legacy copies.
-// init passes the packet's package.json instructions and the paths it already plans.
-export function prepareLocalKitFiles(outputDir, { packageJson = { scripts: LOCAL_SCRIPTS }, planned = [] } = {}) {
+// init passes the packet's package.json instructions, the paths it already plans, and the packet's paths.
+export function prepareLocalKitFiles(outputDir, { packageJson = { scripts: LOCAL_SCRIPTS }, planned = [], packet = [] } = {}) {
   return [
     ...preparePackageJson(outputDir, packageJson),
     ...(planned.includes(GITIGNORE_PATH) ? [] : prepareGitignore(outputDir)),
-    ...prepareLegacyRuntimeDeletions(outputDir).filter((file) => !planned.includes(file.path))
+    ...prepareLegacyRuntimeDeletions(outputDir).filter((file) => !packet.includes(file.path))
   ];
 }
 
@@ -717,7 +735,7 @@ export async function applyUpgradePacket({ outputDir, files, onFile }) {
 const GITIGNORE_LINES = ["bootstrap.mjs", "trust.json"];
 
 // Adds the local runtime files to .benchrouter/.gitignore. A planned packet copy (init) gets the
-// lines too; otherwise the file on disk does, or a new file is created.
+// lines; otherwise an existing file on disk does. A repo without the file (no eval) gets none.
 export function ensureGitignoreLines(content) {
   const lines = new Set(content.replaceAll("\r\n", "\n").split("\n").map((line) => line.trim()));
   const missing = GITIGNORE_LINES.filter((line) => !lines.has(line) && !lines.has("/" + line));
@@ -729,8 +747,9 @@ export function ensureGitignoreLines(content) {
 
 function prepareGitignore(outputDir) {
   const target = path.join(outputDir, GITIGNORE_PATH);
-  const previousContent = existsSync(target) ? readFileSync(target, "utf8") : null;
-  const content = ensureGitignoreLines(previousContent ?? "");
+  if (!existsSync(target)) return [];
+  const previousContent = readFileSync(target, "utf8");
+  const content = ensureGitignoreLines(previousContent);
   return content === previousContent ? [] : [{ path: GITIGNORE_PATH, previousContent, content }];
 }
 
@@ -743,11 +762,17 @@ function isLegacyRuntimeFile(filePath, content) {
   return content.startsWith("#!/usr/bin/env node\n// BenchRouter bootstrap (RUN-001");
 }
 
+// Only a committed copy is deleted. The gitignored copies local commands write stay.
+function gitTracks(outputDir, filePath) {
+  return spawnSync("git", ["-C", outputDir, "ls-files", "--error-unmatch", "--", filePath], { stdio: "ignore" }).status === 0;
+}
+
+// Upgrade and init only; local commands never delete.
 export function prepareLegacyRuntimeDeletions(outputDir) {
   const deletions = [];
   for (const filePath of [BOOTSTRAP_PATH, TRUST_PATH]) {
     const target = path.join(outputDir, filePath);
-    if (!lstatSync(target, { throwIfNoEntry: false })?.isFile()) continue;
+    if (!lstatSync(target, { throwIfNoEntry: false })?.isFile() || !gitTracks(outputDir, filePath)) continue;
     const previousContent = readFileSync(target, "utf8");
     if (isLegacyRuntimeFile(filePath, previousContent)) deletions.push({ path: filePath, previousContent, delete: true });
   }
@@ -760,12 +785,20 @@ export function writeLocalRuntime(root) {
   if (!lstatSync(path.join(root, ".benchrouter"), { throwIfNoEntry: false })?.isDirectory()) {
     throw new Error("Missing .benchrouter/. Run benchrouter init in this repository first.");
   }
-  for (const [filePath, source] of VENDOR_FILES) {
-    const target = path.join(root, filePath);
+  const files = VENDOR_FILES.map(([filePath, source]) => [filePath, path.join(root, filePath), readFileSync(source)]);
+  // Check both before writing either. Replace only BenchRouter's own copies: the vendored bytes, a
+  // released bootstrap, or a legacy trust without pins. A pinned trust is the customer's choice.
+  for (const [filePath, target, vendored] of files) {
     const existing = lstatSync(target, { throwIfNoEntry: false });
-    if (existing && !existing.isFile()) throw new Error(`${filePath} must be a regular file.`);
-    writeFileSync(target, readFileSync(source));
+    if (!existing) continue;
+    if (!existing.isFile()) throw new Error(`${filePath} must be a regular file.`);
+    const content = readFileSync(target);
+    if (content.equals(vendored)) continue;
+    const text = content.toString("utf8");
+    const ours = filePath === TRUST_PATH ? isLegacyRuntimeFile(filePath, text) && JSON.parse(text).pins.length === 0 : isLegacyRuntimeFile(filePath, text);
+    if (!ours) throw new Error(`${filePath} is not BenchRouter's copy, so local commands will not replace it. Run benchrouter upgrade, or move the file.`);
   }
+  for (const [, target, vendored] of files) writeFileSync(target, vendored);
   return path.join(root, BOOTSTRAP_PATH);
 }
 

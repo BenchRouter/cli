@@ -46,6 +46,16 @@ async function targetRepo(t, files = kit) {
   return root;
 }
 
+// A real git index, so the upgrade sees the legacy files as committed.
+function gitTrack(root, files) {
+  for (const args of [["init", "-q"], ["add", "--", ...files]]) {
+    const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  }
+}
+
+const legacyManifest = `version: 1\nproduct: {slug: app, repo: example/app, default_branch: main}\nroutes:\n  - id: chat\n    route_id: app/chat\n    name: Chat\n    code_refs: [src/app.js]\n    seed: {incumbent_model: openai/gpt-4o-mini}\n    call_site: {base_url_env: OPENAI_BASE_URL}\n    eval_pack:\n      workflow: .github/workflows/benchrouter-evals.yml\n      scorer: .benchrouter/scorer.chat.js\n      result_schema: benchrouter.result.v1\n      case_refs: [.benchrouter/cases.chat.json]\n`;
+
 function packetFiles() {
   return [...kit, [".benchrouter/README.md", "# BenchRouter\n"]].map(([name, content]) => ({
     path: name, content, sha256: createHash("sha256").update(content).digest("hex")
@@ -406,6 +416,7 @@ test("SETUP-001 upgrade migrates a legacy kit: setup, post steps, runner and com
     test: "node --test", "benchrouter:capture": "node .benchrouter/bootstrap.mjs capture", "benchrouter:calibrate": "node .benchrouter/bootstrap.mjs calibrate"
   } }));
   await writeFile(path.join(root, WORKFLOW_PATH), legacyCustomerWorkflow());
+  gitTrack(root, [".benchrouter/bootstrap.mjs", ".benchrouter/trust.json"]);
   const changes = [];
   await applyUpgradePacket({ outputDir: root, files: packetFiles(), onFile: (action, file) => changes.push(`${action} ${file}`) });
   const migrated = await readFile(path.join(root, WORKFLOW_PATH), "utf8");
@@ -429,7 +440,38 @@ test("SETUP-001 upgrade migrates a legacy kit: setup, post steps, runner and com
   assert.equal(preserveCustomerSetup(migrated, kit.get(WORKFLOW_PATH)), migrated);
 });
 
-test("upgrade keeps a bootstrap or trust file that is not BenchRouter's", async (t) => {
+test("SETUP-001 migration drops legacy uploads that follow a customer post step", () => {
+  const source = legacyKit.get(WORKFLOW_PATH) + [
+    "      - name: Report speaker metrics",
+    "        if: always()",
+    "        run: node scripts/report.mjs",
+    "      - name: Upload BenchRouter results",
+    "        if: always()",
+    "        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "        with:",
+    "          name: benchrouter-results-${{ github.run_id }}-${{ github.run_attempt }}",
+    "          path: .br-results",
+    ""
+  ].join("\n");
+  const steps = parseDocument(preserveCustomerSetup(source, kit.get(WORKFLOW_PATH))).toJS().jobs.eval.steps;
+  assert.deepEqual(steps.map((step) => step.name), ["Prepare BenchRouter", "Run BenchRouter", "Report speaker metrics"]);
+});
+
+test("SETUP-001 refresh keeps a customer's commit SHA pin on both eval-action steps", async (t) => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const template = kit.get(WORKFLOW_PATH);
+  const pinned = template.replace("prepare@v1\n", `prepare@${sha}\n`).replace("eval-action@v1\n", `eval-action@${sha}\n`);
+  assert.notEqual(pinned, template);
+  const nextTemplate = template.replace("BENCHROUTER_KIT_VERSION: 0.1.0", "BENCHROUTER_KIT_VERSION: 0.1.1");
+  const refreshed = preserveCustomerSetup(pinned, nextTemplate);
+  assert.equal(refreshed, pinned.replace("BENCHROUTER_KIT_VERSION: 0.1.0", "BENCHROUTER_KIT_VERSION: 0.1.1"));
+  const root = await targetRepo(t, new Map([[WORKFLOW_PATH, refreshed]]));
+  const failures = [];
+  inspectSignedKit(root, failures);
+  assert.deepEqual(failures, []);
+});
+
+test("upgrade keeps a bootstrap or trust file that is not BenchRouter's or is not committed", async (t) => {
   const root = await targetRepo(t);
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), `version: 1\nproduct: {slug: app, repo: example/app, default_branch: main}\nroutes:\n  - id: chat\n    route_id: app/chat\n    name: Chat\n    code_refs: [src/app.js]\n    seed: {incumbent_model: openai/gpt-4o-mini}\n    call_site: {base_url_env: OPENAI_BASE_URL}\n    eval_pack:\n      workflow: .github/workflows/benchrouter-evals.yml\n      scorer: .benchrouter/scorer.chat.js\n      result_schema: benchrouter.result.v1\n      case_refs: [.benchrouter/cases.chat.json]\n`);
   await writeFile(path.join(root, ".benchrouter/bootstrap.mjs"), "console.log('customer tool');\n");
@@ -437,11 +479,27 @@ test("upgrade keeps a bootstrap or trust file that is not BenchRouter's", async 
   await applyUpgradePacket({ outputDir: root, files: packetFiles() });
   assert.equal(await readFile(path.join(root, ".benchrouter/bootstrap.mjs"), "utf8"), "console.log('customer tool');\n");
   assert.equal(await readFile(path.join(root, ".benchrouter/trust.json"), "utf8"), '{"customer": true}\n');
+  // The gitignored copies a local command wrote are not committed, so the upgrade leaves them.
+  const local = await targetRepo(t, legacyKit);
+  await writeFile(path.join(local, ".benchrouter/benchrouter.yml"), legacyManifest);
+  gitTrack(local, [WORKFLOW_PATH]);
+  await applyUpgradePacket({ outputDir: local, files: packetFiles() });
+  assert.equal(await readFile(path.join(local, ".benchrouter/bootstrap.mjs"), "utf8"), legacyKit.get(".benchrouter/bootstrap.mjs"));
+  assert.equal(await readFile(path.join(local, ".benchrouter/trust.json"), "utf8"), legacyKit.get(".benchrouter/trust.json"));
 });
 
 test("RUN-001 local commands write the vendored bootstrap and trust into .benchrouter and run them", async (t) => {
   const root = await targetRepo(t);
-  await writeFile(path.join(root, ".benchrouter/trust.json"), "{}\n");
+  // A pinned trust is the customer's: the local command refuses to replace it and runs nothing.
+  const pinnedTrust = JSON.stringify({ ...JSON.parse(legacyKit.get(".benchrouter/trust.json")), pins: ["sha256:" + "a".repeat(64)] });
+  await writeFile(path.join(root, ".benchrouter/trust.json"), pinnedTrust);
+  const refused = spawnSync(process.execPath, [cli.pathname, "capture"], { cwd: root, encoding: "utf8" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /trust\.json is not BenchRouter's copy/);
+  assert.equal(await readFile(path.join(root, ".benchrouter/trust.json"), "utf8"), pinnedTrust);
+  assert.equal(existsSync(path.join(root, ".benchrouter/bootstrap.mjs")), false);
+  // A legacy BenchRouter copy is replaced by the vendored one.
+  await writeFile(path.join(root, ".benchrouter/trust.json"), legacyKit.get(".benchrouter/trust.json"));
   // A proxy that refuses connections stops the real bootstrap at its first fetch, with no network access.
   const env = { ...process.env, NODE_USE_ENV_PROXY: "1", HTTPS_PROXY: "http://127.0.0.1:9", NO_PROXY: "" };
   const result = spawnSync(process.execPath, [cli.pathname, "calibrate"], { cwd: root, encoding: "utf8", env });
@@ -461,6 +519,7 @@ test("RUN-001 a read-only legacy trust fails preflight without changing an earli
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), `version: 1\nproduct: {slug: app, repo: example/app, default_branch: main}\nroutes:\n  - id: chat\n    route_id: app/chat\n    name: Chat\n    code_refs: [src/app.js]\n    seed: {incumbent_model: openai/gpt-4o-mini}\n    call_site: {base_url_env: OPENAI_BASE_URL}\n    eval_pack:\n      workflow: .github/workflows/benchrouter-evals.yml\n      scorer: .benchrouter/scorer.chat.js\n      result_schema: benchrouter.result.v1\n      case_refs: [.benchrouter/cases.chat.json]\n`);
   const before = new Map(packetFiles().map((file) => [file.path, file.content + "\n"]));
   for (const [name, content] of before) await writeFile(path.join(root, name), content);
+  gitTrack(root, [".benchrouter/trust.json"]);
   await chmod(path.join(root, ".benchrouter/trust.json"), 0o400);
   await assert.rejects(applyUpgradePacket({ outputDir: root, files: packetFiles() }), { code: "EACCES" });
   for (const [name, content] of before) assert.equal(await readFile(path.join(root, name), "utf8"), content);

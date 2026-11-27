@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -618,6 +618,9 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   await mkdir(path.join(root, ".benchrouter"), { recursive: true });
   // A committed legacy bootstrap is BenchRouter's, so init deletes it.
   await writeFile(path.join(root, ".benchrouter/bootstrap.mjs"), legacyBootstrap);
+  for (const gitArgs of [["init", "-q"], ["add", "--", ".benchrouter/bootstrap.mjs"]]) {
+    assert.equal(spawnSync("git", ["-C", root, ...gitArgs]).status, 0);
+  }
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ scripts: {} }, null, 2)}\n`);
 
   const setupServer = await startFixtureProxy(t, {
@@ -704,7 +707,8 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   assert.doesNotMatch(result.stdout + result.stderr, /@benchrouter\/cli/);
   assert.equal(existsSync(path.join(root, ".benchrouter/bootstrap.mjs")), false);
   assert.match(result.stdout, /deleted \.benchrouter\/bootstrap\.mjs/);
-  assert.equal(await readFile(path.join(root, ".benchrouter/.gitignore"), "utf8"), "bootstrap.mjs\ntrust.json\n");
+  // This packet has no .gitignore (no eval), so init creates none.
+  assert.equal(existsSync(path.join(root, ".benchrouter/.gitignore")), false);
 
   assert.equal(existsSync(path.join(root, ".env.example")), false);
   assert.match(result.stdout, /Runtime env configuration is deferred until activation/);
@@ -878,6 +882,33 @@ test("init dry run lists what it would write apart from what it would skip", asy
   assert.ok(!result.stdout.includes("would write"), result.stdout);
   assert.equal(await readFile(path.join(root, ".benchrouter/cases.compose.json"), "utf8"), "[\"customer edits\"]\n");
   assert.equal(existsSync(path.join(root, ".benchrouter/README.md")), false);
+});
+
+test("re-init without --force keeps a customer .gitignore and merges the local runtime lines into it", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-init-gitignore-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, ".benchrouter/.gitignore"), "# ours\nresults/\n");
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: {
+      repo_full_name: "example/app",
+      setup_packet: {
+        files: [{ path: ".benchrouter/.gitignore", content: "results/\n" }],
+        package_json: { scripts: {}, dev_dependencies: [] },
+        runtime_env: {}
+      }
+    }
+  });
+  const result = await runCli([
+    "init", "--setup-key", "br_setup_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
+    "--api-url", setupServer.url, "--output-dir", root, "--dry-run"
+  ], root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes("Would change 1 file(s):\n  update .benchrouter/.gitignore\n"), result.stdout);
+  assert.ok(result.stdout.includes(" # ours\n results/\n+bootstrap.mjs\n+trust.json\n"), result.stdout);
+  assert.ok(result.stdout.includes(".benchrouter/.gitignore (it differs from BenchRouter's copy;"), result.stdout);
 });
 
 test("init requires direct-provider identity flags together", async (t) => {

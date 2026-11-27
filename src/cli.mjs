@@ -266,9 +266,12 @@ async function init() {
     if (file.path === GITIGNORE_PATH) content = ensureGitignoreLines(content);
     plannedFiles.push({ path: file.path, content, previousContent: previous });
   }
-  // Packet paths: a skipped file is still the packet's, so no local plan touches it.
+  // A skipped packet .gitignore still gets the local runtime lines merged into the customer's file.
+  // A packet path is never a legacy deletion.
   const packetPaths = previewPacket.files.map((file) => file.path);
-  const initLocalFiles = (packageJson) => prepareLocalKitFiles(outputDir, { packageJson, planned: packetPaths });
+  const initLocalFiles = (packageJson) => prepareLocalKitFiles(outputDir, {
+    packageJson, packet: packetPaths, planned: plannedFiles.map((file) => file.path)
+  });
 
   if (dryRun) {
     process.stdout.write(`Dry run for ${targetRepo}\n`);
