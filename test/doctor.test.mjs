@@ -651,6 +651,9 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   await writeFile(path.join(root, ".benchrouter/bootstrap.mjs"), "// stale bootstrap\n");
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ scripts: {} }, null, 2)}\n`);
 
+  const { guides } = JSON.parse(
+    await readFile(path.join(testDir, "fixtures/setup-packet/legacy-cli-instructions.json"), "utf8")
+  );
   const setupServer = await startFixtureProxy(t, {
     status: 200,
     body: {
@@ -659,11 +662,11 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
         files: [
           {
             path: ".benchrouter/SETUP_README.md",
-            content: "# BenchRouter setup\n"
+            content: "# BenchRouter setup\n\n" + guides[".benchrouter/SETUP_README.md"]
           },
           {
             path: ".benchrouter/README.md",
-            content: "# BenchRouter\n"
+            content: "# BenchRouter\n\n" + guides[".benchrouter/README.md"]
           },
           {
             path: ".benchrouter/benchrouter.yml",
@@ -736,6 +739,12 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   assert.match(result.stdout, /Keep production code and host configuration unchanged in the evaluation PR/);
   assert.match(result.stdout, /BenchRouter Evals uses GitHub OIDC/);
   assert.match(result.stdout, /npx --yes benchrouter@latest doctor/);
+  assert.doesNotMatch(result.stdout + result.stderr, /@benchrouter\/cli/);
+  for (const guidePath of Object.keys(guides)) {
+    const guide = await readFile(path.join(root, guidePath), "utf8");
+    assert.match(guide, /npx --yes benchrouter@latest doctor --phase evaluation --repo example\/app/);
+    assert.doesNotMatch(guide, /@benchrouter\/cli/);
+  }
   assert.equal(await readFile(path.join(root, ".benchrouter/bootstrap.mjs"), "utf8"), signedKitFixture.get(".benchrouter/bootstrap.mjs"));
 
   assert.equal(existsSync(path.join(root, ".env.example")), false);

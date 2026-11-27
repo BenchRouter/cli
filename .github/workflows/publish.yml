@@ -1,7 +1,7 @@
 name: Publish
 
 # Checks every PR and push. A v<version> tag on a main commit also publishes
-# @benchrouter/cli with npm trusted publishing (GitHub Actions OIDC): no npm token
+# benchrouter with npm trusted publishing (GitHub Actions OIDC): no npm token
 # is stored. See RELEASING.md.
 on:
   pull_request:

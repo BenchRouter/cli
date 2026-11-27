@@ -10,7 +10,7 @@ import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 import { readRouteManifest } from "./route-manifest.mjs";
-import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
+import { CLI_VERSION, newerVersionNotice, updateSetupCliCommands } from "./version.mjs";
 import { unifiedDiff } from "./line-diff.mjs";
 import { applyUpgradePacket, prepareUpgradeFiles, preserveCustomerSetup, inspectSignedKit, preparePackageJson, preflightFileApplication, stageFileApplication, UPGRADE_GENERATED_PATHS, BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS } from "./generated-kit.mjs";
 
@@ -251,7 +251,8 @@ async function init() {
     if (file.path === ".env.example") continue;
     const targetPath = safeTargetPath(outputDir, file.path);
     const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
-    let content = file.content;
+    const isSetupGuide = file.path === ".benchrouter/README.md" || file.path === ".benchrouter/SETUP_README.md";
+    let content = isSetupGuide ? updateSetupCliCommands(file.content) : file.content;
     if (file.path === ".benchrouter/benchrouter.yml" && previous !== null) {
       content = mergeRequestedRoutesIntoManifest(previous, content, routeIds, declaredApiFamilies(routeSpecs));
     } else if (file.path === WORKFLOW_PATH && previous !== null) {

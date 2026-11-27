@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const cli = fileURLToPath(new URL("../bin/benchrouter.mjs", import.meta.url));
+const { command, prompt } = JSON.parse(
+  await readFile(new URL("./fixtures/setup-packet/legacy-cli-instructions.json", import.meta.url), "utf8")
+);
+const createBody = {
+  ok: true,
+  setup_session: { id: "setup_1", repo_full_name: "example/app", installation_id: 77, status: "code_issued" },
+  setup_code: "br_setup_x",
+  command,
+  prompt
+};
 
 // GET /v1/setup/repos in the shape the server returns (src/installations.ts): active
 // installations first, repository_id a string, installation_id a number.
@@ -28,7 +39,7 @@ async function server(t) {
     requests.push({ method: request.method, url: request.url, body: raw ? JSON.parse(raw) : null });
     response.writeHead(200, { "content-type": "application/json" });
     if (request.url === "/v1/setup/repos") response.end(JSON.stringify(reposBody));
-    else response.end(JSON.stringify({ ok: true, session: { id: "setup_1" }, setup_code: "br_setup_x", init_command: "npx --yes benchrouter@latest init" }));
+    else response.end(JSON.stringify(createBody));
   });
   await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => listener.close(resolve)));
@@ -51,8 +62,25 @@ test("setup create looks up both ids from --repo, ignoring case and taking the f
   const result = await runCli(["setup", "create", "--repo", "example/app", "--intent", "new_route", "--yes", "--json",
     "--api-url", api.url, "--account-token", "br_ctrl_recorded_fixture"]);
   assert.equal(result.status, 0, result.stderr);
+  const body = JSON.parse(result.stdout);
+  assert.equal(body.ok, true);
+  assert.deepEqual(body.setup_session, createBody.setup_session);
+  assert.equal(body.setup_code, "br_setup_x");
+  assert.match(body.command, /^npx --yes benchrouter@latest init /);
+  assert.ok(body.command.includes("--setup-key br_setup_x"));
+  assert.ok(body.prompt.includes(body.command));
+  assert.doesNotMatch(result.stdout + result.stderr, /@benchrouter\/cli/);
   assert.deepEqual(api.requests.map((request) => `${request.method} ${request.url}`), ["GET /v1/setup/repos", "POST /v1/setup/sessions"]);
   assert.deepEqual(api.requests[1].body, { repository_id: "901", repo_full_name: "example/app", installation_id: 77, intent: "new_route" });
+});
+
+test("setup create prints a current init command in human output", { timeout: 4900 }, async (t) => {
+  const api = await server(t);
+  const result = await runCli(["setup", "create", "--repo", "example/app", "--intent", "new_route", "--yes",
+    "--api-url", api.url, "--account-token", "br_ctrl_recorded_fixture"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^npx --yes benchrouter@latest init /m);
+  assert.doesNotMatch(result.stdout + result.stderr, /@benchrouter\/cli/);
 });
 
 test("setup create explains a repository missing from synced GitHub access", { timeout: 4900 }, async (t) => {
@@ -71,6 +99,7 @@ test("setup create with both ids skips the lookup", { timeout: 4900 }, async (t)
   const result = await runCli(["setup", "create", "--repo", "example/app", "--repository-id", "5", "--installation-id", "6", "--yes", "--json",
     "--api-url", api.url, "--account-token", "br_ctrl_recorded_fixture"]);
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).setup_code, "br_setup_x");
   assert.deepEqual(api.requests.map((request) => request.url), ["/v1/setup/sessions"]);
   assert.deepEqual(api.requests[0].body, { repository_id: "5", repo_full_name: "example/app", installation_id: 6, intent: "initial" });
 });

@@ -19,6 +19,7 @@ import { runLogin } from "./login.mjs";
 import { runDatabricksConnect } from "./databricks-connect.mjs";
 import { runDatabricksCommand } from "./databricks-commands.mjs";
 import { runFeedback } from "./feedback.mjs";
+import { updateSetupCliCommands } from "./version.mjs";
 
 export const CUSTOMER_ROOT_COMMANDS = new Set([
   "login",
@@ -305,6 +306,9 @@ async function runSetup(ctx) {
       ctx,
       customerPaths.setupSessionCreate({ repositoryId, repoFullName, installationId, intent })
     );
+    for (const field of ["command", "prompt"]) {
+      if (typeof body[field] === "string") body[field] = updateSetupCliCommands(body[field]);
+    }
     return emit(ctx, body, () => render.renderSetupSessionCreate(body));
   }
   if (sub === "session") {

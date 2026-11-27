@@ -5,6 +5,11 @@ import https from "node:https";
 
 export const CLI_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
+// Older setup responses still include this npm invocation in their instructions.
+export function updateSetupCliCommands(text) {
+  return text.replaceAll("npx --yes --package @benchrouter/cli benchrouter", "npx --yes benchrouter@latest");
+}
+
 /**
  * One line telling the user to run the newest CLI, or null when this CLI is current or the
  * registry cannot answer within 3 seconds (offline, a proxy, a slow mirror). It reads the

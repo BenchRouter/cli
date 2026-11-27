@@ -426,8 +426,10 @@ frontier. Pass `--route` when a repository has more than one route.
 prints non-secret key metadata. Revocation is immediate: any application still
 using that key stops authenticating.
 
-`setup create` starts a setup session and prints a one-time setup code plus the
-server-authored `init` command. `setup upgrade-token` mints a single-use
+`setup create` starts a setup session and prints a one-time setup code plus an
+`npx --yes benchrouter@latest init` command. With `--yes --json`, stdout contains
+one JSON object with the session, setup code, command, and agent prompt.
+`setup upgrade-token` mints a single-use
 `br_upgrade_` token and prints it once. Both secrets are printed once and never
 saved; pass them to `init --setup-key` and `upgrade --upgrade-token`.
 `setup create` looks up the repository ID and the GitHub App installation ID for
