@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, open, realpath, rename, rm, rmdir } from "node:fs/promises";
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
@@ -7,21 +8,39 @@ import { isDeepStrictEqual } from "node:util";
 import { CST, isAlias, isMap, isSeq, parseDocument, visit } from "yaml";
 import { readRouteManifest } from "./route-manifest.mjs";
 
+// The local runtime files. Local capture and calibrate write the CLI's vendored copies here
+// (gitignored); kits before the eval-action stub committed them, so the upgrade deletes those.
 export const BOOTSTRAP_PATH = ".benchrouter/bootstrap.mjs";
 export const TRUST_PATH = ".benchrouter/trust.json";
+export const GITIGNORE_PATH = ".benchrouter/.gitignore";
 export const WORKFLOW_PATH = ".github/workflows/benchrouter-evals.yml";
 export const LOCAL_SCRIPTS = {
+  "benchrouter:capture": "npx --yes benchrouter@latest capture",
+  "benchrouter:calibrate": "npx --yes benchrouter@latest calibrate"
+};
+// The values kits before the eval-action stub wrote for LOCAL_SCRIPTS.
+export const LEGACY_LOCAL_SCRIPTS = {
   "benchrouter:capture": `node ${BOOTSTRAP_PATH} capture`,
   "benchrouter:calibrate": `node ${BOOTSTRAP_PATH} calibrate`
 };
-export const UPGRADE_GENERATED_PATHS = [WORKFLOW_PATH, BOOTSTRAP_PATH, TRUST_PATH, ".benchrouter/README.md"];
+export const UPGRADE_GENERATED_PATHS = [WORKFLOW_PATH, ".benchrouter/README.md"];
+const VENDOR_FILES = [
+  [BOOTSTRAP_PATH, new URL("./vendor/bootstrap.mjs", import.meta.url)],
+  [TRUST_PATH, new URL("./vendor/trust.json", import.meta.url)]
+];
 const DISPATCH_ONLY = "github.event_name == 'workflow_dispatch'";
-const NODE24_ID = "benchrouter_node24";
-const INTERPRETER_ID = "benchrouter_bootstrap_node";
+const PREPARE_ID = "benchrouter_prepare";
 const RUNTIME_ID = "benchrouter_runtime";
-const INTERPRETER_OUTPUT = "${{ steps.benchrouter_bootstrap_node.outputs.node }}";
-const RUNTIME_LAUNCH = '"$BENCHROUTER_BOOTSTRAP_NODE" .br-control/.benchrouter/bootstrap.mjs run';
-const INTERPRETER_SCRIPT = [
+const PREPARE_ACTION = "BenchRouter/eval-action/prepare@";
+const RUNTIME_ACTION = "BenchRouter/eval-action@";
+const PREPARE_OUTPUT = "${{ steps.benchrouter_prepare.outputs.node }}";
+const NPM_TOKEN_ENV = "${{ github.event_name == 'workflow_dispatch' && secrets.NPM_TOKEN || '' }}";
+// The workflow before the eval-action stub. The upgrade reads it only to migrate it.
+const LEGACY_NODE24_ID = "benchrouter_node24";
+const LEGACY_INTERPRETER_ID = "benchrouter_bootstrap_node";
+const LEGACY_INTERPRETER_OUTPUT = "${{ steps.benchrouter_bootstrap_node.outputs.node }}";
+const LEGACY_RUNTIME_LAUNCH = '"$BENCHROUTER_BOOTSTRAP_NODE" .br-control/.benchrouter/bootstrap.mjs run';
+const LEGACY_INTERPRETER_SCRIPT = [
   "node --input-type=module <<'BENCHROUTER_NODE'",
   "import { appendFileSync, realpathSync } from 'node:fs';",
   "import { isAbsolute } from 'node:path';",
@@ -33,6 +52,11 @@ const INTERPRETER_SCRIPT = [
   "BENCHROUTER_NODE",
   ""
 ].join("\n");
+// The legacy workflow's generated uploads. The eval action uploads the results now.
+const LEGACY_UPLOADS = new Map([
+  ["Upload BenchRouter results", "benchrouter-results-${{ github.run_id }}-${{ github.run_attempt }}"],
+  ["Upload evaluator artifacts", "benchrouter-artifacts-${{ github.run_id }}-${{ github.run_attempt }}"]
+]);
 
 function workflowDocument(source, options) {
   const doc = parseDocument(source, options);
@@ -46,7 +70,7 @@ function evalSteps(doc) {
   return steps;
 }
 
-function setupBounds(steps) {
+function stepIds(steps) {
   const ids = new Map();
   for (const [index, step] of steps.items.entries()) {
     const id = step?.get?.("id");
@@ -54,17 +78,79 @@ function setupBounds(steps) {
     if (typeof id !== "string" || ids.has(id)) throw new Error(`${WORKFLOW_PATH} requires unique step IDs.`);
     ids.set(id, index);
   }
-  const setup = ids.get(NODE24_ID);
-  const interpreter = ids.get(INTERPRETER_ID);
+  return ids;
+}
+
+const onlyKeys = (value, keys) => value !== null && typeof value === "object" && !Array.isArray(value) &&
+  Object.keys(value).every((key) => keys.includes(key));
+
+// SETUP-001: the stub pins both actions to one ref: the v1 tag, or a full commit SHA for teams
+// that pin strictly.
+function actionRef(uses, action) {
+  if (typeof uses !== "string" || !uses.startsWith(action)) return null;
+  const ref = uses.slice(action.length);
+  const sha = ref.length === 40 && [...ref].every((char) => "0123456789abcdef".includes(char));
+  return ref === "v1" || sha ? ref : null;
+}
+
+// RUN-001: the runtime step's env is BenchRouter's: the job ceiling, fetch token, kit marker,
+// the npm token for executable routes, and dispatch-only passthroughs of declared secrets.
+function validRuntimeEnv(env) {
+  if (!env || typeof env !== "object" || Array.isArray(env)) return false;
+  if (env.BENCHROUTER_JOB_CEILING_MIN !== "120" || env.BENCHROUTER_FETCH_TOKEN !== "${{ github.token }}") return false;
+  if (typeof env.BENCHROUTER_KIT_VERSION !== "string" || env.BENCHROUTER_KIT_VERSION === "") return false;
+  const fixed = ["BENCHROUTER_JOB_CEILING_MIN", "BENCHROUTER_FETCH_TOKEN", "BENCHROUTER_KIT_VERSION"];
+  return Object.entries(env).every(([name, value]) => fixed.includes(name) ||
+    (name === "BENCHROUTER_INSTALL_NPM_TOKEN" ? value === NPM_TOKEN_ENV : value === `\${{ ${DISPATCH_ONLY} && secrets.${name} || '' }}`));
+}
+
+// Returns the index of the last BenchRouter step before customer setup (open) and of the runtime step (run).
+function stubBounds(steps) {
+  const ids = stepIds(steps);
+  if (ids.has(LEGACY_INTERPRETER_ID) && !ids.has(PREPARE_ID)) throw new Error("is the workflow from before the BenchRouter eval action. Run benchrouter upgrade.");
+  const prepare = ids.get(PREPARE_ID);
+  const run = ids.get(RUNTIME_ID);
+  if (prepare !== 0 || run === undefined) throw new Error("requires the BenchRouter prepare step first, then customer setup, then the runtime step");
+  const prepareStep = steps.items[prepare].toJSON();
+  const ref = actionRef(prepareStep.uses, PREPARE_ACTION);
+  if (!ref || !onlyKeys(prepareStep, ["name", "id", "uses"])) throw new Error(`requires the unconditional ${PREPARE_ACTION}<v1 or commit SHA> step`);
+  const runtime = steps.items[run].toJSON();
+  if (actionRef(runtime.uses, RUNTIME_ACTION) !== ref || !onlyKeys(runtime, ["name", "id", "uses", "with", "env"]) ||
+    !onlyKeys(runtime.with, ["node"]) || runtime.with.node !== PREPARE_OUTPUT) {
+    throw new Error(`must run ${RUNTIME_ACTION}${ref} with the prepared Node 24 interpreter`);
+  }
+  if (!validRuntimeEnv(runtime.env)) throw new Error("the runtime step env must hold only BenchRouter's job ceiling, fetch token, kit version and dispatch-only secrets");
+  return { open: prepare, run, postStart: run + 1, ref };
+}
+
+// Reads the workflow from before the eval-action stub, for migration only.
+function legacyBounds(steps) {
+  const ids = stepIds(steps);
+  const setup = ids.get(LEGACY_NODE24_ID);
+  const interpreter = ids.get(LEGACY_INTERPRETER_ID);
   const run = ids.get(RUNTIME_ID);
   if (setup !== 1 || interpreter !== 2 || run === undefined || run <= interpreter) throw new Error(`${WORKFLOW_PATH} requires the canonical Node 24 prefix before customer setup and runtime.`);
   const node = steps.items[setup].toJSON();
   if (node.uses !== "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020" || node.with?.["node-version"] !== "24" || node.with?.["package-manager-cache"] !== false || Object.keys(node).some((key) => !["name", "id", "uses", "with"].includes(key)) || Object.keys(node.with).some((key) => !["node-version", "package-manager-cache"].includes(key))) throw new Error("requires the unconditional pinned Node 24 setup with package-manager-cache: false");
   const recorder = steps.items[interpreter].toJSON();
-  if (recorder.shell !== "bash" || recorder.run !== INTERPRETER_SCRIPT || Object.keys(recorder).some((key) => !["name", "id", "shell", "run"].includes(key))) throw new Error("requires the exact unconditional Node 24 interpreter recorder");
+  if (recorder.shell !== "bash" || recorder.run !== LEGACY_INTERPRETER_SCRIPT || Object.keys(recorder).some((key) => !["name", "id", "shell", "run"].includes(key))) throw new Error("requires the exact unconditional Node 24 interpreter recorder");
   const runtime = steps.items[run].toJSON();
-  if (runtime.shell !== "bash" || runtime.run !== RUNTIME_LAUNCH || runtime.env?.BENCHROUTER_BOOTSTRAP_NODE !== INTERPRETER_OUTPUT || Object.keys(runtime).some((key) => !["name", "id", "shell", "run", "env"].includes(key))) throw new Error("must run the signed runtime bootstrap with the saved Node 24 interpreter");
-  return { setup, interpreter, run };
+  if (runtime.shell !== "bash" || runtime.run !== LEGACY_RUNTIME_LAUNCH || runtime.env?.BENCHROUTER_BOOTSTRAP_NODE !== LEGACY_INTERPRETER_OUTPUT || Object.keys(runtime).some((key) => !["name", "id", "shell", "run", "env"].includes(key))) throw new Error("must run the signed runtime bootstrap with the saved Node 24 interpreter");
+  // The generated uploads directly after the runtime step are BenchRouter's, not customer post steps.
+  let postStart = run + 1;
+  while (postStart < steps.items.length && isLegacyUpload(steps.items[postStart].toJSON())) postStart += 1;
+  return { open: interpreter, run, postStart, legacy: true };
+}
+
+function isLegacyUpload(step) {
+  return typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@") &&
+    LEGACY_UPLOADS.has(step.name) && step.with?.name === LEGACY_UPLOADS.get(step.name);
+}
+
+// The upgrade migrates a legacy workflow; every other caller requires the stub.
+function workflowBounds(steps) {
+  const ids = stepIds(steps);
+  return ids.has(LEGACY_INTERPRETER_ID) && !ids.has(PREPARE_ID) ? legacyBounds(steps) : stubBounds(steps);
 }
 
 function dispatchOnly(condition) {
@@ -86,12 +172,12 @@ function grantsPostStepSecrets(value, key = "") {
   return false;
 }
 
-function validateCustomerSteps(steps, { interpreter, run }) {
-  for (const step of steps.items.slice(interpreter + 1, run)) {
+function validateCustomerSteps(steps, { open, run, postStart }) {
+  for (const step of steps.items.slice(open + 1, run)) {
     if (!dispatchOnly(step?.get?.("if"))) throw new Error("Every customer setup step must use if: " + DISPATCH_ONLY);
   }
   // Customer postprocessing is distinct from dispatch-only evaluator setup.
-  for (const step of steps.items.slice(run + 1)) {
+  for (const step of steps.items.slice(postStart)) {
     if (grantsPostStepSecrets(step.toJSON())) throw new Error("Customer post steps must not add secret grants.");
   }
 }
@@ -230,19 +316,25 @@ function postCommentTokens(steps) {
   return last.start.filter((token) => token.type === "comment" && token.indent >= steps.srcToken.indent);
 }
 
-// RUN-001: preserve customer setup after the generated recorder and postprocessing after runtime.
-// SETUP-001: also keep the customer's valid eval-job runs-on.
-export function preserveCustomerSetup(existingSource, generatedSource) {
+// RUN-001: preserve customer setup after the prepare step and postprocessing after runtime.
+// SETUP-001: also keep the customer's valid eval-job runs-on. A legacy workflow migrates: its setup
+// between the interpreter recorder and the runtime step, and its post steps, move into the stub.
+export function preserveCustomerSetup(existingSource, templateSource) {
   const existing = workflowDocument(existingSource, { keepSourceTokens: true });
+  // SETUP-001: a customer's pinned eval-action ref (a commit SHA) survives the refresh.
+  const pinned = workflowBounds(evalSteps(existing)).ref;
+  const generatedSource = pinned && pinned !== "v1" ? withActionRef(templateSource, pinned) : templateSource;
   const generated = workflowDocument(generatedSource, { keepSourceTokens: true });
   const previousSteps = evalSteps(existing);
   const nextSteps = evalSteps(generated);
-  const previous = setupBounds(previousSteps);
-  const next = setupBounds(nextSteps);
+  const previous = workflowBounds(previousSteps);
+  const next = stubBounds(nextSteps);
   validateCustomerSteps(previousSteps, previous);
   validateCustomerSteps(nextSteps, next);
-  const customerSteps = previousSteps.items.slice(previous.interpreter + 1, previous.run);
-  const customerPostSteps = previousSteps.items.slice(previous.run + 1);
+  const customerSteps = previousSteps.items.slice(previous.open + 1, previous.run);
+  // A legacy generated upload anywhere after the runtime step is BenchRouter's; the action uploads now.
+  const customerPostSteps = previousSteps.items.slice(previous.postStart)
+    .filter((step) => !(previous.legacy && isLegacyUpload(step.toJSON())));
   const runner = customerRunner(existing, generated);
   const spliced = runner?.hasAliases ? null : spliceCustomerSource(
     existingSource, existing, previousSteps, previous, generatedSource, generated, nextSteps, next, Boolean(runner)
@@ -260,8 +352,8 @@ export function preserveCustomerSetup(existingSource, generatedSource) {
     nextSteps.comment = [nextSteps.comment, additionalComment(postComment, nextSteps.comment)].filter(Boolean).join("\n");
   }
   nextSteps.items.splice(next.run + 1, nextSteps.items.length - next.run - 1, ...customerPostSteps.map((step) => step.clone()));
-  nextSteps.items.splice(next.interpreter + 1, next.run - next.interpreter - 1, ...setup);
-  setupBounds(nextSteps);
+  nextSteps.items.splice(next.open + 1, next.run - next.open - 1, ...setup);
+  stubBounds(nextSteps);
   // Prefer the text splice: BenchRouter's bytes stay as sent and the customer's sections keep their
   // own formatting. Use it only when the parser reads it as exactly the merged workflow.
   if (spliced !== null) {
@@ -274,9 +366,21 @@ export function preserveCustomerSetup(existingSource, generatedSource) {
   return mergeLeadingComments(existing, existingSource, workflowDocument(rendered, { keepSourceTokens: true }), rendered);
 }
 
-function setupGuideTokens(steps, { interpreter, run }) {
+// Sets both eval-action steps to one ref, editing only the two uses values.
+function withActionRef(source, ref) {
+  const doc = workflowDocument(source, { keepSourceTokens: true });
+  const steps = evalSteps(doc);
+  const bounds = stubBounds(steps);
+  if (bounds.ref === ref) return source;
+  return applySourceEdits(source, [[bounds.open, PREPARE_ACTION], [bounds.run, RUNTIME_ACTION]].map(([index, action]) => {
+    const node = steps.items[index].get("uses", true);
+    return { from: node.range[0], to: node.range[1], text: action + ref };
+  }));
+}
+
+function setupGuideTokens(steps, { open, run }) {
   if (steps.srcToken?.type !== "block-seq") return [];
-  return steps.srcToken.items.slice(interpreter + 1, run + 1)
+  return steps.srcToken.items.slice(open + 1, run + 1)
     .flatMap((item) => item.start.filter((token) => token.type === "comment" && token.indent === steps.srcToken.indent));
 }
 
@@ -289,7 +393,8 @@ function applySourceEdits(source, edits) {
 }
 
 // Copies the customer's sections of the old workflow text into BenchRouter's new workflow text:
-// the setup region between the interpreter recorder and the runtime step (with its comments),
+// the setup region between the prepare step (legacy: the interpreter recorder) and the runtime
+// step (with its comments),
 // the steps after the runtime step, and a customer runs-on value.
 function spliceCustomerSource(oldSource, oldDoc, oldSteps, oldBounds, newSource, newDoc, newSteps, newBounds, customerRunsOn) {
   const newline = newSource.includes("\r\n") ? "\r\n" : "\n";
@@ -298,7 +403,9 @@ function spliceCustomerSource(oldSource, oldDoc, oldSteps, oldBounds, newSource,
   const newItems = newSteps.items;
   if (oldSteps.srcToken?.type !== "block-seq" || newSteps.srcToken?.type !== "block-seq") return null;
   if ([...oldItems, ...newItems].some((item) => !Array.isArray(item?.range))) return null;
-  const fromSetup = oldItems[oldBounds.interpreter].range[2];
+  // A legacy generated upload after the customer's post steps cannot be cut from the text.
+  if (oldItems.slice(oldBounds.postStart).some((item) => isLegacyUpload(item.toJSON()))) return null;
+  const fromSetup = oldItems[oldBounds.open].range[2];
   const toSetup = lineStart(oldSource, oldItems[oldBounds.run].range[0]);
   const guide = setupGuideTokens(newSteps, newBounds);
   const templateLines = new Set(guide.map((token) => token.source.trimEnd()));
@@ -313,16 +420,16 @@ function spliceCustomerSource(oldSource, oldDoc, oldSteps, oldBounds, newSource,
   const guideLine = (token) => " ".repeat(token.indent) + token.source + newline;
   const setupOpen = guide.filter((token) => token.source.slice(1).trim() !== setupEnd).map(guideLine).join("");
   const setupClose = guide.filter((token) => token.source.slice(1).trim() === setupEnd).map(guideLine).join("");
-  const postComment = oldBounds.run < oldItems.length - 1 ? postCommentTokens(oldSteps).at(-1) : undefined;
+  const postComment = oldBounds.postStart < oldItems.length ? postCommentTokens(oldSteps).at(-1) : undefined;
   const oldPostEnd = postComment ? oldSource.indexOf("\n", postComment.offset) + 1 || oldSource.length : oldItems.at(-1).range[2];
   const edits = [
     {
       from: newItems[newBounds.run].range[2],
       to: newItems.at(-1).range[2],
-      text: oldSource.slice(oldItems[oldBounds.run].range[2], oldPostEnd)
+      text: oldSource.slice(oldItems[oldBounds.postStart - 1].range[2], oldPostEnd)
     },
     {
-      from: newItems[newBounds.interpreter].range[2],
+      from: newItems[newBounds.open].range[2],
       to: lineStart(newSource, newItems[newBounds.run].range[0]),
       text: setupOpen + customerSetup + setupClose
     }
@@ -526,6 +633,16 @@ export async function stageFileApplication({ outputDir, files, onFile }) {
       let { target, nearest } = await destination(context, file.path, true);
       const previous = await preimage(context, file.path, true);
       if (Object.hasOwn(file, "previousContent") && (previous?.content.toString("utf8") ?? null) !== file.previousContent) throw boundaryError(`Destination changed since planning: ${file.path}. Customer edits were preserved.`);
+      if (file.delete) {
+        // A deletion stages a backup only, so a failed commit can restore the file.
+        const entry = { path: file.path, previous, next: null, backup: null, delete: true };
+        staged.push(entry);
+        if (previous === null) continue;
+        changes.push({ action: "deleted", path: file.path });
+        entry.backup = file.path + `.benchrouter-${randomUUID()}.previous`;
+        await stage(entry, "backup", previous.content, previous.stat.mode & 0o777);
+        continue;
+      }
       const action = previous === null ? "created" : previous.content.equals(Buffer.from(file.content)) ? "unchanged" : "updated";
       changes.push({ action, path: file.path });
       const entry = { path: file.path, previous, next: null, backup: null };
@@ -558,6 +675,13 @@ export async function stageFileApplication({ outputDir, files, onFile }) {
         // Check the whole transaction first, including unchanged destinations.
         for (const file of staged) await requirePreimage(context, file.path, file.previous);
         for (const file of staged) {
+          if (file.delete && file.previous) {
+            await requirePreimage(context, file.path, file.previous);
+            await rm((await destination(context, file.path)).target);
+            applied.push(file);
+            file.installed = null;
+            continue;
+          }
           if (!file.next) continue;
           await requirePreimage(context, file.path, file.previous);
           await requirePreimage(context, file.next, file.nextPreimage);
@@ -589,9 +713,93 @@ export async function stageFileApplication({ outputDir, files, onFile }) {
   };
 }
 
+// The CLI-side kit changes an upgrade makes besides the server's files: the local scripts, the
+// .gitignore lines for the local runtime files, and deletion of the committed legacy copies.
+// init passes the packet's package.json instructions, the paths it already plans, and the packet's paths.
+export function prepareLocalKitFiles(outputDir, { packageJson = { scripts: LOCAL_SCRIPTS }, planned = [], packet = [] } = {}) {
+  return [
+    ...preparePackageJson(outputDir, packageJson),
+    ...(planned.includes(GITIGNORE_PATH) ? [] : prepareGitignore(outputDir)),
+    ...prepareLegacyRuntimeDeletions(outputDir).filter((file) => !packet.includes(file.path))
+  ];
+}
+
+export function planUpgradeFiles(outputDir, files) {
+  return [...prepareUpgradeFiles(outputDir, files), ...prepareLocalKitFiles(outputDir)];
+}
+
 export async function applyUpgradePacket({ outputDir, files, onFile }) {
-  const packetFiles = [...prepareUpgradeFiles(outputDir, files), ...preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS })];
-  await (await stageFileApplication({ outputDir, files: packetFiles, onFile })).commit();
+  await (await stageFileApplication({ outputDir, files: planUpgradeFiles(outputDir, files), onFile })).commit();
+}
+
+const GITIGNORE_LINES = ["bootstrap.mjs", "trust.json"];
+
+// Adds the local runtime files to .benchrouter/.gitignore. A planned packet copy (init) gets the
+// lines; otherwise an existing file on disk does. A repo without the file (no eval) gets none.
+export function ensureGitignoreLines(content) {
+  const lines = new Set(content.replaceAll("\r\n", "\n").split("\n").map((line) => line.trim()));
+  const missing = GITIGNORE_LINES.filter((line) => !lines.has(line) && !lines.has("/" + line));
+  if (missing.length === 0) return content;
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  const base = content === "" || content.endsWith("\n") ? content : content + newline;
+  return base + missing.map((line) => line + newline).join("");
+}
+
+function prepareGitignore(outputDir) {
+  const target = path.join(outputDir, GITIGNORE_PATH);
+  if (!existsSync(target)) return [];
+  const previousContent = readFileSync(target, "utf8");
+  const content = ensureGitignoreLines(previousContent);
+  return content === previousContent ? [] : [{ path: GITIGNORE_PATH, previousContent, content }];
+}
+
+// Recognizes BenchRouter's own committed copies: trust.json by its schema, the bootstrap by the
+// header every released bootstrap has. A file that is not BenchRouter's stays.
+function isLegacyRuntimeFile(filePath, content) {
+  if (filePath === TRUST_PATH) {
+    try { parseTrust(content); return true; } catch { return false; }
+  }
+  return content.startsWith("#!/usr/bin/env node\n// BenchRouter bootstrap (RUN-001");
+}
+
+// Only a committed copy is deleted. The gitignored copies local commands write stay.
+function gitTracks(outputDir, filePath) {
+  return spawnSync("git", ["-C", outputDir, "ls-files", "--error-unmatch", "--", filePath], { stdio: "ignore" }).status === 0;
+}
+
+// Upgrade and init only; local commands never delete.
+export function prepareLegacyRuntimeDeletions(outputDir) {
+  const deletions = [];
+  for (const filePath of [BOOTSTRAP_PATH, TRUST_PATH]) {
+    const target = path.join(outputDir, filePath);
+    if (!lstatSync(target, { throwIfNoEntry: false })?.isFile() || !gitTracks(outputDir, filePath)) continue;
+    const previousContent = readFileSync(target, "utf8");
+    if (isLegacyRuntimeFile(filePath, previousContent)) deletions.push({ path: filePath, previousContent, delete: true });
+  }
+  return deletions;
+}
+
+// Local capture and calibrate: write the vendored bootstrap and trust into the repository's
+// .benchrouter/ (gitignored), so the bootstrap's control root is the repository root.
+export function writeLocalRuntime(root) {
+  if (!lstatSync(path.join(root, ".benchrouter"), { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error("Missing .benchrouter/. Run benchrouter init in this repository first.");
+  }
+  const files = VENDOR_FILES.map(([filePath, source]) => [filePath, path.join(root, filePath), readFileSync(source)]);
+  // Check both before writing either. Replace only BenchRouter's own copies: the vendored bytes, a
+  // released bootstrap, or a legacy trust without pins. A pinned trust is the customer's choice.
+  for (const [filePath, target, vendored] of files) {
+    const existing = lstatSync(target, { throwIfNoEntry: false });
+    if (!existing) continue;
+    if (!existing.isFile()) throw new Error(`${filePath} must be a regular file.`);
+    const content = readFileSync(target);
+    if (content.equals(vendored)) continue;
+    const text = content.toString("utf8");
+    const ours = filePath === TRUST_PATH ? isLegacyRuntimeFile(filePath, text) && JSON.parse(text).pins.length === 0 : isLegacyRuntimeFile(filePath, text);
+    if (!ours) throw new Error(`${filePath} is not BenchRouter's copy, so local commands will not replace it. Run benchrouter upgrade, or move the file.`);
+  }
+  for (const [, target, vendored] of files) writeFileSync(target, vendored);
+  return path.join(root, BOOTSTRAP_PATH);
 }
 
 function trustObject(value, keys, what) {
@@ -617,12 +825,6 @@ function parseTrust(source) {
 }
 
 export function inspectSignedKit(root, failures) {
-  const trustPath = path.join(root, TRUST_PATH);
-  if (existsSync(trustPath)) {
-    try {
-      parseTrust(readFileSync(trustPath, "utf8"));
-    } catch (error) { failures.push(`${TRUST_PATH}: ${error.message}`); }
-  }
   const workflowPath = path.join(root, WORKFLOW_PATH);
   if (!existsSync(workflowPath)) return;
   try {
@@ -642,9 +844,6 @@ export function inspectSignedKit(root, failures) {
       if (!Array.isArray(paths) || !paths.includes(".benchrouter/**") || !paths.includes(WORKFLOW_PATH)) throw new Error(`${event} must trigger on the generated kit and workflow`);
     }
     const steps = evalSteps(doc);
-    const bounds = setupBounds(steps);
-    const checkout = steps.items[0]?.toJSON();
-    if (checkout?.uses !== "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || checkout.with?.["persist-credentials"] !== false || checkout.with?.path !== ".br-control") throw new Error("requires the pinned control checkout with persist-credentials: false");
-    validateCustomerSteps(steps, bounds);
+    validateCustomerSteps(steps, stubBounds(steps));
   } catch (error) { failures.push(`${WORKFLOW_PATH}: ${error.message}`); }
 }

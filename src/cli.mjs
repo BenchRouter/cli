@@ -12,7 +12,7 @@ import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 import { readRouteManifest } from "./route-manifest.mjs";
 import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
 import { unifiedDiff } from "./line-diff.mjs";
-import { applyUpgradePacket, prepareUpgradeFiles, preserveCustomerSetup, inspectSignedKit, preparePackageJson, preflightFileApplication, stageFileApplication, UPGRADE_GENERATED_PATHS, BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS } from "./generated-kit.mjs";
+import { applyUpgradePacket, planUpgradeFiles, preserveCustomerSetup, inspectSignedKit, prepareLocalKitFiles, ensureGitignoreLines, preflightFileApplication, stageFileApplication, writeLocalRuntime, UPGRADE_GENERATED_PATHS, GITIGNORE_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS, LEGACY_LOCAL_SCRIPTS } from "./generated-kit.mjs";
 
 // Every option name as typed, kept apart from parsed values so a name such as "_" or
 // "__proto__" cannot hide in the positional list or the object prototype.
@@ -52,8 +52,8 @@ const RUNTIME_ENV_TEMPLATE_NAMES = [".env.example", "env.template", ".env.sample
 // old value is the customer's own script, which the kit replaces.
 // Mined from the server's full history (2026-11-04).
 const KIT_SCRIPT_HISTORY = {
-  "benchrouter:capture": [LOCAL_SCRIPTS["benchrouter:capture"]],
-  "benchrouter:calibrate": [LOCAL_SCRIPTS["benchrouter:calibrate"], "node .benchrouter/benchrouter-calibrate.mjs", "tsx scripts/benchrouter-calibrate.ts"],
+  "benchrouter:capture": [LOCAL_SCRIPTS["benchrouter:capture"], LEGACY_LOCAL_SCRIPTS["benchrouter:capture"]],
+  "benchrouter:calibrate": [LOCAL_SCRIPTS["benchrouter:calibrate"], LEGACY_LOCAL_SCRIPTS["benchrouter:calibrate"], "node .benchrouter/benchrouter-calibrate.mjs", "tsx scripts/benchrouter-calibrate.ts"],
   "benchrouter:eval": ["node .benchrouter/benchrouter-eval.mjs", "tsx scripts/benchrouter-eval.ts"]
 };
 // Every heading any BenchRouter-written .benchrouter/README.md has had (headings hold no variables),
@@ -133,10 +133,12 @@ if (args.version === true && args._.length === 0) {
   usage(1, "all", `Unknown command: ${command}`);
 }
 
+// RUN-001: the CLI's vendored bootstrap and trust run from the repository's .benchrouter/, so the
+// control root is the repository root. run needs Actions OIDC; the runtime refuses it elsewhere.
 function localRuntimeCommand(runtimeCommand) {
   if (args.help) usage(0, runtimeCommand);
-  const file = path.resolve(BOOTSTRAP_PATH);
-  if (!existsSync(file)) fail(`Missing ${BOOTSTRAP_PATH}. Run benchrouter init in this repository first.`);
+  let file;
+  try { file = writeLocalRuntime(process.cwd()); } catch (error) { fail(error.message); }
   const result = spawnSync(process.execPath, [file, runtimeCommand, ...process.argv.slice(3)], { stdio: "inherit", env: process.env });
   if (result.error) fail(result.error.message);
   if (result.signal) fail(`BenchRouter ${runtimeCommand} stopped by ${result.signal}.`);
@@ -226,8 +228,7 @@ async function init() {
     ? "https://benchrouter.com/cli/new"
     : "https://benchrouter.com/cli";
   try {
-    const packageFiles = preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS });
-    await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...packageFiles]);
+    await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...prepareLocalKitFiles(outputDir)]);
   } catch (error) {
     fail(error instanceof Error ? error.message : "Could not validate the setup destination.");
   }
@@ -262,20 +263,27 @@ async function init() {
         : `${file.path} (it differs from BenchRouter's copy; --overwrite-user-edits replaces it)`);
       continue;
     }
+    if (file.path === GITIGNORE_PATH) content = ensureGitignoreLines(content);
     plannedFiles.push({ path: file.path, content, previousContent: previous });
   }
+  // A skipped packet .gitignore still gets the local runtime lines merged into the customer's file.
+  // A packet path is never a legacy deletion.
+  const packetPaths = previewPacket.files.map((file) => file.path);
+  const initLocalFiles = (packageJson) => prepareLocalKitFiles(outputDir, {
+    packageJson, packet: packetPaths, planned: plannedFiles.map((file) => file.path)
+  });
 
   if (dryRun) {
     process.stdout.write(`Dry run for ${targetRepo}\n`);
     let packageFiles = [];
     try {
-      packageFiles = preparePackageJson(outputDir, previewPacket.package_json);
+      packageFiles = initLocalFiles(previewPacket.package_json);
     } catch (error) {
       fail(error instanceof Error ? error.message : "Could not plan the package.json update.");
     }
     writeFilePreview(outputDir, [...plannedFiles, ...packageFiles]);
     writeOwnershipWarnings(outputDir, [...plannedFiles, ...packageFiles]);
-    if (packageFiles.length === 0) skippedFiles.push("package.json (no package.json found, so no scripts update)");
+    if (!packageFiles.some((file) => file.path === "package.json")) skippedFiles.push("package.json (no package.json found, so no scripts update)");
     if (skippedFiles.length > 0) {
       process.stdout.write(`Would skip ${skippedFiles.length} file(s):\n`);
       for (const line of skippedFiles) process.stdout.write(`  ${line}\n`);
@@ -287,7 +295,7 @@ async function init() {
 
   for (const line of skippedFiles) process.stdout.write(`skip-existing ${line}\n`);
   try {
-    plannedFiles.push(...preparePackageJson(outputDir, previewPacket.package_json));
+    plannedFiles.push(...initLocalFiles(previewPacket.package_json));
     await (await stageFileApplication({
       outputDir, files: plannedFiles,
       onFile(action, filePath) { process.stdout.write(`${action} ${filePath}\n`); }
@@ -426,8 +434,7 @@ async function upgrade() {
   // Validate canonical route truth before consuming a single-use token.
   try {
     readRouteManifest(outputDir);
-    const packageFiles = preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS });
-    await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...packageFiles]);
+    await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...prepareLocalKitFiles(outputDir)]);
   } catch (error) {
     fail(error instanceof Error ? error.message : "Could not validate the existing BenchRouter kit.");
   }
@@ -445,7 +452,7 @@ async function upgrade() {
     });
     let planned;
     try {
-      planned = [...prepareUpgradeFiles(outputDir, preview.files), ...preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS })];
+      planned = planUpgradeFiles(outputDir, preview.files);
       await preflightFileApplication(outputDir, planned);
     } catch (error) {
       fail(error instanceof Error ? error.message : "BenchRouter returned an invalid kit upgrade preview.");
@@ -484,8 +491,7 @@ async function upgrade() {
   //    preview response as if it were authoritative.
   try {
     readRouteManifest(outputDir);
-    const packageFiles = preparePackageJson(outputDir, { scripts: LOCAL_SCRIPTS });
-    await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...packageFiles]);
+    await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...prepareLocalKitFiles(outputDir)]);
   } catch (error) {
     fail(error instanceof Error ? error.message : "Could not validate the existing BenchRouter kit.");
   }
@@ -522,6 +528,7 @@ function writeFilePreview(outputDir, planned, noChanges = "No file changes: ever
   const rows = planned.map((file) => {
     const target = safeTargetPath(outputDir, file.path);
     const current = existsSync(target) ? readFileSync(target, "utf8") : null;
+    if (file.delete) return { ...file, content: "", current, action: current === null ? "unchanged" : "delete" };
     return { ...file, current, action: current === null ? "create" : current === file.content ? "unchanged" : "update" };
   });
   const changed = rows.filter((row) => row.action !== "unchanged");
@@ -530,13 +537,13 @@ function writeFilePreview(outputDir, planned, noChanges = "No file changes: ever
     process.stdout.write(`${noChanges}\n`);
   } else {
     process.stdout.write(`Would change ${changed.length} file(s):\n`);
-    for (const row of changed) process.stdout.write(`  ${row.action === "create" ? "create" : "update"} ${row.path}\n`);
+    for (const row of changed) process.stdout.write(`  ${row.action} ${row.path}\n`);
   }
   if (unchanged.length > 0) {
     process.stdout.write(`Unchanged (${unchanged.length}):\n`);
     for (const row of unchanged) process.stdout.write(`  ${row.path}\n`);
   }
-  for (const row of changed) {
+  for (const row of changed.filter((row) => row.action !== "delete")) {
     process.stdout.write(`\n${unifiedDiff(row.path, row.current ?? "", row.content)}`);
   }
 }
@@ -550,7 +557,7 @@ function writeOwnershipWarnings(outputDir, planned) {
     const target = safeTargetPath(outputDir, file.path);
     if (!existsSync(target)) continue;
     const current = readFileSync(target, "utf8");
-    if (current === file.content) continue;
+    if (file.delete || current === file.content) continue;
     if (file.path === "package.json") {
       let before;
       let after;
@@ -895,7 +902,7 @@ async function doctor() {
   const versionNotice = await newerVersionNotice("doctor");
   if (versionNotice) notes.push(versionNotice);
   const requiredFiles = [
-    ".benchrouter/benchrouter.yml", BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH,
+    ".benchrouter/benchrouter.yml", WORKFLOW_PATH,
     ".benchrouter/README.md", ".benchrouter/SETUP_README.md"
   ];
 
@@ -945,11 +952,6 @@ async function doctor() {
   }
 
   inspectSignedKit(root, failures);
-  const bootstrapPath = path.join(root, BOOTSTRAP_PATH);
-  if (existsSync(bootstrapPath)) {
-    const check = spawnSync(process.execPath, ["--check", bootstrapPath], { encoding: "utf8" });
-    if (check.status !== 0) failures.push(`${BOOTSTRAP_PATH} failed node --check: ${(check.stderr || check.stdout).trim()}`);
-  }
 
   const packageJsonPath = path.join(root, "package.json");
   if (!existsSync(packageJsonPath)) {
@@ -1636,7 +1638,7 @@ function verifyDefaultBranchConfig(repoFullName, failures, passed) {
 }
 
 function isBenchRouterKitFile(relativePath) {
-  return [".benchrouter/.gitignore", ".benchrouter/README.md", ".benchrouter/SETUP_README.md", BOOTSTRAP_PATH, TRUST_PATH, WORKFLOW_PATH].includes(relativePath);
+  return [GITIGNORE_PATH, ".benchrouter/README.md", ".benchrouter/SETUP_README.md", WORKFLOW_PATH].includes(relativePath);
 }
 
 function prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }) {
@@ -1989,7 +1991,7 @@ function usage(status, commandName = "all", message) {
     process.exit(status);
   }
   if (["capture", "calibrate", "run"].includes(commandName)) {
-    stream.write(`Usage: benchrouter ${commandName} [runtime options]\n\nRun the signed runtime bootstrap from the current repository.\nCapture starts a local proxy; run your application tests against it separately.\nCalibrate checks local evidence. Run is for GitHub Actions and requires OIDC.\n`);
+    stream.write(`Usage: benchrouter ${commandName} [runtime options]\n\nWrite the CLI's signed runtime bootstrap and trust file to .benchrouter/ (gitignored),\nthen run the bootstrap from the current repository.\nCapture starts a local proxy; run your application tests against it separately.\nCalibrate checks local evidence. Run is for GitHub Actions and requires OIDC.\n`);
   } else if (commandName === "init") {
     stream.write(`Usage:
   benchrouter init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model [options]
@@ -2001,7 +2003,7 @@ Multiple routes (paired in order; first triple is primary):
 
 Routes share one product. Pass repeated route triples during init; the generated
 .benchrouter/benchrouter.yml is the single route declaration. The generated kit
-contains the signed runtime bootstrap, trust file, and workflow.
+contains the eval-action workflow stub; the action and the CLI carry the bootstrap.
 
 Options:
   --repo owner/repo
@@ -2020,9 +2022,8 @@ Options:
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --dry-run                Print planned writes without changing files.
   --force                  Replace BenchRouter-owned files that differ from the new copy:
-                           .benchrouter/README.md, SETUP_README.md, .gitignore, bootstrap.mjs
-                           and trust.json. Without it, init keeps an existing differing file and
-                           prints skip-existing. init always refreshes the evals workflow (it keeps
+                           .benchrouter/README.md, SETUP_README.md and .gitignore. Without it,
+                           init keeps an existing differing file and prints skip-existing. init always refreshes the evals workflow (it keeps
                            your setup steps) and merges benchrouter.yml; --force changes neither.
   --overwrite-user-edits   Replace every existing file that differs, including non-kit files.
   --output-dir <path>      Defaults to current directory.
@@ -2049,7 +2050,9 @@ the files that are already up to date.
 
 Upgrade preserves the existing .benchrouter/benchrouter.yml byte-for-byte
 and preserves all route-owned assets and dispatch-only customer setup steps.
-It replaces only the bootstrap, trust file, workflow, and README content.
+It replaces only the workflow and README content, sets the benchrouter: package
+scripts, adds the local runtime files to .benchrouter/.gitignore, and deletes a
+committed legacy .benchrouter/bootstrap.mjs and .benchrouter/trust.json.
 Upgrade has no --force flag: it always replaces those BenchRouter-owned files.
 (--force belongs to init, where it replaces differing BenchRouter kit files.)
 It validates all generated-file hashes before it writes files.

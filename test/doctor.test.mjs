@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,11 +15,10 @@ const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, "..");
 const cliPath = path.join(repoRoot, "bin/benchrouter.mjs");
 const routeId = "app/chat";
-const signedKitFixture = new Map(await Promise.all([
-  [".benchrouter/bootstrap.mjs", "bootstrap.mjs.txt"],
-  [".benchrouter/trust.json", "trust.json"],
-  [".github/workflows/benchrouter-evals.yml", "workflow.yml"]
-].map(async ([filePath, fixtureName]) => [filePath, await readFile(path.join(testDir, "fixtures/signed-kit", fixtureName), "utf8")])));
+const signedKitFixture = new Map([
+  [".github/workflows/benchrouter-evals.yml", await readFile(path.join(testDir, "fixtures/signed-kit/workflow.yml"), "utf8")]
+]);
+const legacyBootstrap = await readFile(path.join(testDir, "fixtures/signed-kit/bootstrap.mjs.txt"), "utf8");
 
 const fixture = JSON.parse(
   await readFile(path.join(testDir, "fixtures/benchrouter-proxy/chat-completion.json"), "utf8")
@@ -265,47 +264,16 @@ test("evaluation doctor needs no production wiring and never uses an inherited r
   assert.doesNotMatch(result.stdout, /doctor passed: live proxy|runtime host checklist/);
 });
 
-test("RUN-001 doctor rejects every trust shape that the canonical bootstrap refuses locally", async (t) => {
-  const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
-  const original = JSON.parse(signedKitFixture.get(".benchrouter/trust.json"));
-  const invalid = [
-    (trust) => { trust.pins = ["not-a-sha256-digest"]; },
-    (trust) => { trust.pins = ["sha256:" + "A".repeat(64)]; },
-    (trust) => { trust.pins = ["sha256:" + "a".repeat(63)]; },
-    (trust) => { trust.pins = [123]; },
-    (trust) => { trust.unrecognized = true; },
-    (trust) => { trust.keys.unrecognized = trust.keys.current; },
-    (trust) => { trust.keys.current.unrecognized = true; },
-    (trust) => { delete trust.keys.next; }
-  ];
-  for (const change of invalid) {
-    const trust = structuredClone(original);
-    change(trust);
-    await writeFile(path.join(root, ".benchrouter/trust.json"), JSON.stringify(trust));
-    const bootstrap = await runCli(["calibrate"], root);
-    assert.equal(bootstrap.status, 1);
-    assert.match(bootstrap.stderr, /trust.json/);
-    assert.doesNotMatch(bootstrap.stderr, /fetch failed/);
-    const doctor = await runCli(["doctor", "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
-    assert.equal(doctor.status, 1, doctor.stdout);
-    assert.match(doctor.stderr, /trust.json/);
-  }
-  original.pins = ["sha256:" + "a".repeat(64)];
-  await writeFile(path.join(root, ".benchrouter/trust.json"), JSON.stringify(original));
-  const doctor = await runCli(["doctor", "--skip-github-workflow", "--api-url", "http://127.0.0.1:9"], root);
-  assert.equal(doctor.status, 0, doctor.stderr);
-});
-
 test("RUN-001 init and upgrade reject invalid packages or unwritable destinations before HTTP", async (t) => {
   for (const command of ["init", "upgrade"]) {
-    for (const problem of ["invalid JSON", "invalid scripts", "read-only package", "read-only trust"]) {
+    for (const problem of ["invalid JSON", "invalid scripts", "read-only package", "read-only workflow"]) {
       const root = await createTargetRepo(t, { codeRefText: "const model = 'incumbent';" });
       const packagePath = path.join(root, "package.json");
-      const trustPath = path.join(root, ".benchrouter/trust.json");
+      const workflowFile = path.join(root, ".github/workflows/benchrouter-evals.yml");
       if (problem === "invalid JSON") await writeFile(packagePath, "{broken");
       if (problem === "invalid scripts") await writeFile(packagePath, '{"scripts":"not-an-object"}');
       if (problem === "read-only package") await chmod(packagePath, 0o400);
-      if (problem === "read-only trust") await chmod(trustPath, 0o400);
+      if (problem === "read-only workflow") await chmod(workflowFile, 0o400);
       const before = await readFile(path.join(root, ".benchrouter/README.md"), "utf8");
       const extra = command === "init"
         ? ["--setup-key", "br_setup_fixture", "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini"]
@@ -316,7 +284,7 @@ test("RUN-001 init and upgrade reject invalid packages or unwritable destination
       assert.doesNotMatch(result.stderr, /fetch failed/);
       assert.equal(await readFile(path.join(root, ".benchrouter/README.md"), "utf8"), before);
       await chmod(packagePath, 0o600);
-      await chmod(trustPath, 0o600);
+      await chmod(workflowFile, 0o600);
     }
   }
 });
@@ -386,8 +354,8 @@ test("doctor names the fix when benchrouter:calibrate is the customer's own scri
   const result = await runCli(["doctor", "--output-dir", root, "--api-url", "http://127.0.0.1:9", "--skip-github-workflow"], root);
   assert.equal(result.status, 1);
   assert.ok(result.stderr.includes(
-    'package.json scripts.benchrouter:calibrate is "node .benchrouter/verify-speaker-scorer.cjs", not BenchRouter\'s "node .benchrouter/bootstrap.mjs calibrate". ' +
-    'BenchRouter owns benchrouter:calibrate: rename your script to a name outside benchrouter:, then set benchrouter:calibrate back to "node .benchrouter/bootstrap.mjs calibrate" (upgrade does this).'
+    'package.json scripts.benchrouter:calibrate is "node .benchrouter/verify-speaker-scorer.cjs", not BenchRouter\'s "npx --yes benchrouter@latest calibrate". ' +
+    'BenchRouter owns benchrouter:calibrate: rename your script to a name outside benchrouter:, then set benchrouter:calibrate back to "npx --yes benchrouter@latest calibrate" (upgrade does this).'
   ), result.stderr);
 });
 
@@ -398,7 +366,7 @@ test("doctor sends an older BenchRouter script value to upgrade, not to a rename
   }, null, 2) + "\n");
   const result = await runCli(["doctor", "--output-dir", root, "--api-url", "http://127.0.0.1:9", "--skip-github-workflow"], root);
   assert.equal(result.status, 1);
-  assert.ok(result.stderr.includes('package.json scripts.benchrouter:calibrate is an older BenchRouter value ("node .benchrouter/benchrouter-calibrate.mjs"); run benchrouter upgrade to set "node .benchrouter/bootstrap.mjs calibrate".'), result.stderr);
+  assert.ok(result.stderr.includes('package.json scripts.benchrouter:calibrate is an older BenchRouter value ("node .benchrouter/benchrouter-calibrate.mjs"); run benchrouter upgrade to set "npx --yes benchrouter@latest calibrate".'), result.stderr);
   assert.ok(!result.stderr.includes("rename your script"), result.stderr);
 });
 
@@ -648,7 +616,11 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-init-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, ".benchrouter"), { recursive: true });
-  await writeFile(path.join(root, ".benchrouter/bootstrap.mjs"), "// stale bootstrap\n");
+  // A committed legacy bootstrap is BenchRouter's, so init deletes it.
+  await writeFile(path.join(root, ".benchrouter/bootstrap.mjs"), legacyBootstrap);
+  for (const gitArgs of [["init", "-q"], ["add", "--", ".benchrouter/bootstrap.mjs"]]) {
+    assert.equal(spawnSync("git", ["-C", root, ...gitArgs]).status, 0);
+  }
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ scripts: {} }, null, 2)}\n`);
 
   const setupServer = await startFixtureProxy(t, {
@@ -668,10 +640,6 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
           {
             path: ".benchrouter/benchrouter.yml",
             content: "version: 1\n"
-          },
-          {
-            path: ".benchrouter/bootstrap.mjs",
-            content: signedKitFixture.get(".benchrouter/bootstrap.mjs")
           }
         ],
         package_json: {
@@ -737,7 +705,10 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   assert.match(result.stdout, /BenchRouter Evals uses GitHub OIDC/);
   assert.match(result.stdout, /npx --yes benchrouter@latest doctor/);
   assert.doesNotMatch(result.stdout + result.stderr, /@benchrouter\/cli/);
-  assert.equal(await readFile(path.join(root, ".benchrouter/bootstrap.mjs"), "utf8"), signedKitFixture.get(".benchrouter/bootstrap.mjs"));
+  assert.equal(existsSync(path.join(root, ".benchrouter/bootstrap.mjs")), false);
+  assert.match(result.stdout, /deleted \.benchrouter\/bootstrap\.mjs/);
+  // This packet has no .gitignore (no eval), so init creates none.
+  assert.equal(existsSync(path.join(root, ".benchrouter/.gitignore")), false);
 
   assert.equal(existsSync(path.join(root, ".env.example")), false);
   assert.match(result.stdout, /Runtime env configuration is deferred until activation/);
@@ -886,6 +857,7 @@ test("init dry run lists what it would write apart from what it would skip", asy
       setup_packet: {
         files: [
           { path: ".benchrouter/README.md", content: "# BenchRouter\n" },
+          { path: ".benchrouter/.gitignore", content: "results/\n" },
           { path: ".benchrouter/SETUP_README.md", content: "# Same\n" },
           { path: ".benchrouter/cases.compose.json", content: "[]\n" }
         ],
@@ -902,12 +874,41 @@ test("init dry run lists what it would write apart from what it would skip", asy
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.includes("Would change 1 file(s):\n  create .benchrouter/README.md\n"), result.stdout);
+  assert.ok(result.stdout.includes("Would change 2 file(s):\n  create .benchrouter/README.md\n  create .benchrouter/.gitignore\n"), result.stdout);
+  // The packet's .gitignore also lists the local runtime files the CLI writes.
+  assert.ok(result.stdout.includes("+results/\n+bootstrap.mjs\n+trust.json\n"), result.stdout);
   assert.ok(result.stdout.includes("Unchanged (1):\n  .benchrouter/SETUP_README.md\n"), result.stdout);
   assert.ok(result.stdout.includes("Would skip 2 file(s):\n  .benchrouter/cases.compose.json (it differs from BenchRouter's copy; --overwrite-user-edits replaces it)\n  package.json (no package.json found, so no scripts update)\n"), result.stdout);
   assert.ok(!result.stdout.includes("would write"), result.stdout);
   assert.equal(await readFile(path.join(root, ".benchrouter/cases.compose.json"), "utf8"), "[\"customer edits\"]\n");
   assert.equal(existsSync(path.join(root, ".benchrouter/README.md")), false);
+});
+
+test("re-init without --force keeps a customer .gitignore and merges the local runtime lines into it", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-cli-init-gitignore-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, ".benchrouter/.gitignore"), "# ours\nresults/\n");
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: {
+      repo_full_name: "example/app",
+      setup_packet: {
+        files: [{ path: ".benchrouter/.gitignore", content: "results/\n" }],
+        package_json: { scripts: {}, dev_dependencies: [] },
+        runtime_env: {}
+      }
+    }
+  });
+  const result = await runCli([
+    "init", "--setup-key", "br_setup_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini",
+    "--api-url", setupServer.url, "--output-dir", root, "--dry-run"
+  ], root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes("Would change 1 file(s):\n  update .benchrouter/.gitignore\n"), result.stdout);
+  assert.ok(result.stdout.includes(" # ours\n results/\n+bootstrap.mjs\n+trust.json\n"), result.stdout);
+  assert.ok(result.stdout.includes(".benchrouter/.gitignore (it differs from BenchRouter's copy;"), result.stdout);
 });
 
 test("init requires direct-provider identity flags together", async (t) => {
@@ -1453,8 +1454,8 @@ test("upgrade revalidates canonical YAML immediately before apply", async (t) =>
 test("upgrade rejects subset and duplicate generated packets before writes", async (t) => {
   const exact = exactUpgradeFiles();
   const cases = [
-    ["three-file subset", exact.slice(0, 3)],
-    ["duplicate path", [...exact.slice(0, 3), exact[0]]]
+    ["one-file subset", exact.slice(0, 1)],
+    ["duplicate path", [...exact.slice(0, 1), exact[0]]]
   ];
 
   for (const [label, files] of cases) {
@@ -1537,7 +1538,7 @@ test("upgrade preview names the same changes that apply makes, with customer ste
   await writeFile(path.join(root, workflowPath), kitWorkflow.replace(marker, customer + marker));
   await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "app", private: true }, null, 2) + "\n");
   const files = exactUpgradeFiles().map((file) => file.path === workflowPath
-    ? generatedUpgradeFile(workflowPath, file.content.replace('BENCHROUTER_JOB_CEILING_MIN: "120"\n', 'BENCHROUTER_JOB_CEILING_MIN: "120"\n          BENCHROUTER_KIT_VERSION: 0.0.11\n'))
+    ? generatedUpgradeFile(workflowPath, file.content.replace("BENCHROUTER_KIT_VERSION: 0.1.0\n", "BENCHROUTER_KIT_VERSION: 0.1.1\n"))
     : file);
   const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(files) });
 
@@ -1554,7 +1555,7 @@ test("upgrade preview names the same changes that apply makes, with customer ste
   assert.deepEqual(applied, previewChanged);
   const written = await readFile(path.join(root, workflowPath), "utf8");
   assert.ok(written.includes(customer + marker), written);
-  assert.ok(written.includes("BENCHROUTER_KIT_VERSION: 0.0.11\n"), written);
+  assert.ok(written.includes("BENCHROUTER_KIT_VERSION: 0.1.1\n"), written);
 });
 
 test("upgrade preview warns before replacing a customer script or customer README sections", async (t) => {
@@ -1706,6 +1707,7 @@ async function createUpgradeTarget(t, { writeManifest = true } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-upgrade-target-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, ".benchrouter/.gitignore"), "bootstrap.mjs\ntrust.json\n");
   if (writeManifest) {
     await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifestYaml());
   }
