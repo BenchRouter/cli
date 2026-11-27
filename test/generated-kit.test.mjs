@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseDocument } from "yaml";
-import { applyUpgradePacket, inspectSignedKit, LOCAL_SCRIPTS, preparePackageJson, preserveCustomerSetup, stageFileApplication, WORKFLOW_PATH } from "../src/generated-kit.mjs";
+import { applyUpgradePacket, planUpgradeFiles, inspectSignedKit, LOCAL_SCRIPTS, preparePackageJson, preserveCustomerSetup, stageFileApplication, WORKFLOW_PATH } from "../src/generated-kit.mjs";
 
 const fixtureRoot = new URL("./fixtures/signed-kit/", import.meta.url);
 const fixture = (file) => readFile(new URL(file, fixtureRoot), "utf8");
@@ -469,6 +469,18 @@ test("SETUP-001 refresh keeps a customer's commit SHA pin on both eval-action st
   const failures = [];
   inspectSignedKit(root, failures);
   assert.deepEqual(failures, []);
+});
+
+test("upgrade removes the dead benchrouter:eval script that ran bootstrap run, and keeps a customer's own", async (t) => {
+  const root = await targetRepo(t, legacyKit);
+  await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), legacyManifest);
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "node --test", "benchrouter:eval": "node .benchrouter/bootstrap.mjs run" } }));
+  const planned = planUpgradeFiles(root, packetFiles());
+  const pkg = planned.find((file) => file.path === "package.json");
+  assert.deepEqual(JSON.parse(pkg.content).scripts, { test: "node --test", ...LOCAL_SCRIPTS });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: { "benchrouter:eval": "node my-own.mjs" } }));
+  const kept = planUpgradeFiles(root, packetFiles()).find((file) => file.path === "package.json");
+  assert.equal(JSON.parse(kept.content).scripts["benchrouter:eval"], "node my-own.mjs");
 });
 
 test("upgrade keeps a bootstrap or trust file that is not BenchRouter's or is not committed", async (t) => {

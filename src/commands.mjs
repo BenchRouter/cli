@@ -5,6 +5,7 @@ import { adminPaths, adminKeysMintBrowserSessionRequired, customerPaths, publicP
 import {
   accountClient,
   accountRequest,
+  refreshRepoAccess,
   adminRequest,
   emit,
   publicRequest,
@@ -254,8 +255,7 @@ async function runRepos(ctx) {
   if (!sub) return ctx.usage(1, "repos", "Missing subcommand. Try: repos list | repos refresh");
   if (sub === "refresh") {
     // AUTH-003: the Setup page's Refresh, then the list it shows.
-    await accountRequest(ctx, customerPaths.setupReposRefresh());
-    const body = await accountRequest(ctx, customerPaths.setupRepos("repos refresh"));
+    const body = await refreshRepoAccess(accountClient(ctx));
     return emit(ctx, body, () => {
       process.stdout.write("Refreshed GitHub repository access.\n");
       render.renderReposList(body);
@@ -269,7 +269,7 @@ async function runRepos(ctx) {
 async function runSetup(ctx) {
   const sub = subcommand(ctx);
   if (!sub) {
-    return ctx.usage(1, "setup", "Missing subcommand. Try: setup status | create | session show | approve | upgrade-token");
+    return ctx.usage(1, "setup", "Missing subcommand. Try: setup status | create | session show | approve");
   }
   if (sub === "status") {
     const repoFullName = requireRepoFullName(ctx, "setup status");
@@ -328,17 +328,6 @@ async function runSetup(ctx) {
     ));
     const body = await accountRequest(ctx, customerPaths.setupApprovalApprove(approvalId, model));
     return emit(ctx, body, () => render.renderSetupApproval(body));
-  }
-  if (sub === "upgrade-token") {
-    const repoFullName = requireRepoFullName(ctx, "setup upgrade-token");
-    const routeId = ctx.stringArg("route-id") ?? ctx.args._[2];
-    if (!routeId) return ctx.usage(1, "setup upgrade-token", "Missing --route-id.");
-    await requireMutationConfirmation(
-      ctx,
-      render.mutationSummary("Mint single-use setup-kit upgrade token", `repo=${repoFullName} route_id=${routeId}`)
-    );
-    const body = await accountRequest(ctx, customerPaths.setupKitUpgradeToken(repoFullName, routeId));
-    return emit(ctx, body, () => render.renderUpgradeTokenMint(body));
   }
   return unknown(ctx, "setup", sub);
 }

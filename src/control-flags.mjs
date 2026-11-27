@@ -30,7 +30,6 @@ export const CONTROL_COMMAND_FLAGS = {
   "setup create": [...ACCOUNT_WRITE, "repo", "repository-id", "installation-id", "intent"],
   "setup session": [...ACCOUNT, "session-id"],
   "setup approve": [...ACCOUNT_WRITE, "model"],
-  "setup upgrade-token": [...ACCOUNT_WRITE, "repo", "route-id"],
   "routes list": ACCOUNT,
   "routes show": ACCOUNT,
   "routes catalog": ACCOUNT,

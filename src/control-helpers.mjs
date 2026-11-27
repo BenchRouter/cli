@@ -5,6 +5,30 @@ import {
   apiRequest
 } from "./http.mjs";
 import * as render from "./render.mjs";
+import { customerPaths } from "./control-api.mjs";
+
+/** The server refused a GitHub-backed action because the person's repo-access sync is stale (AUTH-003). */
+export function isRepoAccessStale(error) {
+  if (error?.code === "repo_access_stale") return true;
+  const message = String(error?.body?.error?.message ?? error?.message ?? "");
+  return error?.status === 403 && message.includes("BenchRouter upgrade token is no longer authorized");
+}
+
+export const REPOS_REFRESH_COMMAND = "npx --yes benchrouter@latest repos refresh";
+
+/** What `repos refresh` does: re-read GitHub access, then list the repositories. */
+export async function refreshRepoAccess(client) {
+  await apiRequest({ ...client, ...customerPaths.setupReposRefresh() });
+  return apiRequest({ ...client, ...customerPaths.setupRepos("repos refresh") });
+}
+
+/** One line for a failed automatic refresh. Never throws. */
+export function refreshFailureLine(error) {
+  if (error?.code === "github_reauth_required") {
+    return "BenchRouter could not refresh your GitHub access: sign in with GitHub again (`npx --yes benchrouter@latest login`), then retry.";
+  }
+  return `BenchRouter could not refresh your GitHub access automatically. Run \`${REPOS_REFRESH_COMMAND}\`, then retry.`;
+}
 
 export function accountClient(ctx) {
   const credential = requireAccountCredential(ctx.stringArg("account-token"));

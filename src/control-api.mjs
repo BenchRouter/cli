@@ -130,17 +130,6 @@ export const customerPaths = {
     label: "setup session show"
   }),
 
-  /**
-   * POST /v1/dashboard/setup-kit/upgrade-token — body { repo_full_name, route_id }.
-   * The response carries a single-use br_upgrade_ token.
-   */
-  setupKitUpgradeToken: (repoFullName, routeId) => ({
-    method: "POST",
-    path: "/v1/dashboard/setup-kit/upgrade-token",
-    label: "setup upgrade-token",
-    body: { repo_full_name: repoFullName, route_id: routeId }
-  }),
-
   /** GET /v1/dashboard/routes/:routeKey/catalog */
   routeCatalog: (routeKey, label = "routes catalog") => ({
     method: "GET",

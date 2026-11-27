@@ -354,10 +354,8 @@ ${ACCOUNT_FLAGS}`,
   benchrouter setup create [--repo owner/repo] [--intent initial|new_route]
   benchrouter setup session show <session-id>
   benchrouter setup approve <approval-id|approval-link> [--model <model-id>] [--yes]
-  benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
 
-create and upgrade-token each return a one-time secret. The CLI prints it once
-and never saves it.
+create returns a one-time secret. The CLI prints it once and never saves it.
 
 Options:
 ${ACCOUNT_FLAGS}  --yes, -y
@@ -413,18 +411,6 @@ does. It needs your linked GitHub account to have write access to the repository
 
 Options:
   --model <model-id>
-  --yes, -y
-${ACCOUNT_FLAGS}`,
-  "setup upgrade-token": `Usage:
-  benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
-
-Mints a single-use br_upgrade_ token through
-POST /v1/dashboard/setup-kit/upgrade-token and prints it once. The CLI does not
-save it. Pass it to \`benchrouter upgrade --upgrade-token\`.
-
-Options:
-  --route-id <id>
-  --repo owner/repo            Defaults to the current git remote.
   --yes, -y
 ${ACCOUNT_FLAGS}`,
   routes: `Usage:
@@ -894,7 +880,7 @@ export function topLevelControlUsageLines() {
   benchrouter billing auto-reload setup|disable [--yes]
   benchrouter keys list|create|disable|enable|revoke [--json]
   benchrouter repos list|refresh [--json]
-  benchrouter setup status|create|session show|approve|upgrade-token [--json]
+  benchrouter setup status|create|session show|approve [--json]
   benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive [--json]
   benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]
   benchrouter evals status|results|model <route-key> ... --pr <number>   (an open PR's preview)

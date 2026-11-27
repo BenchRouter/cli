@@ -23,6 +23,8 @@ export const LEGACY_LOCAL_SCRIPTS = {
   "benchrouter:capture": `node ${BOOTSTRAP_PATH} capture`,
   "benchrouter:calibrate": `node ${BOOTSTRAP_PATH} calibrate`
 };
+// Older kits wrote this script. `run` needs Actions OIDC and has no local form, so the kit removes it.
+export const DEAD_EVAL_SCRIPT = `node ${BOOTSTRAP_PATH} run`;
 export const UPGRADE_GENERATED_PATHS = [WORKFLOW_PATH, ".benchrouter/README.md"];
 const VENDOR_FILES = [
   [BOOTSTRAP_PATH, new URL("./vendor/bootstrap.mjs", import.meta.url)],
@@ -496,6 +498,9 @@ export function preparePackageJson(outputDir, instructions) {
     if (parsed[name] !== undefined && !object(parsed[name])) throw new Error(`package.json ${name} must contain an object.`);
   }
   parsed.scripts = { ...(parsed.scripts ?? {}), ...instructions.scripts };
+  if (instructions.scripts?.["benchrouter:eval"] === undefined && parsed.scripts["benchrouter:eval"] === DEAD_EVAL_SCRIPT) {
+    delete parsed.scripts["benchrouter:eval"];
+  }
   parsed.devDependencies = parsed.devDependencies ?? {};
   for (const dependency of instructions.dev_dependencies ?? []) {
     if (!parsed.dependencies?.[dependency] && !parsed.devDependencies[dependency]) parsed.devDependencies[dependency] = "latest";

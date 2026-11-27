@@ -277,7 +277,7 @@ test("RUN-001 init and upgrade reject invalid packages or unwritable destination
       const before = await readFile(path.join(root, ".benchrouter/README.md"), "utf8");
       const extra = command === "init"
         ? ["--setup-key", "br_setup_fixture", "--name", "Chat", "--incumbent-model", "openai/gpt-4o-mini"]
-        : ["--upgrade-token", "br_upgrade_fixture", "--yes"];
+        : ["--account-token", "br_ctrl_fixture", "--yes"];
       const result = await runCli([command, "--repo", "example/app", "--route-id", routeId, "--output-dir", root, "--api-url", "http://127.0.0.1:9", ...extra], root);
       assert.equal(result.status, 1, result.stdout);
       assert.match(result.stderr, /JSON|package.json scripts|EACCES/);
@@ -1387,7 +1387,7 @@ test("upgrade validates canonical YAML before any preview or token consumption",
     body: upgradePacketBody(exactUpgradeFiles())
   });
   const args = [
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
   ];
 
@@ -1406,26 +1406,71 @@ test("upgrade validates canonical YAML before any preview or token consumption",
 test("upgrade in JSON mode without --yes refuses with its plan and applies nothing", async (t) => {
   const root = await createUpgradeTarget(t);
   const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
-  const apiKey = await runCli([
-    "upgrade", "--api-key", "br_live_fixture", "--repo", "example/app",
+  const signedOut = await runCli([
+    "upgrade", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--json"
   ], root);
-  assert.equal(apiKey.status, 1);
-  assert.deepEqual(JSON.parse(apiKey.stderr).error, {
-    code: "confirmation_required",
-    message: `Plan: apply the current BenchRouter kit to example/app / ${routeId}. Nothing was changed. JSON mode cannot prompt; rerun with --yes to confirm.`
-  });
+  assert.equal(signedOut.status, 1);
+  assert.match(signedOut.stderr, /npx --yes benchrouter@latest login/);
   assert.equal(server.requests.length, 0);
 
   const token = await runCli([
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--json"
   ], root);
   assert.equal(token.status, 1);
   assert.equal(JSON.parse(token.stderr.trim().split("\n").at(-1)).error.code, "confirmation_required");
   assert.match(token.stderr, /Plan: apply BenchRouter kit .* as listed above\. Nothing was changed\./);
   assert.equal(server.requests.length, 1);
-  assert.equal(server.requests[0].url, "/v1/setup/upgrade-packet/preview");
+  assert.equal(server.requests[0].url, "/v1/setup/upgrade-packet");
+});
+
+test("upgrade refreshes stale GitHub access once, retries, and applies", async (t) => {
+  const root = await createUpgradeTarget(t);
+  const seen = [];
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      seen.push(`${request.method} ${request.url}`);
+      const stale = seen.filter((line) => line === "POST /v1/setup/upgrade-packet").length === 1;
+      const [status, body] = request.url === "/v1/setup/upgrade-packet"
+        ? (stale ? [403, { error: { message: "Refresh GitHub access", code: "repo_access_stale" } }] : [200, upgradePacketBody(exactUpgradeFiles())])
+        : [200, { ok: true, repos: [], installations: [] }];
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const apiUrl = `http://127.0.0.1:${server.address().port}`;
+  const result = await runCli([
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", apiUrl, "--output-dir", root, "--yes"
+  ], root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(seen, ["POST /v1/setup/upgrade-packet", "POST /v1/setup/repos/refresh", "GET /v1/setup/repos", "POST /v1/setup/upgrade-packet"]);
+});
+
+test("upgrade prints the refresh command when the refresh fails, and does not loop", async (t) => {
+  const root = await createUpgradeTarget(t);
+  const seen = [];
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      seen.push(`${request.method} ${request.url}`);
+      response.writeHead(request.url === "/v1/setup/upgrade-packet" ? 403 : 500, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "BenchRouter upgrade token is no longer authorized", code: "forbidden" } }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const result = await runCli([
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
+    "--route-id", routeId, "--api-url", `http://127.0.0.1:${server.address().port}`, "--output-dir", root, "--yes"
+  ], root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /npx --yes benchrouter@latest repos refresh/);
+  assert.deepEqual(seen, ["POST /v1/setup/upgrade-packet", "POST /v1/setup/repos/refresh"]);
 });
 
 test("upgrade revalidates canonical YAML immediately before apply", async (t) => {
@@ -1441,7 +1486,7 @@ test("upgrade revalidates canonical YAML immediately before apply", async (t) =>
   });
 
   const result = await runCli([
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
   ], root);
 
@@ -1466,7 +1511,7 @@ test("upgrade rejects subset and duplicate generated packets before writes", asy
         body: upgradePacketBody(files)
       });
       const result = await runCli([
-        "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+        "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
         "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
       ], root);
 
@@ -1487,14 +1532,14 @@ test("upgrade applies the exact signed kit while preserving canonical YAML", asy
   });
 
   const result = await runCli([
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
   ], root);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(server.requests.length, 2);
-  assert.match(server.requests[0].url, /\/v1\/setup\/upgrade-packet\/preview$/);
-  assert.match(server.requests[1].url, /\/v1\/control\/setup-packet\/upgrade$/);
+  assert.equal(server.requests.length, 1);
+  assert.match(server.requests[0].url, /\/v1\/setup\/upgrade-packet$/);
+  assert.equal(server.requests[0].authorization, "Bearer br_ctrl_fixture");
   assert.equal(await readFile(path.join(root, ".benchrouter/benchrouter.yml"), "utf8"), yamlBefore);
   for (const file of files) {
     assert.equal(await readFile(path.join(root, file.path), "utf8"), file.content);
@@ -1512,7 +1557,7 @@ test("upgrade preview separates changed and unchanged files and diffs the change
   const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
 
   const result = await runCli([
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
   ], root);
 
@@ -1543,7 +1588,7 @@ test("upgrade preview names the same changes that apply makes, with customer ste
   const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(files) });
 
   const result = await runCli([
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--yes"
   ], root);
 
@@ -1573,7 +1618,7 @@ test("upgrade preview warns before replacing a customer script or customer READM
   const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
 
   const result = await runCli([
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
   ], root);
 
@@ -1606,7 +1651,7 @@ test("ownership warnings use per-script history and CommonMark fences", async (t
   const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
 
   const result = await runCli([
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
   ], root);
 
@@ -1627,7 +1672,7 @@ test("upgrade preview does not warn when the old README and scripts are BenchRou
   const server = await startFixtureProxy(t, { status: 200, body: upgradePacketBody(exactUpgradeFiles()) });
 
   const result = await runCli([
-    "upgrade", "--upgrade-token", "br_upgrade_fixture", "--repo", "example/app",
+    "upgrade", "--account-token", "br_ctrl_fixture", "--repo", "example/app",
     "--route-id", routeId, "--api-url", server.url, "--output-dir", root, "--dry-run"
   ], root);
 

@@ -6,13 +6,14 @@ import * as readline from "node:readline/promises";
 import { isMap, isSeq, parseDocument } from "yaml";
 import { normalizeRepoFullName, resolveAccountToken, resolveRepoToken, saveRepoToken } from "./config.mjs";
 import { apiRequest, ApiError } from "./http.mjs";
+import { isRepoAccessStale, refreshRepoAccess, refreshFailureLine } from "./control-helpers.mjs";
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
 import { readRouteManifest } from "./route-manifest.mjs";
 import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
 import { unifiedDiff } from "./line-diff.mjs";
-import { applyUpgradePacket, planUpgradeFiles, preserveCustomerSetup, inspectSignedKit, prepareLocalKitFiles, ensureGitignoreLines, preflightFileApplication, stageFileApplication, writeLocalRuntime, UPGRADE_GENERATED_PATHS, GITIGNORE_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS, LEGACY_LOCAL_SCRIPTS } from "./generated-kit.mjs";
+import { applyUpgradePacket, planUpgradeFiles, preserveCustomerSetup, inspectSignedKit, prepareLocalKitFiles, ensureGitignoreLines, preflightFileApplication, stageFileApplication, writeLocalRuntime, UPGRADE_GENERATED_PATHS, GITIGNORE_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS, LEGACY_LOCAL_SCRIPTS, DEAD_EVAL_SCRIPT } from "./generated-kit.mjs";
 
 // Every option name as typed, kept apart from parsed values so a name such as "_" or
 // "__proto__" cannot hide in the positional list or the object prototype.
@@ -48,13 +49,15 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
 // .dev.vars.example is the Wrangler (Cloudflare Workers and Pages) convention.
 const RUNTIME_ENV_TEMPLATE_NAMES = [".env.example", "env.template", ".env.sample", ".env.template", ".dev.vars.example"];
 
+class StaleRepoAccess extends Error {}
+
 // Every value a BenchRouter kit or init packet has written, per benchrouter: script name. A different
 // old value is the customer's own script, which the kit replaces.
 // Mined from the server's full history (2026-11-04).
 const KIT_SCRIPT_HISTORY = {
   "benchrouter:capture": [LOCAL_SCRIPTS["benchrouter:capture"], LEGACY_LOCAL_SCRIPTS["benchrouter:capture"]],
   "benchrouter:calibrate": [LOCAL_SCRIPTS["benchrouter:calibrate"], LEGACY_LOCAL_SCRIPTS["benchrouter:calibrate"], "node .benchrouter/benchrouter-calibrate.mjs", "tsx scripts/benchrouter-calibrate.ts"],
-  "benchrouter:eval": ["node .benchrouter/benchrouter-eval.mjs", "tsx scripts/benchrouter-eval.ts"]
+  "benchrouter:eval": ["node .benchrouter/benchrouter-eval.mjs", "tsx scripts/benchrouter-eval.ts", DEAD_EVAL_SCRIPT]
 };
 // Every heading any BenchRouter-written .benchrouter/README.md has had (headings hold no variables),
 // besides the new kit README's own headings, which come from the packet.
@@ -81,7 +84,7 @@ const LOCAL_COMMAND_FLAGS = {
     "code-ref", "base-url-env", "api-family", "api-url", "dry-run", "force", "overwrite-user-edits", "output-dir", "setup-key", "save-token"],
   doctor: ["help", "json", "repo", "setup-key", "account-token", "api-url", "output-dir", "phase", "route-id", "live-chat-completions", "skip-github-workflow", "check-default-branch"],
   models: ["help", "api-url", "filter", "json"],
-  upgrade: ["help", "json", "upgrade-token", "api-key", "repo", "route-id", "api-url", "output-dir", "yes", "dry-run"],
+  upgrade: ["help", "json", "account-token", "repo", "route-id", "api-url", "output-dir", "yes", "dry-run"],
   status: READ_COMMAND_FLAGS,
   frontier: READ_COMMAND_FLAGS,
   failures: READ_COMMAND_FLAGS,
@@ -412,18 +415,18 @@ async function upgrade() {
   }
 
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
-  const upgradeToken = stringArg("upgrade-token", process.env.BENCHROUTER_UPGRADE_TOKEN);
-  const apiKey = upgradeToken ? undefined : stringArg("api-key", process.env.BENCHROUTER_API_KEY);
-  const bearer = upgradeToken ?? apiKey;
   const repoFullName = stringArg("repo") ?? detectGitHubRepo();
   const routeId = stringArg("route-id");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
   const dryRun = Boolean(args["dry-run"]);
   const autoYes = Boolean(args.yes);
 
-  if (!bearer) {
-    fail("Missing BenchRouter credential. At a terminal, mint a one-time upgrade token with `benchrouter setup upgrade-token --route-id <id>` (after `benchrouter login`) or from the dashboard banner, then pass --upgrade-token. In CI, pass --api-key or set BENCHROUTER_API_KEY.");
+  let credential = null;
+  try { credential = resolveAccountToken(stringArg("account-token")); } catch { credential = null; }
+  if (!credential?.token) {
+    fail("Not signed in. Run `npx --yes benchrouter@latest login`, then run upgrade again.");
   }
+  const bearer = credential.token;
   if (!repoFullName) {
     usage(1, "upgrade", "Missing --repo and unable to detect one from git remote.");
   }
@@ -431,7 +434,7 @@ async function upgrade() {
     usage(1, "upgrade", "Missing --route-id.");
   }
 
-  // Validate canonical route truth before consuming a single-use token.
+  // Validate canonical route truth before any request.
   try {
     readRouteManifest(outputDir);
     await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...prepareLocalKitFiles(outputDir)]);
@@ -439,69 +442,42 @@ async function upgrade() {
     fail(error instanceof Error ? error.message : "Could not validate the existing BenchRouter kit.");
   }
 
-  // 1. Preview — does NOT consume the upgrade token. Preview only supports the
-  //    single-use upgrade token flow; API-key auth goes straight to apply (which
-  //    is idempotent and re-runnable for API keys).
-  if (upgradeToken) {
-    const preview = await fetchUpgradePacket({
-      apiUrl,
-      bearer,
-      repoFullName,
-      routeId,
-      mode: "preview"
-    });
-    let planned;
-    try {
-      planned = planUpgradeFiles(outputDir, preview.files);
-      await preflightFileApplication(outputDir, planned);
-    } catch (error) {
-      fail(error instanceof Error ? error.message : "BenchRouter returned an invalid kit upgrade preview.");
-    }
+  // One request: the packet changes nothing on the server, so the preview and the apply use the same files.
+  const packet = await fetchUpgradePacket({ apiUrl, bearer, repoFullName, routeId });
+  let planned;
+  try {
+    planned = planUpgradeFiles(outputDir, packet.files);
+    await preflightFileApplication(outputDir, planned);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "BenchRouter returned an invalid kit upgrade packet.");
+  }
 
-    process.stdout.write(`Planned BenchRouter kit upgrade to ${preview.setup_kit_version} for ${preview.repo_full_name} / ${preview.route_id}\n`);
-    writeFilePreview(outputDir, planned, "No file changes: every file already matches this kit version.");
-    writeOwnershipWarnings(outputDir, planned);
+  process.stdout.write(`Planned BenchRouter kit upgrade to ${packet.setup_kit_version} for ${packet.repo_full_name} / ${packet.route_id}\n`);
+  writeFilePreview(outputDir, planned, "No file changes: every file already matches this kit version.");
+  writeOwnershipWarnings(outputDir, planned);
 
-    if (dryRun) {
-      return;
-    }
+  if (dryRun) {
+    return;
+  }
 
-    if (!autoYes) {
-      const confirmed = await confirmPlan(
-        `apply BenchRouter kit ${preview.setup_kit_version} to ${preview.repo_full_name} / ${preview.route_id} as listed above`,
-        "Apply these changes? [y/N] "
-      );
-      if (!confirmed) {
-        process.stdout.write("Declined. No changes written.\n");
-        return;
-      }
-    }
-  } else if (dryRun) {
-    fail("--dry-run requires --upgrade-token; the API-key apply endpoint consumes nothing but cannot be safely previewed without a token.");
-  } else if (!autoYes) {
-    const confirmed = await confirmPlan(`apply the current BenchRouter kit to ${repoFullName} / ${routeId}`, "Apply these changes? [y/N] ");
+  if (!autoYes) {
+    const confirmed = await confirmPlan(
+      `apply BenchRouter kit ${packet.setup_kit_version} to ${packet.repo_full_name} / ${packet.route_id} as listed above`,
+      "Apply these changes? [y/N] "
+    );
     if (!confirmed) {
       process.stdout.write("Declined. No changes written.\n");
       return;
     }
   }
 
-  // 2. Apply — for upgrade tokens this consumes the token, so the preview above
-  //    must succeed first. Re-derive the packet server-side; do NOT reuse the
-  //    preview response as if it were authoritative.
   try {
     readRouteManifest(outputDir);
     await preflightFileApplication(outputDir, [...UPGRADE_GENERATED_PATHS.map((filePath) => ({ path: filePath })), ...prepareLocalKitFiles(outputDir)]);
   } catch (error) {
     fail(error instanceof Error ? error.message : "Could not validate the existing BenchRouter kit.");
   }
-  const applied = await fetchUpgradePacket({
-    apiUrl,
-    bearer,
-    repoFullName,
-    routeId,
-    mode: "apply"
-  });
+  const applied = packet;
 
   process.stdout.write(`Upgrading BenchRouter kit to ${applied.setup_kit_version} for ${applied.repo_full_name} / ${applied.route_id}\n`);
   try {
@@ -616,10 +592,24 @@ function markdownHeadings(text) {
   return headings;
 }
 
-async function fetchUpgradePacket({ apiUrl, bearer, repoFullName, routeId, mode }) {
-  const endpoint = mode === "preview"
-    ? "/v1/setup/upgrade-packet/preview"
-    : "/v1/control/setup-packet/upgrade";
+// A stale GitHub access sync: refresh it once with the saved login, then retry once. Never loops.
+async function fetchUpgradePacket(options, refreshed = false) {
+  try {
+    return await fetchUpgradePacketOnce(options);
+  } catch (error) {
+    if (!(error instanceof StaleRepoAccess)) throw error;
+    if (refreshed) fail(refreshFailureLine(null));
+    try {
+      await refreshRepoAccess({ apiUrl: options.apiUrl, token: options.bearer });
+    } catch (refreshError) {
+      fail(refreshFailureLine(refreshError));
+    }
+    return fetchUpgradePacket(options, true);
+  }
+}
+
+async function fetchUpgradePacketOnce({ apiUrl, bearer, repoFullName, routeId }) {
+  const endpoint = "/v1/setup/upgrade-packet";
 
   const response = await fetch(`${apiUrl}${endpoint}`, {
     method: "POST",
@@ -634,11 +624,11 @@ async function fetchUpgradePacket({ apiUrl, bearer, repoFullName, routeId, mode 
   const responseText = await response.text();
 
   if (!response.ok) {
-    if (isTokenInvalid(response.status, parseJson(responseText))) {
-      fail("Upgrade token is no longer valid (already used / expired / revoked). Mint a new one in the dashboard.");
+    const parsedError = parseJson(responseText);
+    if (isRepoAccessStale({ status: response.status, code: parsedError?.error?.code, message: parsedError?.error?.message })) {
+      throw new StaleRepoAccess();
     }
-    const label = mode === "preview" ? "Setup kit upgrade preview" : "Setup kit upgrade apply";
-    fail(`${label} request failed (${response.status}): ${responseText.slice(0, 800)}`);
+    fail(`Setup kit upgrade request failed (${response.status}): ${responseText.slice(0, 800)}`);
   }
 
   const body = parseJson(responseText);
@@ -646,20 +636,6 @@ async function fetchUpgradePacket({ apiUrl, bearer, repoFullName, routeId, mode 
     fail("BenchRouter did not return a valid upgrade response.");
   }
   return body;
-}
-
-function isTokenInvalid(status, parsed) {
-  if (status === 410 || status === 404) {
-    return true;
-  }
-  const code = parsed?.error?.code;
-  if (typeof code !== "string") {
-    return false;
-  }
-  return code === "upgrade_token_used"
-    || code === "upgrade_token_expired"
-    || code === "upgrade_token_revoked"
-    || code === "invalid_upgrade_token";
 }
 
 async function confirmPrompt(question) {
@@ -2040,35 +2016,29 @@ Options:
 `);
   } else if (commandName === "upgrade") {
     stream.write(`Usage:
-  benchrouter upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
-  benchrouter upgrade --api-key <BENCHROUTER_API_KEY> --repo owner/repo --route-id product/route
+  benchrouter upgrade --repo owner/repo --route-id product/route
 
-The upgrade flow previews the planned changes (without consuming the single-use
-upgrade token), prompts for confirmation, then applies. Use --yes to skip the
-prompt. The preview lists the files that would change, with a diff for each, and
-the files that are already up to date.
+The upgrade flow needs your login (\`benchrouter login\`). It previews the planned
+changes, prompts for confirmation, then applies. Use --yes to skip the prompt. The preview lists the files that would change, with a diff for each, and
+the files that are already up to date. If BenchRouter reports stale GitHub access,
+upgrade refreshes it with your login and retries once. If the refresh fails, it
+prints \`npx --yes benchrouter@latest repos refresh\`.
 
 Upgrade preserves the existing .benchrouter/benchrouter.yml byte-for-byte
 and preserves all route-owned assets and dispatch-only customer setup steps.
 It replaces only the workflow and README content, sets the benchrouter: package
-scripts, adds the local runtime files to .benchrouter/.gitignore, and deletes a
+scripts (and removes the old benchrouter:eval script that ran \`bootstrap.mjs run\`), adds the local runtime files to .benchrouter/.gitignore, and deletes a
 committed legacy .benchrouter/bootstrap.mjs and .benchrouter/trust.json.
 Upgrade has no --force flag: it always replaces those BenchRouter-owned files.
 (--force belongs to init, where it replaces differing BenchRouter kit files.)
 It validates all generated-file hashes before it writes files.
 
 Options:
-  --upgrade-token <token>  Single-use token, valid for one hour. At a terminal, mint one with
-                           \`benchrouter setup upgrade-token --route-id <id>\` (needs \`benchrouter login\`),
-                           or copy it from the dashboard "Upgrade BenchRouter kit" banner.
-                           Falls back to BENCHROUTER_UPGRADE_TOKEN.
-  --api-key <key>          The runtime key, for CI only; a person at a terminal uses --upgrade-token.
-                           Falls back to BENCHROUTER_API_KEY. Ignored when --upgrade-token is set.
-                           API-key upgrades apply without a preview.
+  --account-token br_ctrl_...  Defaults to BENCHROUTER_ACCOUNT_TOKEN, then the saved login (\`benchrouter login\`).
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --output-dir <path>      Defaults to current directory.
   --yes, -y                Skip the interactive confirmation after preview.
-  --dry-run                Preview only. Requires --upgrade-token. Never calls apply.
+  --dry-run                Preview only. Writes nothing.
 `);
   } else if (commandName === "doctor") {
     stream.write(`Usage:
@@ -2108,7 +2078,7 @@ Options:
   } else {
     stream.write(`Usage:
   benchrouter init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
-  benchrouter upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
+  benchrouter upgrade --repo owner/repo --route-id product/route
   benchrouter doctor
   benchrouter --version
   benchrouter capture

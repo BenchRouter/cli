@@ -356,7 +356,6 @@ benchrouter setup status [--repo owner/repo]
 benchrouter setup create [--repo owner/repo] [--intent initial|new_route]
 benchrouter setup session show <session-id>
 benchrouter setup approve <approval-id|approval-link> [--model <model-id>] [--yes]
-benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
 benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive
 benchrouter evals list|run
 benchrouter evals status <route-key> [--pr <number>]
@@ -438,9 +437,10 @@ using that key stops authenticating.
 `setup create` starts a setup session and prints a one-time setup code plus an
 `npx --yes benchrouter@latest init` command. With `--yes --json`, stdout contains
 one JSON object with the session, setup code, command, and agent prompt.
-`setup upgrade-token` mints a single-use
-`br_upgrade_` token and prints it once. Both secrets are printed once and never
-saved; pass them to `init --setup-key` and `upgrade --upgrade-token`.
+The setup code is printed once and never saved; pass it to `init --setup-key`.
+`upgrade` needs `benchrouter login`. It refreshes your GitHub access automatically
+when BenchRouter reports it stale, then retries once. If the refresh fails, it
+prints `npx --yes benchrouter@latest repos refresh`.
 `setup create` looks up the repository ID and the GitHub App installation ID for
 `--repo` (or the current git remote) from your synced GitHub access, as
 `repos list` shows them. If the repository is missing, run `repos refresh` or
@@ -572,7 +572,8 @@ have one positionally matching file.
 
 `upgrade` previews the workflow, the README, the `benchrouter:` package scripts,
 the `.benchrouter/.gitignore` lines, and the removal of a committed legacy
-`.benchrouter/bootstrap.mjs` and `.benchrouter/trust.json`, asks for
+`.benchrouter/bootstrap.mjs` and `.benchrouter/trust.json`, and the removal of an
+old `benchrouter:eval` script that ran `bootstrap.mjs run`, asks for
 confirmation, then applies them. It preserves `.benchrouter/benchrouter.yml`
 byte-for-byte. That YAML is the single route declaration. Upgrade validates
 each file hash before it writes any file. It preserves customer setup steps
@@ -587,12 +588,11 @@ installations must be removed and re-onboarded; they have no compatibility path.
 
 ```bash
 benchrouter upgrade \
-  --upgrade-token br_upgrade_... \
   --repo owner/repo \
   --route-id product/route
 ```
 
-Use `--dry-run` to preview a single-use upgrade token without applying it. Use
+Use `--dry-run` to preview without applying. Use
 `--yes` only when an interactive confirmation is not possible.
 
 ## Model IDs
