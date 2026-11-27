@@ -129,6 +129,62 @@ test("refresh of a CRLF workflow writes the kit's LF line endings", () => {
   assert.equal(preserveCustomerSetup(existing.replaceAll("\n", "\r\n"), generated), existing);
 });
 
+test("refresh keeps the SnapApp runner comment and blocks above surviving keys", () => {
+  const generated = kit.get(WORKFLOW_PATH);
+  const runner = [
+    "    # The tic-tac-toe UX eval drives headless Chrome. The runner",
+    "    # pool's image has it at /usr/bin/google-chrome-stable.",
+    "    runs-on: [self-hosted, linux, x64, gcp-chrome] # Chrome is preinstalled",
+    ""
+  ].join("\n");
+  const existing = generated
+    .replace("    runs-on: ubuntu-24.04\n", runner)
+    .replace("    timeout-minutes: 120", "    # Leave enough time for the suite.\n    timeout-minutes: 120")
+    .replace("  id-token: write", "  # Used for token exchange.\n  id-token: write")
+    .replace("  contents: read", "  contents: read\n  # Old permission.\n  actions: read");
+  const updatedTemplate = generated.replace("    timeout-minutes: 120", "    # BenchRouter job ceiling.\n    timeout-minutes: 120");
+  const refreshed = preserveCustomerSetup(existing, updatedTemplate);
+  assert.ok(refreshed.includes(runner));
+  assert.ok(refreshed.includes("    # BenchRouter job ceiling.\n    # Leave enough time for the suite.\n    timeout-minutes: 120\n"));
+  assert.ok(refreshed.includes("  # Used for token exchange.\n  id-token: write\n"));
+  assert.ok(!refreshed.includes("# Old permission."));
+  assert.equal(preserveCustomerSetup(refreshed, updatedTemplate), refreshed);
+});
+
+test("refresh keeps comments in setup and post steps and updates the template setup guide", () => {
+  const generated = kit.get(WORKFLOW_PATH);
+  const existing = handFormattedCustomerWorkflow(generated, "runs-on: ubuntu-24.04 # Available on GitHub-hosted runners\n")
+    .replace("        run: |\n          python", "        # Use the repo's pinned requirements.\n        run: |\n          python")
+    .replace("      - name: Report speaker metrics", "      # Report these even if the eval fails.\n      - name: Report speaker metrics")
+    + "      # End of repo post steps.\n";
+  const guide = "Replay-only repos need no customer setup.";
+  const revisedGuide = "Replay-only repos need no customer setup. Leave this section empty.";
+  const updatedTemplate = generated.replace(guide, revisedGuide);
+  assert.equal(preserveCustomerSetup(existing, updatedTemplate), existing.replace(guide, revisedGuide));
+  assert.equal(preserveCustomerSetup(existing.replaceAll("\n", "\r\n"), updatedTemplate), existing.replace(guide, revisedGuide));
+});
+
+test("refresh keeps a post-step comment and the dedented comment above the next job key", () => {
+  const generated = kit.get(WORKFLOW_PATH);
+  const postStep = "      - run: echo ok\n      # End of repo post steps.\n";
+  const jobName = "    # This name appears in branch protection.\n";
+  const existing = generated + postStep + jobName + "    name: Old name\n";
+  assert.equal(
+    preserveCustomerSetup(existing, generated + "    name: New name\n"),
+    generated + postStep + jobName + "    name: New name\n"
+  );
+});
+
+test("refresh retains a runner alias's value and comment when the kit removes its anchor", () => {
+  const generated = kit.get(WORKFLOW_PATH);
+  const existing = generated
+    .replace("name: BenchRouter Evals", "name: &runner gcp-chrome")
+    .replace("runs-on: ubuntu-24.04", "runs-on: *runner # Chrome is preinstalled");
+  const refreshed = preserveCustomerSetup(existing, generated);
+  assert.equal(parseDocument(refreshed).toJS().jobs.eval["runs-on"], "gcp-chrome");
+  assert.ok(refreshed.includes("runs-on: gcp-chrome # Chrome is preinstalled\n"));
+});
+
 test("SETUP-001 doctor and refresh keep a customer runs-on and still check the rest of the job", async (t) => {
   const root = await targetRepo(t);
   const canonical = kit.get(WORKFLOW_PATH);
