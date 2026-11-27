@@ -736,6 +736,7 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
   assert.match(result.stdout, /Keep production code and host configuration unchanged in the evaluation PR/);
   assert.match(result.stdout, /BenchRouter Evals uses GitHub OIDC/);
   assert.match(result.stdout, /npx --yes benchrouter@latest doctor/);
+  assert.doesNotMatch(result.stdout + result.stderr, /@benchrouter\/cli/);
   assert.equal(await readFile(path.join(root, ".benchrouter/bootstrap.mjs"), "utf8"), signedKitFixture.get(".benchrouter/bootstrap.mjs"));
 
   assert.equal(existsSync(path.join(root, ".env.example")), false);

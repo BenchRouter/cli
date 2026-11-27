@@ -19,6 +19,12 @@ const reposBody = {
     { installation_id: 12, owner_login: "Example", owner_type: "Organization", status: "suspended", status_reason: "suspended", install_url: "https://github.com/apps/benchrouter/installations/12" }
   ]
 };
+const createBody = {
+  ok: true,
+  setup_session: { id: "setup_1", repo_full_name: "example/app", installation_id: 77, status: "code_issued" },
+  setup_code: "br_setup_x",
+  command: "npx --yes benchrouter@latest init --setup-key br_setup_x --repo example/app"
+};
 
 async function server(t) {
   const requests = [];
@@ -28,7 +34,7 @@ async function server(t) {
     requests.push({ method: request.method, url: request.url, body: raw ? JSON.parse(raw) : null });
     response.writeHead(200, { "content-type": "application/json" });
     if (request.url === "/v1/setup/repos") response.end(JSON.stringify(reposBody));
-    else response.end(JSON.stringify({ ok: true, session: { id: "setup_1" }, setup_code: "br_setup_x", init_command: "npx --yes benchrouter@latest init" }));
+    else response.end(JSON.stringify(createBody));
   });
   await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => listener.close(resolve)));
@@ -51,6 +57,8 @@ test("setup create looks up both ids from --repo, ignoring case and taking the f
   const result = await runCli(["setup", "create", "--repo", "example/app", "--intent", "new_route", "--yes", "--json",
     "--api-url", api.url, "--account-token", "br_ctrl_recorded_fixture"]);
   assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), createBody);
+  assert.doesNotMatch(result.stdout + result.stderr, /@benchrouter\/cli/);
   assert.deepEqual(api.requests.map((request) => `${request.method} ${request.url}`), ["GET /v1/setup/repos", "POST /v1/setup/sessions"]);
   assert.deepEqual(api.requests[1].body, { repository_id: "901", repo_full_name: "example/app", installation_id: 77, intent: "new_route" });
 });
@@ -71,6 +79,7 @@ test("setup create with both ids skips the lookup", { timeout: 4900 }, async (t)
   const result = await runCli(["setup", "create", "--repo", "example/app", "--repository-id", "5", "--installation-id", "6", "--yes", "--json",
     "--api-url", api.url, "--account-token", "br_ctrl_recorded_fixture"]);
   assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), createBody);
   assert.deepEqual(api.requests.map((request) => request.url), ["/v1/setup/sessions"]);
   assert.deepEqual(api.requests[0].body, { repository_id: "5", repo_full_name: "example/app", installation_id: 6, intent: "initial" });
 });
