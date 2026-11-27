@@ -166,13 +166,15 @@ test("refresh keeps comments in setup and post steps and updates the template se
 
 test("refresh keeps a post-step comment and the dedented comment above the next job key", () => {
   const generated = kit.get(WORKFLOW_PATH);
-  const postStep = "      - run: echo ok\n      # End of repo post steps.\n";
+  const postStep = "      # Report after the eval.\n      - run: echo ok\n";
   const jobName = "    # This name appears in branch protection.\n";
-  const existing = generated + postStep + jobName + "    name: Old name\n";
-  assert.equal(
-    preserveCustomerSetup(existing, generated + "    name: New name\n"),
-    generated + postStep + jobName + "    name: New name\n"
-  );
+  for (const end of ["", "      # End of repo post steps.\n"]) {
+    const existing = generated + postStep + end + jobName + "    name: Old name\n";
+    assert.equal(
+      preserveCustomerSetup(existing, generated + "    name: New name\n"),
+      generated + postStep + end + jobName + "    name: New name\n"
+    );
+  }
 });
 
 test("refresh retains a runner alias's value and comment when the kit removes its anchor", () => {

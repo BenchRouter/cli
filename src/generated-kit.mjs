@@ -225,8 +225,9 @@ function customerRunner(existing, generated) {
 }
 
 function postCommentTokens(steps) {
-  return (steps.srcToken?.items?.at(-1)?.start ?? [])
-    .filter((token) => token.type === "comment" && token.indent >= steps.srcToken.indent);
+  const last = steps.srcToken?.items?.at(-1);
+  if (!last || last.value || last.start.some((token) => token.type === "seq-item-ind")) return [];
+  return last.start.filter((token) => token.type === "comment" && token.indent >= steps.srcToken.indent);
 }
 
 // RUN-001: preserve customer setup after the generated recorder and postprocessing after runtime.
@@ -252,7 +253,8 @@ export function preserveCustomerSetup(existingSource, generatedSource) {
   const setup = customerSteps.map((step) => step.clone());
   for (const step of setup) step.commentBefore = withoutGuide(step.commentBefore);
   const runtime = nextSteps.items[next.run];
-  runtime.commentBefore = [runtime.commentBefore, withoutGuide(previousSteps.items[previous.run].commentBefore)].filter(Boolean).join("\n");
+  const runtimeComment = withoutGuide(previousSteps.items[previous.run].commentBefore);
+  runtime.commentBefore = [runtime.commentBefore, additionalComment(runtimeComment, runtime.commentBefore)].filter(Boolean).join("\n");
   if (customerPostSteps.length > 0) {
     const postComment = postCommentTokens(previousSteps).map((token) => token.source.slice(1).trimEnd()).join("\n");
     nextSteps.comment = [nextSteps.comment, additionalComment(postComment, nextSteps.comment)].filter(Boolean).join("\n");
