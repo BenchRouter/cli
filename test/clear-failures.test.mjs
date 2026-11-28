@@ -157,19 +157,34 @@ function runCli(cliArgs, cwd, env = {}) {
   });
 }
 
-test("doctor names the line of a YAML refusal without printing the file's lines", { timeout: 4900 }, async (t) => {
-  const secret = "sk-panel-secret-value";
-  const root = await tempRepo(t, { [MANIFEST]: `version: 1\nroutes: [\n  token: ${secret}\n` });
-  // The service's manifest_yaml_invalid body: the yaml parser's message, which quotes the file.
-  const server = await startServer(t, () => ({ status: 422, body: { error: {
-    message: `.benchrouter/benchrouter.yml is not valid YAML: excerpt\n\n  token: ${secret}\n`, type: "benchrouter_error", code: "manifest_yaml_invalid"
-  } } }));
-  const result = await runCli(["doctor", "--repo", "example/app", "--skip-github-workflow", "--api-url", server.url], root,
-    { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_fixture" });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /doctor failed: manifest check: HTTP 422 \(manifest_yaml_invalid\): \.benchrouter\/benchrouter\.yml is not valid YAML: .* at line \d+, column \d+\n/);
-  assert.ok(!`${result.stdout}${result.stderr}`.includes(secret), result.stderr);
-});
+// Each file holds a secret where a YAML parser would quote it: a source line, an unresolved
+// alias name, and an unsupported version directive.
+const secret = "sk-panel-secret-value";
+const badYaml = [
+  ["a nested mapping", `version: 1\nroutes: [\n  token: ${secret}\n`, /BAD_INDENT at line 4, column 1/],
+  ["an unresolved alias", `version: 1\nroutes:\n  - token: *${secret}\n`, /UNRESOLVED_ALIAS at line 3, column 12/],
+  ["an unsupported version", `%YAML 9.${secret}\n---\nversion: 1\n`, /BAD_DIRECTIVE at line 1, column 7/]
+];
+
+for (const [label, source, problem] of badYaml) {
+  test(`doctor and init name ${label} by code and line without printing the file`, { timeout: 4900 }, async (t) => {
+    const root = await tempRepo(t, { [MANIFEST]: source });
+    // The service's manifest_yaml_invalid body carries the yaml parser's message, which quotes the file.
+    const server = await startServer(t, (request) => request.url === "/v1/repo/manifest-check"
+      ? { status: 422, body: { error: { message: `not valid YAML:\n\n  ${secret}\n`, type: "benchrouter_error", code: "manifest_yaml_invalid" } } }
+      : { status: 200, body: packet([{ path: MANIFEST, content: manifest() }]) });
+    const doctor = await runCli(["doctor", "--repo", "example/app", "--skip-github-workflow", "--api-url", server.url], root,
+      { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_fixture" });
+    assert.equal(doctor.status, 1);
+    const lines = doctor.stderr.split("\n");
+    assert.ok(lines.some((line) => line.startsWith("doctor failed: manifest check: HTTP 422 (manifest_yaml_invalid): .benchrouter/benchrouter.yml is not valid YAML: ") && problem.test(line)), doctor.stderr);
+    assert.ok(lines.some((line) => line.startsWith("doctor failed: .benchrouter/benchrouter.yml is not valid YAML: ") && problem.test(line)), doctor.stderr);
+    const init = await runCli(initArgs(server.url, root), root);
+    assert.equal(init.status, 1);
+    assert.match(init.stderr, problem);
+    for (const output of [doctor.stdout, doctor.stderr, init.stdout, init.stderr]) assert.ok(!output.includes(secret), output);
+  });
+}
 
 test("a login-only init on a repository with no group names the setup-key command", { timeout: 4900 }, async (t) => {
   const root = await tempRepo(t, {});

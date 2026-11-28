@@ -7,7 +7,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { CST, isAlias, isMap, isSeq, parse as parseYaml, parseDocument, visit } from "yaml";
 import { applyEdits, modify } from "jsonc-parser";
-import { readRouteManifest, yamlProblem } from "./route-manifest.mjs";
+import { parseYamlDocument, readRouteManifest } from "./route-manifest.mjs";
 
 // The local runtime files. Local capture and calibrate write the CLI's vendored copies here
 // (gitignored); kits before the eval-action stub committed them, so the upgrade deletes those.
@@ -63,8 +63,8 @@ const LEGACY_UPLOADS = new Map([
 ]);
 
 function workflowDocument(source, options) {
-  const doc = parseDocument(source, options);
-  if (doc.errors.length > 0) throw new Error(`${WORKFLOW_PATH} is not valid YAML: ${yamlProblem(doc.errors[0])}`);
+  const { doc, problem } = parseYamlDocument(source, options);
+  if (problem) throw new Error(`${WORKFLOW_PATH} is not valid YAML: ${problem}`);
   return doc;
 }
 

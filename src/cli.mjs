@@ -3,14 +3,14 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
-import { isMap, isSeq, parse as parseYaml, parseDocument } from "yaml";
+import { isMap, isSeq } from "yaml";
 import { LOGIN_COMMAND, normalizeRepoFullName, resolveAccountToken, resolveRepoCredential, resolveRepoToken, saveRepoToken } from "./config.mjs";
 import { apiRequest, ApiError, responseError } from "./http.mjs";
 import { isRepoAccessStale, refreshRepoAccess, refreshFailureLine } from "./control-helpers.mjs";
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, internalControlUsageLines, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
-import { normalizeRouteManifest, rawCaseRefs, readRouteManifest, yamlProblem } from "./route-manifest.mjs";
+import { normalizeRouteManifest, parseYamlDocument, rawCaseRefs, readRouteManifest } from "./route-manifest.mjs";
 import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
 import { unifiedDiff } from "./line-diff.mjs";
 import { customerPaths } from "./control-api.mjs";
@@ -383,8 +383,10 @@ async function init() {
 // init keeps an existing benchrouter.yml and adds routes to it, so a field the file already
 // gets wrong stays wrong. Say so before the PR, not first in doctor or the eval run.
 function manifestProblems(content) {
+  const { doc, problem } = parseYamlDocument(content);
+  if (problem) return [`.benchrouter/benchrouter.yml is not valid YAML: ${problem}`];
   try {
-    normalizeRouteManifest(parseYaml(content));
+    normalizeRouteManifest(doc.toJS());
     return [];
   } catch (error) {
     return [error instanceof Error ? error.message : "the merged .benchrouter/benchrouter.yml is invalid"];
@@ -418,13 +420,13 @@ function setDeclaredApiFamily(route, apiFamily) {
 }
 
 function mergeRequestedRoutesIntoManifest(existingSource, previewSource, requestedRouteIds, apiFamilies) {
-  const existingDocument = parseDocument(existingSource);
-  const previewDocument = parseDocument(previewSource);
-  if (existingDocument.errors.length > 0) {
-    throw new Error(`.benchrouter/benchrouter.yml is not valid YAML: ${yamlProblem(existingDocument.errors[0])}`);
+  const { doc: existingDocument, problem: existingProblem } = parseYamlDocument(existingSource);
+  const { doc: previewDocument, problem: previewProblem } = parseYamlDocument(previewSource);
+  if (existingProblem) {
+    throw new Error(`.benchrouter/benchrouter.yml is not valid YAML: ${existingProblem}`);
   }
-  if (previewDocument.errors.length > 0) {
-    throw new Error(`Preview .benchrouter/benchrouter.yml is not valid YAML: ${yamlProblem(previewDocument.errors[0])}`);
+  if (previewProblem) {
+    throw new Error(`Preview .benchrouter/benchrouter.yml is not valid YAML: ${previewProblem}`);
   }
 
   const existingRoutes = existingDocument.get("routes", true);
@@ -1305,10 +1307,10 @@ async function checkManifestForDoctor({ root, apiUrl, repoFullName, selectedRout
   }
 }
 
-// The first YAML error with its line and column, without the parser's quoted source lines.
+// The first YAML problem by code, line and column; never the parser's text, which quotes the file.
 function yamlErrorLine(source) {
-  const error = parseDocument(source.toString("utf8")).errors[0];
-  return error ? `: ${yamlProblem(error)}` : "";
+  const { problem } = parseYamlDocument(source.toString("utf8"));
+  return problem ? `: ${problem}` : "";
 }
 
 async function fetchModelIds(apiUrl) {

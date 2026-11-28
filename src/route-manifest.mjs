@@ -1,18 +1,21 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
+import { LineCounter, parse as parseYaml, parseDocument, visit } from "yaml";
 
 export const ROUTE_MANIFEST_RELATIVE_PATH = ".benchrouter/benchrouter.yml";
 
 export function readRouteManifest(root) {
   const manifestPath = path.join(root, ROUTE_MANIFEST_RELATIVE_PATH);
-  let parsed;
+  let source;
   try {
-    parsed = parseYaml(readFileSync(manifestPath, "utf8"));
+    source = readFileSync(manifestPath, "utf8");
   } catch (error) {
-    throw new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${yamlProblem(error)}`);
+    // A read error names the path, never file content.
+    throw new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${error instanceof Error ? error.message : "read failed"}`);
   }
-  return normalizeRouteManifest(parsed);
+  const { doc, problem } = parseYamlDocument(source);
+  if (problem) throw new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${problem}`);
+  return normalizeRouteManifest(doc.toJS());
 }
 
 /**
@@ -39,13 +42,26 @@ export function rawCaseRefs(root) {
 }
 
 /**
- * A YAML parse error as its first line: the problem and its line and column. The parser's full
- * message also quotes lines of the file, which may hold secrets, so it is never printed.
+ * Parses YAML and names its first problem only by the parser's error code and the line and
+ * column. Parser messages quote the file (a bad version, an alias name, source lines), and the
+ * file may hold secrets, so no parser text is ever printed. An alias with no anchor is not a parse
+ * error, but turning the document into data throws with the alias name, so it is reported here.
  */
-export function yamlProblem(error) {
-  if (!(error instanceof Error)) return "parse failed";
-  const first = error.message.split("\n")[0].trim();
-  return first.endsWith(":") ? first.slice(0, -1) : first;
+export function parseYamlDocument(source, options = {}) {
+  const lineCounter = new LineCounter();
+  const doc = parseDocument(source, { ...options, lineCounter });
+  const at = (position) => (position ? ` at line ${position.line}, column ${position.col}` : "");
+  const error = doc.errors[0];
+  if (error) return { doc, problem: `${error.code ?? "PARSE_ERROR"}${at(error.linePos?.[0])}` };
+  let problem = null;
+  visit(doc, {
+    Alias(_, node) {
+      if (node.resolve(doc)) return undefined;
+      problem = `UNRESOLVED_ALIAS${at(Array.isArray(node.range) ? lineCounter.linePos(node.range[0]) : null)}`;
+      return visit.BREAK;
+    }
+  });
+  return { doc, problem };
 }
 
 export function normalizeRouteManifest(parsed) {
