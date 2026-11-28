@@ -10,7 +10,7 @@ import { isRepoAccessStale, refreshRepoAccess, refreshFailureLine } from "./cont
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, internalControlUsageLines, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
-import { normalizeRouteManifest, parseYamlDocument, rawCaseRefs, readRouteManifest } from "./route-manifest.mjs";
+import { normalizeRouteManifest, parseYamlDocument, rawCaseRefs, readRouteManifest, ROUTE_MANIFEST_RELATIVE_PATH } from "./route-manifest.mjs";
 import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
 import { unifiedDiff } from "./line-diff.mjs";
 import { customerPaths } from "./control-api.mjs";
@@ -288,13 +288,22 @@ async function init() {
     const targetPath = safeTargetPath(outputDir, file.path);
     const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
     let content = file.content;
-    if (file.path === ".benchrouter/benchrouter.yml" && previous !== null) {
-      try {
-        content = mergeRequestedRoutesIntoManifest(previous, content, routeIds, declaredApiFamilies(routeSpecs));
-      } catch (error) {
-        fail(error instanceof Error ? error.message : "Could not merge .benchrouter/benchrouter.yml.");
+    if (file.path === ROUTE_MANIFEST_RELATIVE_PATH) {
+      if (previous !== null) {
+        try {
+          content = mergeRequestedRoutesIntoManifest(previous, content, routeIds, declaredApiFamilies(routeSpecs));
+        } catch (error) {
+          fail(error instanceof Error ? error.message : "Could not merge .benchrouter/benchrouter.yml.");
+        }
       }
-      manifestWarnings.push(...manifestProblems(content));
+      const problem = manifestProblem(content);
+      if (problem && content !== previous) {
+        const hint = problem.fieldPath?.endsWith(".call_site") || problem.fieldPath?.endsWith(".call_site.base_url_env")
+          ? "\nPass --base-url-env <name> and update the call site to read its LLM base URL from that environment variable."
+          : "";
+        fail(`init would write an invalid route manifest.\n${problem.message}${hint}`, "manifest_invalid");
+      }
+      if (problem) manifestWarnings.push(problem.message);
     } else if (file.path === WORKFLOW_PATH && previous !== null) {
       try {
         content = preserveCustomerSetup(previous, content);
@@ -380,16 +389,15 @@ async function init() {
   process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }));
 }
 
-// init keeps an existing benchrouter.yml and adds routes to it, so a field the file already
-// gets wrong stays wrong. Say so before the PR, not first in doctor or the eval run.
-function manifestProblems(content) {
+// Validate the manifest init plans to write with the same rules doctor uses.
+function manifestProblem(content) {
   const { doc, problem } = parseYamlDocument(content);
-  if (problem) return [`.benchrouter/benchrouter.yml is not valid YAML: ${problem}`];
+  if (problem) return new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${problem}`);
   try {
     normalizeRouteManifest(doc.toJS());
-    return [];
+    return null;
   } catch (error) {
-    return [error instanceof Error ? error.message : "the merged .benchrouter/benchrouter.yml is invalid"];
+    return error instanceof Error ? error : new Error(`the merged ${ROUTE_MANIFEST_RELATIVE_PATH} is invalid`);
   }
 }
 
@@ -2276,12 +2284,14 @@ function usage(status, commandName = "all", message) {
     stream.write(runtimeUsage(commandName));
   } else if (commandName === "init") {
     stream.write(`Usage:
-  benchrouter init --route product/route --name "Route Name" --incumbent-model provider/model [options]
+  benchrouter init --route product/route --name "Route Name" --incumbent-model provider/model \\
+    --base-url-env OPENAI_BASE_URL --api-family openai_chat_completions [options]
 
 Multiple routes (paired in order; first triple is primary):
   benchrouter init \\
     --route product/route-a --name "Route A" --incumbent-model provider/model-a \\
-    --route product/route-b --name "Route B" --incumbent-model provider/model-b
+    --route product/route-b --name "Route B" --incumbent-model provider/model-b \\
+    --base-url-env OPENAI_BASE_URL --api-family openai_chat_completions
 
 init uses your saved login (\`benchrouter login\`) for a repository that already has a
 BenchRouter group, including each route you add later. The first route of a repository
@@ -2305,7 +2315,9 @@ Options:
   --eval-pack <path>       Repeatable. Repository-executable eval JSON for the matching route.
   --eval-command <command>  Existing customer test command for optional local capture.
   --code-ref <path>       Repeatable. Call-site files recorded on the primary route.
-  --base-url-env <name>   Repeatable. Env var the call site uses for its LLM base URL.
+  --base-url-env <name>   Required for each call site, including one that hardcodes its URL today.
+                          Update the call site to read its LLM base URL from this environment variable.
+                          Pass once for all routes or repeat once per route in the same order.
   --api-family <family>   Repeatable. Protocol the call site speaks: openai_chat_completions,
                           anthropic_messages, or openai_responses. It chooses the base URL value.
                           Required with --base-url-env or --eval-pack; an executable eval inherits it.
@@ -2422,7 +2434,8 @@ Options:
 `);
   } else {
     stream.write(`Usage:
-  benchrouter init --route product/route --name "Route Name" --incumbent-model provider/model
+  benchrouter init --route product/route --name "Route Name" --incumbent-model provider/model \\
+    --base-url-env OPENAI_BASE_URL --api-family openai_chat_completions
   benchrouter upgrade [--repo owner/repo]
   benchrouter doctor [--full]
   benchrouter --version

@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,6 +78,37 @@ test("init --dry-run warns when the benchrouter.yml it keeps is still invalid", 
     "Warning: init keeps your existing .benchrouter/benchrouter.yml, and after this init it is still invalid:\n" +
     "  - .benchrouter/benchrouter.yml.product must be an object.\n"
   ), result.stdout);
+});
+
+test("init refuses a recorded route with no base URL env before writing or committing setup", async (t) => {
+  const recordedRoute = await readFile(path.join(testDir, "fixtures/setup-packet/route-without-base-url-env.yml"), "utf8");
+  const preview = manifest() + recordedRoute;
+  const server = await startServer(t, () => ({
+    status: 200, body: packet([
+      { path: WORKFLOW, content: stubWorkflow },
+      { path: MANIFEST, content: preview }
+    ])
+  }));
+
+  for (const existing of [false, true]) {
+    const root = await tempRepo(t, existing ? { [MANIFEST]: manifest() } : {});
+    const before = await readdir(root, { recursive: true });
+    const args = [
+      "init", "--setup-key", "br_setup_fixture", "--route", "app/panel-summarize",
+      "--name", "Panel Summarize", "--incumbent-model", "anthropic/claude-haiku-5.5",
+      "--api-family", "anthropic_messages", "--code-ref", "src/summarize.ts",
+      "--api-url", server.url, "--output-dir", root
+    ];
+    for (const mode of [["--dry-run"], []]) {
+      const result = await runCli([...args, ...mode], root);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /routes\[1\]\.call_site\.base_url_env is required/);
+      assert.match(result.stderr, /Pass --base-url-env <name> and update the call site to read its LLM base URL from that environment variable/);
+      assert.deepEqual(await readdir(root, { recursive: true }), before);
+      if (existing) assert.equal(await readFile(path.join(root, MANIFEST), "utf8"), manifest());
+    }
+  }
+  assert.deepEqual(server.requests.map(({ body }) => JSON.parse(body).dry_run), [true, true, true, true]);
 });
 
 test("doctor names the renamed eval job and a missing case file even when the manifest is invalid", { timeout: 4900 }, async (t) => {

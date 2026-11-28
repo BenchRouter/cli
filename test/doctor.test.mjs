@@ -745,7 +745,7 @@ test("init prints the runtime key, keeps OIDC keyless, and leaves runtime env ex
           },
           {
             path: ".benchrouter/benchrouter.yml",
-            content: "version: 1\n"
+            content: manifestYaml()
           }
         ],
         package_json: {
@@ -2129,7 +2129,15 @@ routes:
     code_refs: [src/chat.ts]
     call_site: { base_url_env: MY_CLAUDE_URL }
     seed: { incumbent_model: anthropic/claude-haiku-4.5 }
-    eval_pack: { mode: repository_executable, api_family: openai_chat_completions, workflow: .github/workflows/benchrouter-evals.yml, scorer: .benchrouter/scorer.chat.js, result_schema: benchrouter.executable_result.v1, case_refs: [eval/cases.json] }
+    eval_pack:
+      mode: repository_executable
+      api_family: openai_chat_completions
+      workflow: .github/workflows/benchrouter-evals.yml
+      result_schema: benchrouter.executable_result.v1
+      case_refs: [eval/cases.json]
+      input_refs: [src/chat.ts]
+      acceptance_refs: [eval/acceptance.json]
+      lockfile: package-lock.json
 `;
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), existingManifest);
   const setupServer = await startFixtureProxy(t, {

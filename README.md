@@ -17,7 +17,7 @@ npm has a newer `latest`. An installed copy does not update itself, so run
 
 ```bash
 npx --yes benchrouter@latest login
-npx --yes benchrouter@latest init --route product/route --name "Route Name" --incumbent-model provider/model
+npx --yes benchrouter@latest init --route product/route --name "Route Name" --incumbent-model provider/model --base-url-env OPENAI_BASE_URL --api-family openai_chat_completions
 npx --yes benchrouter@latest doctor
 ```
 
@@ -41,7 +41,9 @@ Run `init` from the repository that will use BenchRouter:
 npx --yes benchrouter@latest init \
   --route product/route \
   --name "Route Name" \
-  --incumbent-model provider/model
+  --incumbent-model provider/model \
+  --base-url-env OPENAI_BASE_URL \
+  --api-family openai_chat_completions
 ```
 
 `init` uses your login (`benchrouter login`) for a repository that already has a
@@ -61,8 +63,9 @@ test command is used for local capture. Without it, setup emits no
 For a direct-provider incumbent, also pass `--provider-id <id>` and
 `--provider-ref <exact-ref>`. Pass both or neither.
 
-Pass `--base-url-env <NAME>` with the environment variable the call site reads
-for its LLM base URL, and `--api-family <family>` with the protocol the call
+Pass `--base-url-env <NAME>` for each call site. If a call site hardcodes its
+LLM base URL, update it to read the URL from that environment variable.
+Pass `--api-family <family>` with the protocol the call
 site speaks: `openai_chat_completions`, `anthropic_messages`, or
 `openai_responses`. The family chooses the BenchRouter base URL value, not the
 variable's name: a native Anthropic Messages call site gets
@@ -200,7 +203,8 @@ benchrouter init \
   --route product/route-a --name "Route A" --incumbent-model provider/model-a \
   --eval-pack eval/route-a-pack.json \
   --route product/route-b --name "Route B" --incumbent-model provider/model-b \
-  --eval-pack eval/route-b-pack.json
+  --eval-pack eval/route-b-pack.json \
+  --base-url-env OPENAI_BASE_URL --api-family openai_chat_completions
 ```
 
 Each runtime call site uses its stable route ID as the OpenAI-compatible `model`
@@ -492,9 +496,9 @@ open the BenchRouter setup page once, or pass `--repository-id` and
 To add a route to a repository that already has BenchRouter:
 
 1. Sign in with `benchrouter login`.
-2. Rerun `init` with the new route's `--route`, `--name` and
-   `--incumbent-model` (plus `--eval-pack`, `--api-family` and `--base-url-env`
-   when the route needs them). `init` adds the route to `benchrouter.yml` and
+2. Rerun `init` with the new route's `--route`, `--name`, `--incumbent-model`,
+   `--api-family` and `--base-url-env`. Include `--eval-pack` for a
+   repository-executable eval. `init` adds the route to `benchrouter.yml` and
    keeps the existing routes. (`benchrouter setup create --intent new_route`
    still prints a one-time setup key for a run without a login.)
 3. Commit the changes and open a pull request.
