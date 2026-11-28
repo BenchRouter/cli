@@ -213,12 +213,6 @@ test("newly wired customer routes build the exact documented request", () => {
     path: "/v1/setup/sessions/setup_1",
     label: "setup session show"
   });
-  assert.deepEqual(customerPaths.setupKitUpgradeToken("example/app", "app/chat"), {
-    method: "POST",
-    path: "/v1/dashboard/setup-kit/upgrade-token",
-    label: "setup upgrade-token",
-    body: { repo_full_name: "example/app", route_id: "app/chat" }
-  });
   // The route key stays slash-separated; the result set id is one encoded segment.
   assert.equal(
     customerPaths.routeResultSetRefreshPreview("app/chat", "ers 1").path,
@@ -369,10 +363,6 @@ test("setup create validates its identifiers before authenticating", async () =>
   assert.equal(badIntent.status, 1);
   assert.match(badIntent.stderr, /--intent must be initial or new_route/);
 
-  const noRouteId = await runCli(["setup", "upgrade-token", ...account]);
-  assert.equal(noRouteId.status, 1);
-  assert.match(noRouteId.stderr, /Missing --route-id/);
-
   const noSession = await runCli(["setup", "session", "show", "--account-token", "br_ctrl_recorded_fixture"]);
   assert.equal(noSession.status, 1);
   assert.match(noSession.stderr, /Missing setup session id/);
@@ -419,8 +409,7 @@ test("mutating commands refuse JSON mode without --yes before building a request
     ["evals", "run", "app/chat", "--model", "m/1"],
     ["evals", "refresh-preview", "app/chat", "ers_1"],
     ["baseline", "set", "app/chat", "--result-set", "ers_1", "--model", "m/1"],
-    ["setup", "create", "--repo", "example/app", "--repository-id", "123", "--installation-id", "42"],
-    ["setup", "upgrade-token", "--repo", "example/app", "--route-id", "app/chat"]
+    ["setup", "create", "--repo", "example/app", "--repository-id", "123", "--installation-id", "42"]
   ];
   for (const argv of mutations) {
     const result = await runCli([...argv, "--account-token", "br_ctrl_recorded_fixture", "--json"]);
@@ -480,7 +469,6 @@ test("--help resolves to the deepest matching command and never sends a request"
   assert.equal(resolveControlUsageName(["admin", "keys", "list"]), "admin keys");
   assert.equal(resolveControlUsageName(["setup", "create"]), "setup create");
   assert.equal(resolveControlUsageName(["setup", "session", "show", "s_1"]), "setup session show");
-  assert.equal(resolveControlUsageName(["setup", "upgrade-token"]), "setup upgrade-token");
   assert.equal(resolveControlUsageName(["evals", "refresh-preview", "app/chat"]), "evals refresh-preview");
   assert.equal(resolveControlUsageName(["account", "token", "save"]), "account token save");
   assert.equal(resolveControlUsageName(["doctor"]), null);
@@ -530,8 +518,7 @@ test("provider and token secrets never reach confirmations or errors", async () 
   assert.doesNotMatch(wrongScope.stderr, new RegExp(secret));
 
   // A rejected account token must not be echoed back by any customer command.
-  const badAccount = await runCli(["setup", "upgrade-token", "--repo", "example/app",
-    "--route-id", "app/chat", "--account-token", "br_live_secret_runtime_key", "--yes"]);
+  const badAccount = await runCli(["keys", "list", "--account-token", "br_live_secret_runtime_key"]);
   assert.equal(badAccount.status, 1);
   assert.doesNotMatch(badAccount.stderr, /br_live_secret_runtime_key/);
 });
@@ -587,6 +574,17 @@ test("nested help answers every level without a token or a request", async () =>
   assert.notEqual(modelsShow.status, 0);
   assert.match(modelsShow.stderr, /benchrouter evals model <route-key> <model-id>/);
 
+});
+
+test("default help leaves out BenchRouter-internal commands; --help --all lists them", async () => {
+  const brief = await runCli(["--help"]);
+  assert.equal(brief.status, 0);
+  assert.doesNotMatch(brief.stdout, /benchrouter (proposals|admin) /);
+  assert.match(brief.stdout, /Run `benchrouter --help --all` to include BenchRouter-internal commands\./);
+  const all = await runCli(["--help", "--all"]);
+  assert.equal(all.status, 0);
+  assert.match(all.stdout, /benchrouter proposals list\|approve\|reject/);
+  assert.match(all.stdout, /benchrouter admin providers\|catalog\|keys\|token/);
 });
 
 function restoreEnv(name, previous) {

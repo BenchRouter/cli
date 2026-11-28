@@ -5,7 +5,8 @@ import { access, lstat, mkdir, open, realpath, rename, rm, rmdir } from "node:fs
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { CST, isAlias, isMap, isSeq, parseDocument, visit } from "yaml";
+import { CST, isAlias, isMap, isSeq, parse as parseYaml, parseDocument, visit } from "yaml";
+import { applyEdits, modify } from "jsonc-parser";
 import { readRouteManifest } from "./route-manifest.mjs";
 
 // The local runtime files. Local capture and calibrate write the CLI's vendored copies here
@@ -23,7 +24,10 @@ export const LEGACY_LOCAL_SCRIPTS = {
   "benchrouter:capture": `node ${BOOTSTRAP_PATH} capture`,
   "benchrouter:calibrate": `node ${BOOTSTRAP_PATH} calibrate`
 };
-export const UPGRADE_GENERATED_PATHS = [WORKFLOW_PATH, ".benchrouter/README.md"];
+// Older kits wrote this script. `run` needs Actions OIDC and has no local form, so the kit removes it.
+export const DEAD_EVAL_SCRIPT = `node ${BOOTSTRAP_PATH} run`;
+// The files an upgrade packet replaces. The kit README is init-only: an upgrade leaves it alone.
+export const UPGRADE_GENERATED_PATHS = [WORKFLOW_PATH];
 const VENDOR_FILES = [
   [BOOTSTRAP_PATH, new URL("./vendor/bootstrap.mjs", import.meta.url)],
   [TRUST_PATH, new URL("./vendor/trust.json", import.meta.url)]
@@ -485,6 +489,9 @@ export function prepareUpgradeFiles(outputDir, files) {
   });
 }
 
+// Spec 7(8): the kit changes only the benchrouter: script values (and a missing dev dependency an
+// init packet names). jsonc-parser edits the JSON text in place, so the rest of package.json keeps
+// its bytes, key order and indentation, and no empty devDependencies appears.
 export function preparePackageJson(outputDir, instructions) {
   const target = path.join(outputDir, "package.json");
   if (!existsSync(target)) return [];
@@ -495,12 +502,32 @@ export function preparePackageJson(outputDir, instructions) {
   for (const name of ["scripts", "dependencies", "devDependencies"]) {
     if (parsed[name] !== undefined && !object(parsed[name])) throw new Error(`package.json ${name} must contain an object.`);
   }
-  parsed.scripts = { ...(parsed.scripts ?? {}), ...instructions.scripts };
-  parsed.devDependencies = parsed.devDependencies ?? {};
-  for (const dependency of instructions.dev_dependencies ?? []) {
-    if (!parsed.dependencies?.[dependency] && !parsed.devDependencies[dependency]) parsed.devDependencies[dependency] = "latest";
+  const formattingOptions = jsonFormatting(previousContent);
+  let content = previousContent;
+  const set = (jsonPath, value) => { content = applyEdits(content, modify(content, jsonPath, value, { formattingOptions })); };
+  for (const [name, value] of Object.entries(instructions.scripts ?? {})) {
+    if (parsed.scripts?.[name] !== value) set(["scripts", name], value);
   }
-  return [{ path: "package.json", previousContent, content: `${JSON.stringify(parsed, null, 2)}\n` }];
+  if (instructions.scripts?.["benchrouter:eval"] === undefined && parsed.scripts?.["benchrouter:eval"] === DEAD_EVAL_SCRIPT) {
+    set(["scripts", "benchrouter:eval"], undefined);
+  }
+  for (const dependency of instructions.dev_dependencies ?? []) {
+    if (!parsed.dependencies?.[dependency] && !parsed.devDependencies?.[dependency]) set(["devDependencies", dependency], "latest");
+  }
+  return content === previousContent ? [] : [{ path: "package.json", previousContent, content }];
+}
+
+// The file's own indentation: the leading whitespace of its first indented line (two spaces when
+// it has none), and its line ending.
+function jsonFormatting(text) {
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  for (const line of text.split("\n").slice(1)) {
+    let width = 0;
+    while (line[width] === " " || line[width] === "\t") width += 1;
+    if (width === 0 || line.trim() === "") continue;
+    return line[0] === "\t" ? { insertSpaces: false, tabSize: 1, eol } : { insertSpaces: true, tabSize: width, eol };
+  }
+  return { insertSpaces: true, tabSize: 2, eol };
 }
 
 // Resolve the selected repository once. System aliases such as /tmp are allowed
@@ -846,4 +873,27 @@ export function inspectSignedKit(root, failures) {
     const steps = evalSteps(doc);
     validateCustomerSteps(steps, stubBounds(steps));
   } catch (error) { failures.push(`${WORKFLOW_PATH}: ${error.message}`); }
+}
+
+/** The kit version the workflow stub declares, or undefined when there is none. */
+export function readKitVersion(root = process.cwd()) {
+  try {
+    const workflow = parseYaml(readFileSync(path.join(root, WORKFLOW_PATH), "utf8"));
+    for (const job of Object.values(workflow?.jobs ?? {})) {
+      if (!Array.isArray(job?.steps)) continue;
+      const version = job.steps.find((step) => step?.id === "benchrouter_runtime")?.env?.BENCHROUTER_KIT_VERSION;
+      if (isKitVersion(version)) return version;
+    }
+  } catch {
+    // Optional context must not prevent reporting a broken or absent workflow.
+  }
+  return undefined;
+}
+
+function isKitVersion(value) {
+  if (typeof value !== "string") return false;
+  const parts = value.split(".");
+  return parts.length === 3 && parts.every((part) => part.length > 0
+    && [...part].every((char) => char >= "0" && char <= "9")
+    && Number.isSafeInteger(Number(part)) && String(Number(part)) === part);
 }

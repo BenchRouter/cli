@@ -323,20 +323,6 @@ export function renderSetupSessionShow(body) {
   ]);
 }
 
-/**
- * POST /v1/dashboard/setup-kit/upgrade-token returns
- * { ok, token, repo_full_name, route_id, expires_at }. The token is single-use.
- */
-export function renderUpgradeTokenMint(body) {
-  printLines([
-    `Upgrade token for ${body.repo_full_name ?? "unknown repo"} / ${body.route_id ?? "unknown route"}`,
-    ...(body.expires_at ? [`Expires: ${body.expires_at}`] : [])
-  ]);
-  process.stdout.write("\nBenchRouter issued a single-use upgrade token. It is shown once:\n");
-  process.stdout.write(`- Upgrade token: ${body.token}\n`);
-  process.stdout.write("The CLI does not save it. Pass it to `benchrouter upgrade --upgrade-token`.\n");
-}
-
 export function renderRoutesList(routes, archived = []) {
   if (!Array.isArray(routes) || routes.length === 0) process.stdout.write("No active routes.\n");
   for (const route of routes ?? []) {

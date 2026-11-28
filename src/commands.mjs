@@ -5,6 +5,7 @@ import { adminPaths, adminKeysMintBrowserSessionRequired, customerPaths, publicP
 import {
   accountClient,
   accountRequest,
+  refreshRepoAccess,
   adminRequest,
   emit,
   publicRequest,
@@ -254,8 +255,7 @@ async function runRepos(ctx) {
   if (!sub) return ctx.usage(1, "repos", "Missing subcommand. Try: repos list | repos refresh");
   if (sub === "refresh") {
     // AUTH-003: the Setup page's Refresh, then the list it shows.
-    await accountRequest(ctx, customerPaths.setupReposRefresh());
-    const body = await accountRequest(ctx, customerPaths.setupRepos("repos refresh"));
+    const body = await refreshRepoAccess(accountClient(ctx));
     return emit(ctx, body, () => {
       process.stdout.write("Refreshed GitHub repository access.\n");
       render.renderReposList(body);
@@ -269,7 +269,7 @@ async function runRepos(ctx) {
 async function runSetup(ctx) {
   const sub = subcommand(ctx);
   if (!sub) {
-    return ctx.usage(1, "setup", "Missing subcommand. Try: setup status | create | session show | approve | upgrade-token");
+    return ctx.usage(1, "setup", "Missing subcommand. Try: setup status | create | session show | approve");
   }
   if (sub === "status") {
     const repoFullName = requireRepoFullName(ctx, "setup status");
@@ -328,17 +328,6 @@ async function runSetup(ctx) {
     ));
     const body = await accountRequest(ctx, customerPaths.setupApprovalApprove(approvalId, model));
     return emit(ctx, body, () => render.renderSetupApproval(body));
-  }
-  if (sub === "upgrade-token") {
-    const repoFullName = requireRepoFullName(ctx, "setup upgrade-token");
-    const routeId = ctx.stringArg("route-id") ?? ctx.args._[2];
-    if (!routeId) return ctx.usage(1, "setup upgrade-token", "Missing --route-id.");
-    await requireMutationConfirmation(
-      ctx,
-      render.mutationSummary("Mint single-use setup-kit upgrade token", `repo=${repoFullName} route_id=${routeId}`)
-    );
-    const body = await accountRequest(ctx, customerPaths.setupKitUpgradeToken(repoFullName, routeId));
-    return emit(ctx, body, () => render.renderUpgradeTokenMint(body));
   }
   return unknown(ctx, "setup", sub);
 }
@@ -484,10 +473,21 @@ async function runRoutes(ctx) {
     return emit(ctx, body, () => render.renderArchive(body));
   }
   if (sub === "unarchive") {
-    const routeId = ctx.args._[2];
-    if (!routeId) return ctx.usage(1, "routes unarchive", "Missing route id.");
-    await requireMutationConfirmation(ctx, render.mutationSummary("Unarchive route", `route_id=${routeId}`));
-    const body = await accountRequest(ctx, customerPaths.routeUnarchive(routeId));
+    // Archive and unarchive take the same route key. The server unarchives by the archived
+    // route's id, so look it up; an archived id itself still works when a key is ambiguous.
+    const routeRef = ctx.args._[2];
+    if (!routeRef) return ctx.usage(1, "routes unarchive", "Missing route key.");
+    await requireMutationConfirmation(ctx, render.mutationSummary("Unarchive route", `route_key=${routeRef}`));
+    const summary = await accountRequest(ctx, customerPaths.dashboardSummary("routes unarchive"));
+    const archived = Array.isArray(summary.archived_routes) ? summary.archived_routes : [];
+    const byId = archived.find((route) => route?.id === routeRef);
+    const byKey = archived.filter((route) => route?.route_key === routeRef);
+    if (!byId && byKey.length > 1) {
+      ctx.fail(`Several archived routes use ${routeRef}: ${byKey.map((route) => `${route.id} (archived ${route.archived_at ?? "unknown"})`).join(", ")}. Pass one id.`, "route_ambiguous");
+    }
+    const target = byId ?? byKey[0];
+    if (!target) ctx.fail(`No archived route ${routeRef}. \`benchrouter routes list\` shows archived routes.`, "route_not_found");
+    const body = await accountRequest(ctx, customerPaths.routeUnarchive(target.id));
     return emit(ctx, body, () => render.renderUnarchive(body));
   }
   return unknown(ctx, "routes", sub);

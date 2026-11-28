@@ -1,6 +1,6 @@
 {
   "name": "benchrouter",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Command-line interface for BenchRouter",
   "type": "module",
   "scripts": {
@@ -32,6 +32,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "jsonc-parser": "^3.3.1",
     "yaml": "^2.8.1"
   },
   "license": "MIT"

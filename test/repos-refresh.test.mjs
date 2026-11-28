@@ -44,7 +44,11 @@ async function startServer(t, responses) {
     request.resume();
     request.on("end", () => {
       requests.push(`${request.method} ${request.url}`);
-      const [status, body] = responses[`${request.method} ${request.url}`] ?? [404, { error: { message: "no fixture", code: "not_found" } }];
+      const key = `${request.method} ${request.url}`;
+      let fixture = responses[key] ?? [404, { error: { message: "no fixture", code: "not_found" } }];
+      // An array of fixtures answers one request each; the last one repeats.
+      if (Array.isArray(fixture[0])) fixture = fixture.length > 1 ? fixture.shift() : fixture[0];
+      const [status, body] = fixture;
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify(body));
     });

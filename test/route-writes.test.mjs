@@ -132,6 +132,37 @@ test("route create help uses group flags and has no product aliases", { timeout:
   }
 });
 
+test("routes unarchive takes the route key archive takes, and an archived id when the key is ambiguous", { timeout: 4900 }, async (t) => {
+  // archived_routes entries follow ArchivedRouteSummary in the server's src/shared/dashboard-dto.ts.
+  const archived = (id, routeKey, archivedAt) => ({ id, product_id: "prod_support", route_key: routeKey, name: "Triage",
+    repo_full_name: null, best_model: "openai/gpt-5.4-mini", original_model: null, archived_at: archivedAt });
+  const replay = await startServer(t, {
+    "GET /v1/dashboard/summary": { routes: [], archived_routes: [
+      archived("route_triage_1", "support/triage", "2026-11-01T10:00:00.000Z"),
+      archived("route_faq_1", "support/faq", "2026-11-02T10:00:00.000Z"),
+      archived("route_faq_2", "support/faq", "2026-11-03T10:00:00.000Z")
+    ] },
+    "POST /v1/dashboard/archived-routes/route_triage_1/unarchive": { route_key: "support/triage", route_id: "route_triage_1" },
+    "POST /v1/dashboard/archived-routes/route_faq_2/unarchive": { route_key: "support/faq", route_id: "route_faq_2" }
+  });
+  const unarchive = (ref) => runCli(["routes", "unarchive", ref, "--yes", "--api-url", replay.url, ...token]);
+
+  const byKey = await unarchive("support/triage");
+  assert.equal(byKey.status, 0, byKey.stderr);
+  assert.equal(byKey.stdout, "Unarchived support/triage (route_triage_1).\n");
+
+  const ambiguous = await unarchive("support/faq");
+  assert.notEqual(ambiguous.status, 0);
+  assert.match(ambiguous.stderr, /Several archived routes use support\/faq: route_faq_1 \(archived 2026-11-02T10:00:00.000Z\), route_faq_2 \(archived 2026-11-03T10:00:00.000Z\)\. Pass one id\./);
+
+  const byId = await unarchive("route_faq_2");
+  assert.equal(byId.status, 0, byId.stderr);
+  assert.deepEqual(replay.requests.filter((request) => request.method === "POST").map((request) => request.url), [
+    "/v1/dashboard/archived-routes/route_triage_1/unarchive",
+    "/v1/dashboard/archived-routes/route_faq_2/unarchive"
+  ]);
+});
+
 async function startServer(t, responses, status = 200) {
   const requests = [];
   const server = createServer((request, response) => {

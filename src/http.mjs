@@ -1,4 +1,4 @@
-import { resolveAccountToken, resolveAdminToken } from "./config.mjs";
+import { LOGIN_COMMAND, resolveAccountToken, resolveAdminToken } from "./config.mjs";
 
 export class ApiError extends Error {
   constructor(message, { status, code, body, text, requestId, retryAfter } = {}) {
@@ -26,7 +26,7 @@ export function requireAccountCredential(explicitToken) {
   }
   if (!credential) {
     throw new Error(
-      "Missing account token. Pass --account-token, set BENCHROUTER_ACCOUNT_TOKEN, or save a br_ctrl_ token in private local config."
+      `Not signed in. Run \`${LOGIN_COMMAND}\`, then rerun this command. (Automation can pass --account-token or set BENCHROUTER_ACCOUNT_TOKEN.)`
     );
   }
   return credential;
@@ -148,6 +148,19 @@ export function parseJson(text) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The code and readable message of an error body in either shape the server uses: nested
+ * `{ error: { code, message } }` or flat `{ error: "<code>", message }`. Never the raw JSON
+ * of a parsed body; raw text only when the body is not JSON.
+ */
+export function responseError(parsed, text = "") {
+  const nested = parsed?.error && typeof parsed.error === "object" ? parsed.error : null;
+  const code = errorCode(parsed);
+  const message = [nested?.message, parsed?.message].find((value) => typeof value === "string" && value.length > 0)
+    ?? (parsed && typeof parsed === "object" ? code ?? "request failed" : text.slice(0, 800) || "request failed");
+  return { code, message };
 }
 
 function errorMessage(parsed, text) {

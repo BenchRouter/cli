@@ -354,10 +354,8 @@ ${ACCOUNT_FLAGS}`,
   benchrouter setup create [--repo owner/repo] [--intent initial|new_route]
   benchrouter setup session show <session-id>
   benchrouter setup approve <approval-id|approval-link> [--model <model-id>] [--yes]
-  benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
 
-create and upgrade-token each return a one-time secret. The CLI prints it once
-and never saves it.
+create returns a one-time secret. The CLI prints it once and never saves it.
 
 Options:
 ${ACCOUNT_FLAGS}  --yes, -y
@@ -378,7 +376,8 @@ ID come from your synced GitHub access (\`benchrouter repos list\`).
 
 To add a route to a repository that already has BenchRouter, use
 --intent new_route, then rerun init with the new key and the new route's
---route-id, --name and --incumbent-model. init keeps the existing routes.
+--route, --name and --incumbent-model. init keeps the existing routes. After
+\`benchrouter login\`, init needs no setup key.
 
 Options:
   --repo owner/repo            Defaults to the current git remote.
@@ -415,18 +414,6 @@ Options:
   --model <model-id>
   --yes, -y
 ${ACCOUNT_FLAGS}`,
-  "setup upgrade-token": `Usage:
-  benchrouter setup upgrade-token --route-id <id> [--repo owner/repo]
-
-Mints a single-use br_upgrade_ token through
-POST /v1/dashboard/setup-kit/upgrade-token and prints it once. The CLI does not
-save it. Pass it to \`benchrouter upgrade --upgrade-token\`.
-
-Options:
-  --route-id <id>
-  --repo owner/repo            Defaults to the current git remote.
-  --yes, -y
-${ACCOUNT_FLAGS}`,
   routes: `Usage:
   benchrouter routes list
   benchrouter routes show <route-key>
@@ -436,7 +423,7 @@ ${ACCOUNT_FLAGS}`,
   benchrouter routes create --name <text> --model <model-id> (--group <name> [--group-slug <slug>] | --group-id <id>) [--route-slug <slug>]
   benchrouter routes pin <route-key> [--model <model-id>]
   benchrouter routes archive <route-key>
-  benchrouter routes unarchive <route-id>
+  benchrouter routes unarchive <route-key>
 
 Options:
 ${ACCOUNT_FLAGS}  --yes, -y
@@ -538,7 +525,10 @@ Options:
   --yes, -y
 ${ACCOUNT_FLAGS}`,
   "routes unarchive": `Usage:
-  benchrouter routes unarchive <route-id>
+  benchrouter routes unarchive <route-key>
+
+Takes the same route key as archive. When several archived routes share the key,
+pass the archived route's id from \`benchrouter routes list\`.
 
 Options:
   --yes, -y
@@ -884,23 +874,27 @@ export function resolveControlUsageName(positional) {
 export function topLevelControlUsageLines() {
   return `  benchrouter login [--name text] [--expires-in-days 90]
   benchrouter feedback [--kind question|doc_gap|bug|other] [--json] "<message>"
-  benchrouter databricks connect --host <url> --catalog <catalog> --schema <schema> [--json]
-  benchrouter databricks status [--host <url>] [--all] [--json]
-  benchrouter databricks add-eval <route> <folder> [--host <url>] [--json]
-  benchrouter databricks disconnect [--host <url>] [--force] [--reclaim] [--results-owner <group>] [--json]
   benchrouter account show|token save [--json]
   benchrouter billing show|activity|statement [--json]
   benchrouter billing top-up --amount <usd> [--yes]
   benchrouter billing auto-reload setup|disable [--yes]
   benchrouter keys list|create|disable|enable|revoke [--json]
   benchrouter repos list|refresh [--json]
-  benchrouter setup status|create|session show|approve|upgrade-token [--json]
+  benchrouter setup status|create|session show|approve [--json]
   benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive [--json]
   benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]
   benchrouter evals status|results|model <route-key> ... --pr <number>   (an open PR's preview)
   benchrouter blocks list|unblock [--json]
   benchrouter public status|frontier [--json]
   benchrouter baseline set <route-key> --result-set <id> --model <id> [--yes]
-  benchrouter proposals list|approve|reject [--json]
+  benchrouter databricks connect --host <url> --catalog <catalog> --schema <schema> [--json]
+  benchrouter databricks status [--host <url>] [--all] [--json]
+  benchrouter databricks add-eval <route> <folder> [--host <url>] [--json]
+  benchrouter databricks disconnect [--host <url>] [--force] [--reclaim] [--results-owner <group>] [--json]`;
+}
+
+/** BenchRouter-internal commands. They need a bradm_ admin token, so default help leaves them out. */
+export function internalControlUsageLines() {
+  return `  benchrouter proposals list|approve|reject [--json]
   benchrouter admin providers|catalog|keys|token [--json]`;
 }

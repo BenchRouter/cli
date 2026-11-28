@@ -48,8 +48,7 @@ built, or proof that still needs the service worktree.
 - Admin/proposal commands use `--admin-token`, then `BENCHROUTER_ADMIN_TOKEN`,
   then private local config. Tokens are never auto-substituted across scopes.
 - One-time secrets are printed once and never saved: the runtime key from
-  `keys create` and `init`, the setup code from `setup create`, and the upgrade
-  token from `setup upgrade-token`. Provider, admin, and account secrets never
+  `keys create` and `init`, and the setup code from `setup create`. Provider, admin, and account secrets never
   appear in confirmations, errors, or rendered output.
 - `billing show` reads `billing` / `recent_ledger` from
   `GET /v1/dashboard/summary` (not `/v1/billing/summary`). `DashboardSummary.account`
