@@ -10,7 +10,7 @@ import { isRepoAccessStale, refreshRepoAccess, refreshFailureLine } from "./cont
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, internalControlUsageLines, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
-import { normalizeRouteManifest, rawCaseRefs, readRouteManifest } from "./route-manifest.mjs";
+import { normalizeRouteManifest, rawCaseRefs, readRouteManifest, yamlProblem } from "./route-manifest.mjs";
 import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
 import { unifiedDiff } from "./line-diff.mjs";
 import { customerPaths } from "./control-api.mjs";
@@ -58,9 +58,10 @@ const RUNTIME_ENV_TEMPLATE_NAMES = [".env.example", "env.template", ".env.sample
 
 class StaleRepoAccess extends Error {}
 
-// The manifest check's 422 codes. Their messages come from the server's own parse of
-// benchrouter.yml (src/runner/manifest-check.ts) and name the refused field.
-const MANIFEST_FIELD_ERRORS = new Set(["manifest_invalid", "manifest_yaml_invalid", "route_not_declared"]);
+// The manifest check's 422 codes whose messages name only a field path or the --route value
+// (src/runner/manifest-check.ts). manifest_yaml_invalid is left out: a YAML parser message
+// quotes lines of the file, so doctor names the line itself instead.
+const MANIFEST_FIELD_ERRORS = new Set(["manifest_invalid", "route_not_declared"]);
 
 // Every value a BenchRouter kit or init packet has written, per benchrouter: script name. A different
 // old value is the customer's own script, which the kit replaces.
@@ -420,10 +421,10 @@ function mergeRequestedRoutesIntoManifest(existingSource, previewSource, request
   const existingDocument = parseDocument(existingSource);
   const previewDocument = parseDocument(previewSource);
   if (existingDocument.errors.length > 0) {
-    throw new Error(`.benchrouter/benchrouter.yml is not valid YAML: ${existingDocument.errors[0].message}`);
+    throw new Error(`.benchrouter/benchrouter.yml is not valid YAML: ${yamlProblem(existingDocument.errors[0])}`);
   }
   if (previewDocument.errors.length > 0) {
-    throw new Error(`Preview .benchrouter/benchrouter.yml is not valid YAML: ${previewDocument.errors[0].message}`);
+    throw new Error(`Preview .benchrouter/benchrouter.yml is not valid YAML: ${yamlProblem(previewDocument.errors[0])}`);
   }
 
   const existingRoutes = existingDocument.get("routes", true);
@@ -849,6 +850,13 @@ async function fetchSetupPacketOnce({ apiUrl, credential, repoFullName, routeSpe
     if (credential.kind === "account") {
       if (isRepoAccessStale({ status: response.status, code: errorCode, message: errorText })) throw new StaleRepoAccess();
       if (response.status === 401) fail(`BenchRouter did not accept your login. Run \`${LOGIN_COMMAND}\`, then rerun init.`);
+      // SETUP-001: a login adds routes to a repository's group; the first route needs a setup key.
+      if (errorCode === "repo_not_found") {
+        const repo = shellQuote(repoFullName);
+        fail(`repo_not_found: ${repoFullName} has no BenchRouter group yet, and a login cannot create one. Create a setup key for the first route:\n` +
+          `  npx --yes benchrouter@latest setup create --repo ${repo} --yes\n` +
+          `Then rerun this init command with --setup-key <the printed key>. Later routes need only your login.`, errorCode);
+      }
     }
     if (errorCode === "setup_code_expired" || errorCode === "setup_scope_expired") {
       fail(`Setup access expired. Refresh it at ${recoveryUrl} and run init again.`);
@@ -1139,7 +1147,7 @@ async function doctor() {
   }
 
   if (full) {
-    await checkReadinessForDoctor({ apiUrl, repoFullName, routeKey: selectedRouteId, failures, passed });
+    await checkReadinessForDoctor({ apiUrl, repoFullName, routeKey: selectedRouteId, failures, passed, notes });
   } else {
     skipNeeded(`production readiness: pass --full (with \`${LOGIN_COMMAND}\`) to read the server's readiness for ${repoFullName ?? "this repo"}`);
   }
@@ -1177,7 +1185,7 @@ function printDoctorReport(stream, { passed, skipped, needed, notes, failures })
 // doctor --full: the server's readiness facts for the repo, read with the CLI login. A route the
 // server has not registered fails; the other facts are reported, because evaluation completion is
 // not a production-eligibility gate.
-async function checkReadinessForDoctor({ apiUrl, repoFullName, routeKey, failures, passed }) {
+async function checkReadinessForDoctor({ apiUrl, repoFullName, routeKey, failures, passed, notes }) {
   let credential = null;
   try { credential = resolveAccountToken(stringArg("account-token")); } catch { credential = null; }
   if (!credential) {
@@ -1202,9 +1210,16 @@ async function checkReadinessForDoctor({ apiUrl, repoFullName, routeKey, failure
   }
   const yesNo = (value) => (value === true ? "yes" : value === false ? "no" : "unknown");
   const facts = `registered ${yesNo(readiness.registered)}; evaluation ${readiness.evaluation_status ?? "none recorded"}; `
-    + `production eligible ${yesNo(readiness.production_eligible)}; observed serving ${yesNo(readiness.observed_serving)}`;
-  // The server names the route its facts describe (--route, else the latest setup session's route).
-  const scope = typeof readiness.route_key === "string" && readiness.route_key ? ` for ${readiness.route_key}` : "";
+    + `observed serving ${yesNo(readiness.observed_serving)}`;
+  // SETUP-001: the server names the route its facts describe (--route, else the newest setup
+  // session's route). Facts about another route, or about no named route, never pass --route.
+  const answered = typeof readiness.route_key === "string" && readiness.route_key ? readiness.route_key : null;
+  if (routeKey && answered !== routeKey) {
+    failures.push(`production readiness (server): asked about ${routeKey}, but BenchRouter answered ${answered ? `for ${answered}` : "without naming a route"}; retry later`);
+    return;
+  }
+  if (!answered) notes.push("production readiness (server): BenchRouter did not name the route these facts describe; pass --route <route-key> to check one route");
+  const scope = answered ? ` for ${answered}` : "";
   if (readiness.registered === true) passed.push(`production readiness (server)${scope}: ${facts}`);
   else failures.push(`production readiness (server)${scope}: ${facts}; BenchRouter has not registered ${scope ? "this route" : "this repo's routes"} yet`);
 }
@@ -1272,6 +1287,8 @@ async function checkManifestForDoctor({ root, apiUrl, repoFullName, selectedRout
   } catch (error) {
     if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
       failures.push("manifest check: this credential cannot check this repo; run benchrouter login or use the repo's setup key");
+    } else if (error instanceof ApiError && error.status === 422 && error.code === "manifest_yaml_invalid") {
+      failures.push(`manifest check: HTTP 422 (manifest_yaml_invalid): .benchrouter/benchrouter.yml is not valid YAML${yamlErrorLine(manifest)}`);
     } else if (error instanceof ApiError && error.status === 422 && MANIFEST_FIELD_ERRORS.has(error.code)) {
       // The server's manifest parse names the field it refused; print that field-level message.
       const { message } = responseError(error.body, "");
@@ -1286,6 +1303,12 @@ async function checkManifestForDoctor({ root, apiUrl, repoFullName, selectedRout
       skipNeeded("manifest check: BenchRouter is unavailable or the request failed; retry later");
     }
   }
+}
+
+// The first YAML error with its line and column, without the parser's quoted source lines.
+function yamlErrorLine(source) {
+  const error = parseDocument(source.toString("utf8")).errors[0];
+  return error ? `: ${yamlProblem(error)}` : "";
 }
 
 async function fetchModelIds(apiUrl) {
@@ -1466,11 +1489,11 @@ function providerIdentityReviewMessage(error, routeSpec) {
   const detail = typeof error.reason === "string" ? ` (${error.reason})` : "";
   const model = routeSpec.incumbent_model;
   const steps = [
-    `Confirm the exact model ID the call site sends. List catalog IDs with: npx --yes benchrouter@latest models --filter ${JSON.stringify(model.split("/").at(-1))}`,
+    `Confirm the exact model ID the call site sends. List catalog IDs with: npx --yes benchrouter@latest models --filter ${shellQuote(model.split("/").at(-1))}`,
     ...(routeSpec.provider_id === "openrouter" ? [] : [
-      `If the call site calls OpenRouter, pass --provider-id openrouter and --provider-ref ${model} (the exact OpenRouter ID). Setup can admit a paid, stable OpenRouter model that way.`
+      `If the call site calls OpenRouter, pass --provider-id openrouter and --provider-ref ${shellQuote(model)} (the exact OpenRouter ID). Setup can admit a paid, stable OpenRouter model that way.`
     ]),
-    `If the inputs are exact, ask BenchRouter to review the catalog identity: npx --yes benchrouter@latest feedback --kind bug --error-code provider_identity_review_required --route ${routeSpec.route_id} "Catalog review for ${model}"`
+    `If the inputs are exact, ask BenchRouter to review the catalog identity: npx --yes benchrouter@latest feedback --kind bug --error-code provider_identity_review_required --route ${shellQuote(routeSpec.route_id)} ${shellQuote(`Catalog review for ${model}`)}`
   ];
   return `provider_identity_review_required: BenchRouter cannot prove the identity of the observed incumbent.
 Route: ${routeSpec.route_id}
@@ -1480,6 +1503,15 @@ Exact provider reference: ${routeSpec.provider_ref ?? "not supplied"}${reason}${
 Nothing was changed. Do not substitute a model or remove provider metadata. Next steps:
 ${steps.map((step, index) => `${index + 1}. ${step}`).join("\n")}
 After the review, rerun the same init command unchanged.`;
+}
+
+// A value a person can paste into a POSIX shell as one word: plain catalog-ID characters stay as
+// they are; anything else goes in single quotes, with each ' written as '\''.
+function shellQuote(value) {
+  // Inside the function: top-level code can call it before module constants exist.
+  const plain = new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@%+=:,./_-");
+  const text = String(value);
+  return text !== "" && [...text].every((char) => plain.has(char)) ? text : `'${text.split("'").join("'\\''")}'`;
 }
 
 function browserApprovalUnavailableMessage(routeSpec) {
@@ -2179,8 +2211,9 @@ calibration fixtures (.benchrouter/calibration.<route>.json), with the cases and
 scorer that .benchrouter/benchrouter.yml declares. It takes no flags.
 
 ${RUNTIME_FILES}
-Billing: none. Calibrate runs offline and makes no model calls; a judge scorer gets
-the fixture's judge reply instead of a model. It does not affect PR or production
+Billing: none. Calibrate makes no model calls and costs nothing; a judge scorer gets
+the fixture's judge reply instead of a model. It needs network access: every run
+fetches the signed runtime and checks its release status. It does not affect PR or production
 evals, and it does not prove eval quality.
 
 A route with no local evidence is UNVERIFIED and does not fail the command. A FAILED
@@ -2224,9 +2257,11 @@ Multiple routes (paired in order; first triple is primary):
     --route product/route-a --name "Route A" --incumbent-model provider/model-a \\
     --route product/route-b --name "Route B" --incumbent-model provider/model-b
 
-init uses your saved login: run \`benchrouter login\` once, then init needs no
-setup key, for the first route and for each route you add later. A setup key from
-the BenchRouter setup page is optional (--setup-key or BENCHROUTER_SETUP_KEY).
+init uses your saved login (\`benchrouter login\`) for a repository that already has a
+BenchRouter group, including each route you add later. The first route of a repository
+with no group needs a setup key: run \`benchrouter setup create --repo owner/repo --yes\`
+and pass it with --setup-key (or BENCHROUTER_SETUP_KEY). A login-only init there stops
+with repo_not_found and prints that command.
 
 Routes share one product. Pass repeated route triples during init; the generated
 .benchrouter/benchrouter.yml is the single route declaration. The generated kit
@@ -2366,7 +2401,7 @@ Options:
   benchrouter doctor [--full]
   benchrouter --version
   benchrouter capture                (local proxy; spends balance per call)
-  benchrouter calibrate              (offline scorer check)
+  benchrouter calibrate              (local scorer check; no model calls)
   benchrouter run                    (GitHub Actions only; needs the job's OIDC token)
   benchrouter models [--json]
   benchrouter status [--repo owner/repo] [--json]

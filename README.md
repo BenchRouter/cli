@@ -44,7 +44,10 @@ npx --yes benchrouter@latest init \
   --incumbent-model provider/model
 ```
 
-`init` uses your login (`benchrouter login`) and needs `--repo owner/repo` when
+`init` uses your login (`benchrouter login`) for a repository that already has a
+BenchRouter group. The first route of a repository with no group needs a setup key
+from `benchrouter setup create --repo owner/repo --yes`; a login-only init there stops
+with `repo_not_found`. `init` needs `--repo owner/repo` when
 the current directory has no GitHub remote. A setup key from the BenchRouter setup
 page also works: pass `--setup-key br_setup_...` or set `BENCHROUTER_SETUP_KEY`.
 An explicit setup key is used instead of the login. `--route` takes the route key;
@@ -320,7 +323,8 @@ readiness. `--help` on either writes no file.
   call is a real BenchRouter model call and spends your balance; it does not count
   as production traffic. It records the calls in `.benchrouter/cases.<route>.json`.
   Stop it with Ctrl-C.
-- `calibrate` runs offline and makes no model calls. It checks each route's scorer
+- `calibrate` makes no model calls and costs nothing. It needs network access to
+  fetch the signed runtime and check its release status. It checks each route's scorer
   against the route's reference outputs and `.benchrouter/calibration.<route>.json`.
   Set `BENCHROUTER_ROUTE_ID` to check one route.
 - `benchrouter run` is for GitHub Actions only: it needs the job's OIDC token. The kit's `benchrouter:capture` and

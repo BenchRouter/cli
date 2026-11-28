@@ -10,4 +10,6 @@ that evaluation completion and production eligibility are separate facts.
 
 `route-scoped.json` is `production-decided.json` in the shape of BenchRouter server PR #968:
 `GET /v1/setup/diagnostic?repo=...&route=<route-key>` answers for the named route, and
-`readiness.route_key` names it. The route is the CLI tests' `app/chat`.
+`readiness.route_key` names it. Its readiness has exactly the fields of #968's
+`SetupReadinessDiagnostic` (`src/setup.ts`): `route_key`, `registered`, `evaluation_status` and
+`observed_serving`; #968 sends no `production_eligible`. The route is the CLI tests' `app/chat`.

@@ -156,3 +156,30 @@ function runCli(cliArgs, cwd, env = {}) {
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
 }
+
+test("doctor names the line of a YAML refusal without printing the file's lines", { timeout: 4900 }, async (t) => {
+  const secret = "sk-panel-secret-value";
+  const root = await tempRepo(t, { [MANIFEST]: `version: 1\nroutes: [\n  token: ${secret}\n` });
+  // The service's manifest_yaml_invalid body: the yaml parser's message, which quotes the file.
+  const server = await startServer(t, () => ({ status: 422, body: { error: {
+    message: `.benchrouter/benchrouter.yml is not valid YAML: excerpt\n\n  token: ${secret}\n`, type: "benchrouter_error", code: "manifest_yaml_invalid"
+  } } }));
+  const result = await runCli(["doctor", "--repo", "example/app", "--skip-github-workflow", "--api-url", server.url], root,
+    { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_fixture" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /doctor failed: manifest check: HTTP 422 \(manifest_yaml_invalid\): \.benchrouter\/benchrouter\.yml is not valid YAML: .* at line \d+, column \d+\n/);
+  assert.ok(!`${result.stdout}${result.stderr}`.includes(secret), result.stderr);
+});
+
+test("a login-only init on a repository with no group names the setup-key command", { timeout: 4900 }, async (t) => {
+  const root = await tempRepo(t, {});
+  // The service's refusal for a login on a repository with no group (handleCreateSetupPacketForActor).
+  const server = await startServer(t, () => ({ status: 404, body: { error: {
+    message: "This repository has no BenchRouter group yet.", type: "benchrouter_error", code: "repo_not_found"
+  } } }));
+  const args = initArgs(server.url, root).filter((value, index, all) => value !== "--setup-key" && all[index - 1] !== "--setup-key");
+  const result = await runCli([...args, "--repo", "example/app"], root, { BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_fixture" });
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.startsWith("repo_not_found: example/app has no BenchRouter group yet"), result.stderr);
+  assert.ok(result.stderr.includes("  npx --yes benchrouter@latest setup create --repo example/app --yes\n"), result.stderr);
+});

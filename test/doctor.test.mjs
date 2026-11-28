@@ -597,9 +597,10 @@ test("doctor confirms active BenchRouter Evals workflow from gh", async (t) => {
 });
 
 // #961 item 7 and 8: --full runs every free check, and the last line says what is left.
-async function startDoctorServer(t) {
+async function startDoctorServer(t, readinessRouteKey = routeId) {
   const decided = JSON.parse(await readFile(path.join(testDir, "fixtures/setup-diagnostic/production-decided.json"), "utf8"));
   const routeScoped = JSON.parse(await readFile(path.join(testDir, "fixtures/setup-diagnostic/route-scoped.json"), "utf8"));
+  routeScoped.diagnostic.readiness.route_key = readinessRouteKey;
   const seen = [];
   const server = createServer((request, response) => {
     request.resume();
@@ -632,7 +633,8 @@ test("doctor --full runs the default-branch and readiness checks and says nothin
     { ...env, BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_doctor" });
   assert.equal(full.status, 0, full.stderr);
   assert.match(full.stdout, /doctor passed: default-branch config: .benchrouter\/benchrouter.yml is readable on main/);
-  assert.match(full.stdout, /doctor passed: production readiness \(server\): registered yes; evaluation decided; production eligible yes; observed serving no/);
+  assert.match(full.stdout, /doctor passed: production readiness \(server\): registered yes; evaluation decided; observed serving no/);
+  assert.match(full.stdout, /doctor note: production readiness \(server\): BenchRouter did not name the route/);
   assert.doesNotMatch(full.stdout, /matters for this repo/);
   assert.equal(full.stdout.trimEnd().split("\n").at(-1), "Done: kit 0.1.0 · 1 route OK · nothing left to do");
   assert.deepEqual(server.seen.slice(-2), [
@@ -650,8 +652,21 @@ test("doctor --full --route reads that route's readiness and names it", { timeou
   { PATH: `${ghBin}${path.delimiter}${process.env.PATH ?? ""}`, BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_doctor" });
   assert.ok(server.seen.includes("GET /v1/setup/diagnostic?repo=example%2Fapp&route=app%2Fchat Bearer br_ctrl_doctor"), server.seen.join("\n"));
   assert.match(`${result.stdout}${result.stderr}`,
-    /doctor passed: production readiness \(server\) for app\/chat: registered yes; evaluation decided; production eligible yes; observed serving no/);
+    /doctor passed: production readiness \(server\) for app\/chat: registered yes; evaluation decided; observed serving no/);
 });
+
+for (const [label, routeKey, answer] of [["another route", "app/other", "for app/other"], ["no route", null, "without naming a route"]]) {
+  test(`doctor --full --route fails when readiness names ${label}`, { timeout: 4900 }, async (t) => {
+    const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+    const ghBin = await createFixtureGh(t);
+    const server = await startDoctorServer(t, routeKey);
+    const result = await runCli(["doctor", "--route", routeId, "--full", "--output-dir", root, "--api-url", server.url, "--repo", "example/app"], root,
+      { PATH: `${ghBin}${path.delimiter}${process.env.PATH ?? ""}`, BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_doctor" });
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(`doctor failed: production readiness (server): asked about ${routeId}, but BenchRouter answered ${answer}; retry later`), result.stderr);
+    assert.doesNotMatch(result.stdout + result.stderr, /doctor passed: production readiness/);
+  });
+}
 
 test("doctor --full fails a check it cannot run and refuses to skip the workflow check", { timeout: 4900 }, async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
@@ -1273,7 +1288,8 @@ test("init sends an unknown provider identity to review without offering substit
   assert.match(result.stderr, /Do not substitute a model or remove provider metadata/);
   // The panel's agent stopped here: the code and the next steps are in the output.
   assert.ok(result.stderr.startsWith("provider_identity_review_required: "), result.stderr);
-  assert.ok(result.stderr.includes("npx --yes benchrouter@latest models --filter \"claude-haiku-4-5-20991231\""), result.stderr);
+  assert.ok(result.stderr.includes("npx --yes benchrouter@latest models --filter claude-haiku-4-5-20991231\n"), result.stderr);
+  assert.ok(result.stderr.includes(`--route ${routeId} 'Catalog review for claude-haiku-4-5-20991231'`), result.stderr);
   assert.ok(result.stderr.includes("--provider-id openrouter"), result.stderr);
   assert.ok(result.stderr.includes(`feedback --kind bug --error-code provider_identity_review_required --route ${routeId}`), result.stderr);
   assert.equal(setupServer.requests.length, 1);

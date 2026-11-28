@@ -12,7 +12,6 @@
       "route_key": "app/chat",
       "registered": true,
       "evaluation_status": "decided",
-      "production_eligible": true,
       "observed_serving": false
     },
     "pr_open_no_report": null

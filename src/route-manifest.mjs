@@ -10,7 +10,7 @@ export function readRouteManifest(root) {
   try {
     parsed = parseYaml(readFileSync(manifestPath, "utf8"));
   } catch (error) {
-    throw new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${error instanceof Error ? error.message : "parse failed"}`);
+    throw new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${yamlProblem(error)}`);
   }
   return normalizeRouteManifest(parsed);
 }
@@ -36,6 +36,16 @@ export function rawCaseRefs(root) {
       ? [{ routeId, field: `eval_pack.case_refs[${refIndex}]`, ref: ref.trim() }]
       : []);
   });
+}
+
+/**
+ * A YAML parse error as its first line: the problem and its line and column. The parser's full
+ * message also quotes lines of the file, which may hold secrets, so it is never printed.
+ */
+export function yamlProblem(error) {
+  if (!(error instanceof Error)) return "parse failed";
+  const first = error.message.split("\n")[0].trim();
+  return first.endsWith(":") ? first.slice(0, -1) : first;
 }
 
 export function normalizeRouteManifest(parsed) {
