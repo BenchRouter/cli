@@ -233,8 +233,9 @@ ${ACCOUNT_FLAGS}  --yes, -y                    Skip confirmation for create, dis
   "keys list": `Usage:
   benchrouter keys list [--product-id <id>]
 
-Lists non-secret key metadata from GET /v1/dashboard/summary: id, name, prefix,
-product_id, created_at, last_used_at and disabled_at. It never shows a secret.
+Lists non-secret key metadata from GET /v1/dashboard/summary. To identify a key
+used by an app, privately compare the start of its stored runtime key with the
+displayed prefix (the prefix field in --json). The list never shows a full key.
 
 Options:
   --product-id <id>            Only the keys of this group.
@@ -481,9 +482,8 @@ ${ACCOUNT_FLAGS}`,
   "routes activity": `Usage:
   benchrouter routes activity <route-key>
 
-Shows the route's background eval activity: its state and trigger, how many models
-are done, failed, running or queued, the times, the GitHub run, and a failure with
-its automatic recovery.
+Shows activity and model counts for the displayed tranche. The production search
+status is reported separately and can refer to a different result set.
 
 Options:
 ${ACCOUNT_FLAGS}`,

@@ -14,6 +14,10 @@ const fixture = async (name) => JSON.parse(await readFile(path.join(testDir, "fi
 const activity = await fixture("route-activity.json");
 const status = await fixture("public-status.json");
 const frontier = await fixture("public-frontier.json");
+// The production results and status endpoints return the same route search status.
+const { search_status: searchStatus } = JSON.parse(
+  await readFile(path.join(testDir, "fixtures/hosted-evals/results.json"), "utf8")
+);
 
 test("routes activity and routes startup-failures print the route page's activity and blocked startups (ROUTE-006, RUN-001)", async (t) => {
   const failure = (id) => ({
@@ -22,6 +26,7 @@ test("routes activity and routes startup-failures print the route page's activit
   });
   const replay = await startServer(t, {
     "GET /v1/dashboard/routes/timeywimey/voice-places/activity": [200, activity],
+    "GET /v1/hosted-evals/timeywimey%2Fvoice-places/status": [200, { search_status: searchStatus }],
     "GET /v1/dashboard/routes/demo/app/catalog": [200, { route_key: "demo/app", startup_failures: [failure("evt_1"), failure("evt_2")] }],
     "GET /v1/dashboard/routes/demo/app/startup-details?blocked_event_id=evt_1": [200, {
       blocked_event_id: "evt_1", failed_at: "2026-10-28T10:00:00.000Z", github_run_url: "https://github.com/demo/app/actions/runs/1",
@@ -34,12 +39,26 @@ test("routes activity and routes startup-failures print the route page's activit
   const human = await runCli(["routes", "activity", "timeywimey/voice-places", "--api-url", replay.url, ...token]);
   assert.equal(human.status, 0, human.stderr);
   assert.equal(human.stdout, [
-    "timeywimey/voice-places: up_to_date (background_coverage); coverage complete",
-    "Models: 59 total; 59 done (1 measured, 58 reused), 0 failed, 0 running, 0 queued, 0 pending, 0 skipped",
-    "Result set: erset_2b2861d6bf7d48ada4480e199eaad99e; requested 2026-10-28 12:24Z, started 2026-10-28 12:24Z, completed 2026-10-28 12:24Z",
-    "GitHub run: https://github.com/patelnav/timeywimey/actions/runs/40687469899",
+    "timeywimey/voice-places",
+    "Production search: Done: 5 of 4 eligible (result set: erset_2b2861d6bf7d48ada4480e199eaad99e)",
+    "Displayed tranche 1: up_to_date (catalog_change); coverage unavailable",
+    "Tranche models: 12 total; 12 done (0 measured, 0 reused), 12 failed, 0 running, 0 queued, 0 pending, 0 skipped",
+    "Activity result set: erset_80b9d83a7a954eb59aa4053a704ca17c; requested 2026-11-27 07:04Z, started 2026-11-27 07:04Z, completed -",
+    "GitHub run: [redacted]",
+    "Evaluation failed (All 12 model runs failed.): BenchRouter could not answer 10 of 10 calls (plan_unavailable). The model remains unmeasured for this search.",
     ""
   ].join("\n"));
+
+  const json = await runCli(["routes", "activity", "timeywimey/voice-places", "--api-url", replay.url, ...token, "--json"]);
+  assert.equal(json.status, 0, json.stderr);
+  assert.deepEqual(JSON.parse(json.stdout), {
+    ...activity,
+    search_status: {
+      state: "done_target_met",
+      summary: "Done: 5 of 4 eligible",
+      result_set_id: "erset_2b2861d6bf7d48ada4480e199eaad99e"
+    }
+  });
 
   const startups = await runCli(["routes", "startup-failures", "demo/app", "--api-url", replay.url, ...token]);
   assert.equal(startups.status, 0, startups.stderr);

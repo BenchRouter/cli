@@ -1203,7 +1203,9 @@ async function checkReadinessForDoctor({ apiUrl, repoFullName, routeKey, failure
     const body = await apiRequest({ apiUrl, token: credential.token, ...customerPaths.setupDiagnostic(repoFullName, routeKey), timeoutMs: 5000, requireBody: true });
     readiness = body?.diagnostic?.readiness;
   } catch (error) {
-    failures.push(`production readiness: ${error instanceof Error ? error.message : "the server read failed"}`);
+    const detail = error instanceof ApiError ? error.body?.error : null;
+    const label = readinessScopeLabel(detail?.scope, detail?.route_key ?? routeKey) ?? "production readiness";
+    failures.push(`${label}: ${error instanceof Error ? error.message : "the server read failed"}`);
     return;
   }
   if (!readiness || typeof readiness !== "object") {
@@ -1216,14 +1218,22 @@ async function checkReadinessForDoctor({ apiUrl, repoFullName, routeKey, failure
   // SETUP-001: the server names the route its facts describe (--route, else the newest setup
   // session's route). Facts about another route, or about no named route, never pass --route.
   const answered = typeof readiness.route_key === "string" && readiness.route_key ? readiness.route_key : null;
+  const scopedLabel = readinessScopeLabel(readiness.scope, answered);
   if (routeKey && answered !== routeKey) {
-    failures.push(`production readiness (server): asked about ${routeKey}, but BenchRouter answered ${answered ? `for ${answered}` : "without naming a route"}; retry later`);
+    failures.push(`${scopedLabel ?? "production readiness (server)"}: asked about ${routeKey}, but BenchRouter answered ${answered ? `for ${answered}` : "without naming a route"}; retry later`);
     return;
   }
-  if (!answered) notes.push("production readiness (server): BenchRouter did not name the route these facts describe; pass --route <route-key> to check one route");
-  const scope = answered ? ` for ${answered}` : "";
-  if (readiness.registered === true) passed.push(`production readiness (server)${scope}: ${facts}`);
-  else failures.push(`production readiness (server)${scope}: ${facts}; BenchRouter has not registered ${scope ? "this route" : "this repo's routes"} yet`);
+  if (!answered && !scopedLabel) notes.push("production readiness (server): BenchRouter did not name the route these facts describe; pass --route <route-key> to check one route");
+  const label = scopedLabel ?? `production readiness (server)${answered ? ` for ${answered}` : ""}`;
+  const registrationTarget = readiness.scope !== "repository" && answered ? "this route" : "this repo's routes";
+  if (readiness.registered === true) passed.push(`${label}: ${facts}`);
+  else failures.push(`${label}: ${facts}; BenchRouter has not registered ${registrationTarget} yet`);
+}
+
+function readinessScopeLabel(scope, routeKey) {
+  if (scope === "repository") return "production readiness (repository)";
+  if (scope === "route" && typeof routeKey === "string" && routeKey) return `production readiness (route ${routeKey})`;
+  return null;
 }
 
 async function checkManifestForDoctor({ root, apiUrl, repoFullName, selectedRouteId, failures, passed, skipped, skipNeeded }) {
@@ -2167,7 +2177,7 @@ function fail(message, code = "command_failed", exitCode = 1) {
   process.exit(exitCode);
 }
 
-// RUN-001: the local runtime commands take no flags; the signed runtime reads only these env vars.
+// RUN-001: the local runtime commands take no flags.
 // A function, not a constant: usage() can run before the module's later constants exist.
 function runtimeUsage(commandName) {
   const RUNTIME_FILES = `Before it starts, the CLI writes its signed runtime bootstrap and trust file to
@@ -2191,19 +2201,33 @@ Point the call site's base URL variable at it:
   openai_chat_completions, openai_responses:  http://127.0.0.1:<port>/v1
   anthropic_messages:                         http://127.0.0.1:<port>
 
-Billing: each call goes to BenchRouter and its model, as a normal call with your
-runtime key, and spends your balance. It does not count as production traffic.
+The local caller can omit Authorization and x-api-key. The proxy ignores both
+headers and authenticates upstream with BENCHROUTER_API_KEY by default. For Anthropic
+Messages, it forwards anthropic-version and anthropic-beta if supplied.
+
+Capture has no stub upstream or non-forwarding mode. The CLI's signed bootstrap
+sets the upstream to https://api.benchrouter.com. Forwarded model calls and
+extra samples spend your balance and do not count as production traffic.
 
 It adds each call to .benchrouter/cases.<route>.json for the route the request
 names (a route in .benchrouter/benchrouter.yml), and appends it to the raw log
 .benchrouter/captured.jsonl. Review the redactions before you commit cases.
 
-Environment:
-  BENCHROUTER_API_KEY              Required. The runtime key (br_live_...).
-  BENCHROUTER_CAPTURE_SAMPLES      Outputs to record for each call. Defaults to 1.
-  BENCHROUTER_CAPTURE_REDACT_PATHS JSON array of extra request paths to redact.
-  BENCHROUTER_SIDECAR_PORT_FILE    Port file. Defaults to .benchrouter/sidecar.port.
-  BENCHROUTER_CAPTURE_RAW_LOG      Raw log. Defaults to .benchrouter/captured.jsonl.
+Capture environment:
+  BENCHROUTER_API_KEY               Required. The runtime key (br_live_...).
+  BENCHROUTER_CAPTURE_SAMPLES       Outputs to record for each call. Defaults to 1.
+  BENCHROUTER_CAPTURE_REDACT_PATHS  JSON array of extra request paths to redact.
+  BENCHROUTER_SIDECAR_PORT_FILE     Port file. Defaults to .benchrouter/sidecar.port.
+  BENCHROUTER_CAPTURE_RAW_LOG       Raw log. Defaults to .benchrouter/captured.jsonl.
+  BENCHROUTER_CODE_REFS_SHA256      Code-ref digest to record in capture provenance.
+  The port file and raw log paths can be absolute or relative to the repository root.
+
+Inherited runner environment:
+  GITHUB_REPOSITORY_ID             Scopes the signed runtime release lookup to that repository.
+  RUNNER_TEMP                      Base directory for the verified runtime file.
+  BENCHROUTER_MODEL_RUN_ID         With an eval-call token, makes the proxy use that token upstream.
+  BENCHROUTER_EVAL_CALL_TOKEN      Upstream token for a model run. The runtime key is still required.
+  BENCHROUTER_EVAL_CALL_TOKEN_MODEL  Fallback if BENCHROUTER_EVAL_CALL_TOKEN is unset.
 `,
   calibrate: `Usage:
   benchrouter calibrate
@@ -2270,8 +2294,8 @@ Routes share one product. Pass repeated route triples during init; the generated
 contains the eval-action workflow stub; the action and the CLI carry the bootstrap.
 
 Options:
-  --repo owner/repo        Defaults to the current git remote. Pass it only when the
-                           directory has no GitHub remote.
+  --repo owner/repo        Selects the repository explicitly, even if it matches
+                           the GitHub origin remote. Omit it to use that remote.
   --route <route-key>     Repeatable. Pair each with one --name and one --incumbent-model.
                           (--route-id is the deprecated old name.)
   --name <text>           Repeatable. Display name for the matching --route.

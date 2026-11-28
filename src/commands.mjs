@@ -415,7 +415,16 @@ async function runRoutes(ctx) {
     const routeKey = ctx.args._[2];
     if (!routeKey) return ctx.usage(1, "routes activity", "Missing route key.");
     const body = await accountRequest(ctx, customerPaths.routeActivity(routeKey));
-    return emit(ctx, body, () => render.renderRouteActivity(body));
+    // Activity can still be read when the production search read is unavailable.
+    const search = await accountRequest(ctx, customerPaths.evalsStatus(routeKey)).catch(() => null);
+    const status = search?.search_status;
+    const searchStatus = status ? {
+      state: status.state,
+      summary: status.summary,
+      result_set_id: status.result_set?.id ?? null
+    } : null;
+    const payload = { ...body, search_status: searchStatus };
+    return emit(ctx, payload, () => render.renderRouteActivity(payload));
   }
   if (sub === "startup-failures") {
     // RUN-001 R5: the route page's blocked runner startups, each with GitHub's annotations.

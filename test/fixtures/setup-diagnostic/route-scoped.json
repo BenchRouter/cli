@@ -9,6 +9,7 @@
     "last_plan_attempt_at": "2026-08-22T19:20:56.273Z",
     "last_plan_status": 200,
     "readiness": {
+      "scope": "route",
       "route_key": "app/chat",
       "registered": true,
       "evaluation_status": "decided",

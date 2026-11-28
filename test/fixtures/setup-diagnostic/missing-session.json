@@ -1,0 +1,8 @@
+{
+  "error": {
+    "message": "No setup session found for this repo",
+    "type": "benchrouter_error",
+    "code": "setup_session_not_found",
+    "scope": "repository"
+  }
+}

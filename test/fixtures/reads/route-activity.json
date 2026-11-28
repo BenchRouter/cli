@@ -2,48 +2,85 @@
   "ok": true,
   "route_key": "timeywimey/voice-places",
   "eval_activity": {
-    "result_set_id": "erset_2b2861d6bf7d48ada4480e199eaad99e",
+    "result_set_id": "erset_80b9d83a7a954eb59aa4053a704ca17c",
     "state": "up_to_date",
     "serving_evidence_valid": true,
     "serving_evidence_state": "valid",
-    "coverage_status": "complete",
-    "trigger": "background_coverage",
-    "total_models": 59,
-    "terminal_models": 59,
-    "uploaded_models": 1,
-    "reused_models": 58,
-    "usable_models": 59,
-    "failed_models": 0,
+    "coverage_status": "unavailable",
+    "trigger": "catalog_change",
+    "total_models": 12,
+    "terminal_models": 12,
+    "uploaded_models": 0,
+    "reused_models": 0,
+    "usable_models": 0,
+    "failed_models": 12,
     "pending_models": 0,
     "running_models": 0,
     "queued_models": 0,
     "skipped_models": 0,
+    "probe_models": 0,
     "current_tranche": 1,
     "active_packs": 0,
     "recovery_state": "none",
     "estimate": {
-      "candidate_count": 1,
-      "inference_count": 1,
-      "job_count": 2,
-      "rounded_action_minutes": 15
+      "candidate_count": 9,
+      "inference_count": 12,
+      "job_count": 9,
+      "rounded_action_minutes": 135
     },
     "actual": {
       "job_count": 0,
       "duration_seconds": 0,
       "rounded_action_minutes": 0
     },
-    "github_run_url": "https://github.com/patelnav/timeywimey/actions/runs/40687469899",
-    "requested_at": "2026-10-28T12:24:13.045Z",
-    "accepted_at": "2026-10-28T12:24:12.641Z",
-    "observed_at": "2026-10-28T12:24:12.641Z",
-    "started_at": "2026-10-28T12:24:12.641Z",
-    "completed_at": "2026-10-28T12:24:56.704Z",
-    "execution_released_at": "2026-10-28T12:24:51.548Z",
+    "github_run_url": "[redacted]",
+    "requested_at": "2026-11-27T07:04:16.411Z",
+    "accepted_at": "2026-11-27T07:04:16.023Z",
+    "observed_at": "2026-11-27T07:04:16.023Z",
+    "started_at": "2026-11-27T07:04:16.023Z",
+    "completed_at": null,
+    "execution_released_at": "2026-11-27T07:24:07.477Z",
     "conclusion": null,
-    "first_failure": null,
-    "failure_display": null,
+    "first_failure": {
+      "model": "microsoft/phi-4",
+      "failure": {
+        "v": 1,
+        "source": "workflow_fail_step",
+        "reason_code": "platform_failure",
+        "failed_step": "evaluator",
+        "github_conclusion": null,
+        "cases": null,
+        "verification": {
+          "missing_claimed_call_ids": [],
+          "unclaimed_server_call_ids": []
+        },
+        "retry": {
+          "outcome": "exhausted",
+          "attempt": 3,
+          "max_attempts": 3,
+          "cause": "platform_failure"
+        },
+        "availability_only": false,
+        "platform_failure": {
+          "failed": 10,
+          "planned": 10,
+          "cause": "plan_unavailable"
+        }
+      },
+      "github_run_url": "[redacted]",
+      "failed_at": "2026-11-27T07:24:06.301Z",
+      "before_model_call": true
+    },
+    "failure_display": {
+      "title": "Evaluation failed",
+      "runs": "All 12 model runs failed.",
+      "summary": "BenchRouter could not answer 10 of 10 calls (plan_unavailable). The model remains unmeasured for this search.",
+      "label": "BenchRouter failure",
+      "show_affected_models": false,
+      "show_retry": true
+    },
     "failure_summary": null,
     "serving_best_so_far": false,
-    "production_unaffected": false
+    "production_unaffected": true
   }
 }
