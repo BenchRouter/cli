@@ -268,9 +268,9 @@ function githubAccessLine(access, now = Date.now()) {
 }
 
 /**
- * GET /v1/setup/diagnostic returns the latest setup session and four separate
- * readiness facts. Do not collapse these facts into one "ready" result:
- * evaluation completion is not a production-eligibility gate, and observed
+ * GET /v1/setup/diagnostic returns the latest setup session and separate readiness
+ * facts (registered, evaluation status, observed serving). Do not collapse them into
+ * one "ready" result: evaluation completion is not a serving gate, and observed
  * serving is historical evidence rather than a current health check.
  */
 export function renderSetupStatus(body) {
@@ -285,16 +285,16 @@ export function renderSetupStatus(body) {
     ...(diagnostic.last_plan_attempt_at ? [`Last plan attempt: ${diagnostic.last_plan_attempt_at}`] : []),
     ...(diagnostic.last_plan_error ? [`Last plan error: ${diagnostic.last_plan_error}`] : []),
     ...(diagnostic.pr_open_no_report ? ["Open PR has not reported eval results yet."] : []),
-    "Readiness:",
+    // SETUP-001: the server names the route these facts describe when it knows one.
+    typeof readiness?.route_key === "string" && readiness.route_key ? `Readiness of ${readiness.route_key}:` : "Readiness:",
     ...(readiness && typeof readiness === "object"
       ? [
           `- Registered: ${formatReportedBoolean(readiness.registered)}`,
           `- Evaluation: ${readiness.evaluation_status ?? "none recorded"}`,
-          `- Production eligible: ${formatReportedBoolean(readiness.production_eligible)}`,
           `- Observed serving: ${formatReportedBoolean(readiness.observed_serving)}`
         ]
       : ["- Not reported by the server."]),
-    "Evaluation completion is not required for production eligibility.",
+    "A registered route serves; evaluation completion is not required (SERVE-001).",
     "Observed serving is historical evidence of a successful runtime delivery, not a current health check."
   ]);
 }

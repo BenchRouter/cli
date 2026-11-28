@@ -13,3 +13,6 @@ that evaluation completion and production eligibility are separate facts.
 `readiness.route_key` names it. Its readiness has exactly the fields of #968's
 `SetupReadinessDiagnostic` (`src/setup.ts`): `route_key`, `registered`, `evaluation_status` and
 `observed_serving`; #968 sends no `production_eligible`. The route is the CLI tests' `app/chat`.
+
+The server no longer sends `readiness.production_eligible` (absent on main and in #968), so
+`production-decided.json` and `imported-eval-pending.json` keep their recorded values without it.
