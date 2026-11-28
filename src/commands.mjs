@@ -211,8 +211,10 @@ async function runKeys(ctx) {
   const sub = subcommand(ctx);
   if (!sub) return ctx.usage(1, "keys", "Missing subcommand. Try: keys list | create | revoke");
   if (sub === "list") {
+    const productId = ctx.stringArg("product-id");
     const summary = await accountRequest(ctx, customerPaths.dashboardSummary("keys list"));
-    const keys = Array.isArray(summary.api_keys) ? summary.api_keys : [];
+    const keys = (Array.isArray(summary.api_keys) ? summary.api_keys : [])
+      .filter((key) => !productId || key?.product_id === productId);
     return emit(ctx, { ok: true, api_keys: keys }, () => render.renderApiKeysList(keys));
   }
   if (sub === "create") {
@@ -255,14 +257,14 @@ async function runRepos(ctx) {
   if (!sub) return ctx.usage(1, "repos", "Missing subcommand. Try: repos list | repos refresh");
   if (sub === "refresh") {
     // AUTH-003: the Setup page's Refresh, then the list it shows.
-    const body = await refreshRepoAccess(accountClient(ctx));
+    const body = render.withGitHubAccessAge(await refreshRepoAccess(accountClient(ctx)));
     return emit(ctx, body, () => {
       process.stdout.write("Refreshed GitHub repository access.\n");
       render.renderReposList(body);
     });
   }
   if (sub !== "list") return unknown(ctx, "repos", sub);
-  const body = await accountRequest(ctx, customerPaths.setupRepos());
+  const body = render.withGitHubAccessAge(await accountRequest(ctx, customerPaths.setupRepos()));
   return emit(ctx, body, () => render.renderReposList(body));
 }
 
@@ -383,11 +385,16 @@ async function runRoutes(ctx) {
     return ctx.usage(1, "routes", "Missing subcommand. Try: routes list | show | catalog | activity | startup-failures | create | pin | archive | unarchive");
   }
   if (sub === "list") {
+    const repo = ctx.stringArg("repo");
     const summary = await accountRequest(ctx, customerPaths.dashboardSummary("routes list"));
+    // Route DTOs carry repo_full_name; GitHub names compare without case.
+    const inRepo = (route) => !repo || (typeof route?.repo_full_name === "string" && route.repo_full_name.toLowerCase() === repo.toLowerCase());
+    const routes = (summary.routes ?? []).filter(inRepo);
+    const archived = (summary.archived_routes ?? []).filter(inRepo);
     return emit(
       ctx,
-      { ok: true, routes: summary.routes ?? [], archived_routes: summary.archived_routes ?? [] },
-      () => render.renderRoutesList(summary.routes ?? [], summary.archived_routes ?? [])
+      { ok: true, routes, archived_routes: archived },
+      () => render.renderRoutesList(routes, archived)
     );
   }
   if (sub === "show") {

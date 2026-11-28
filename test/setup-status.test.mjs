@@ -26,9 +26,9 @@ test("setup status replays separate server readiness facts end to end", async (t
   assert.match(text.stdout, /Readiness:/);
   assert.match(text.stdout, /Registered: yes/);
   assert.match(text.stdout, /Evaluation: queued/);
-  assert.match(text.stdout, /Production eligible: yes/);
   assert.match(text.stdout, /Observed serving: no/);
-  assert.match(text.stdout, /Evaluation completion is not required for production eligibility/);
+  assert.match(text.stdout, /A registered route serves; evaluation completion is not required/);
+  assert.doesNotMatch(text.stdout, /eligible|unknown/i);
   assert.match(text.stdout, /historical evidence.*not a current health check/);
   assert.doesNotMatch(text.stdout, /production ready|quality certified/i);
 
@@ -62,9 +62,19 @@ test("setup status renders the recorded deployed diagnostic contract", async (t)
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Route: benchrouter\/catalog-identity-review/);
   assert.match(result.stdout, /Evaluation: decided/);
-  assert.match(result.stdout, /Production eligible: yes/);
   assert.match(result.stdout, /Observed serving: no/);
+  assert.doesNotMatch(result.stdout, /eligible|unknown/i);
   assert.equal(replay.requests.length, 1);
+});
+
+test("setup status names the route the readiness facts describe (server #968 shape)", async (t) => {
+  const scoped = JSON.parse(await readFile(path.join(testDir, "fixtures/setup-diagnostic/route-scoped.json"), "utf8"));
+  const replay = await startFixtureServer(t, scoped);
+  const result = await runCli([
+    "setup", "status", "--repo", "example/app", "--api-url", replay.url, "--account-token", "br_ctrl_recorded_fixture"
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Readiness of app\/chat:\n- Registered: yes\n- Evaluation: decided\n- Observed serving: no$/m);
 });
 
 async function startFixtureServer(t, responseFixture) {

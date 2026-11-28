@@ -238,12 +238,39 @@ export function renderReposList(body) {
   for (const warning of Array.isArray(body.warnings) ? body.warnings : []) {
     process.stdout.write(`- warning ${warning.code}: ${warning.message}\n`);
   }
+  const access = githubAccessLine(body.github_access);
+  if (access) process.stdout.write(`${access}\n`);
 }
 
 /**
- * GET /v1/setup/diagnostic returns the latest setup session and four separate
- * readiness facts. Do not collapse these facts into one "ready" result:
- * evaluation completion is not a production-eligibility gate, and observed
+ * AUTH-003: github_access {synced_at, stale_at} from GET /v1/setup/repos, with the sync age the
+ * CLI adds. Returns the input unchanged when the server sent no github_access.
+ */
+export function withGitHubAccessAge(body, now = Date.now()) {
+  const access = body?.github_access;
+  if (!access || typeof access !== "object") return body;
+  const synced = Date.parse(access.synced_at ?? "");
+  const age_seconds = Number.isFinite(synced) ? Math.max(0, Math.floor((now - synced) / 1000)) : null;
+  return { ...body, github_access: { ...access, age_seconds } };
+}
+
+function githubAccessLine(access, now = Date.now()) {
+  if (!access || typeof access !== "object") return null;
+  const synced = Date.parse(access.synced_at ?? "");
+  if (!Number.isFinite(synced)) return "GitHub access: never synced. Run `npx --yes benchrouter@latest repos refresh`.";
+  const minutes = Math.max(0, Math.floor((now - synced) / 60000));
+  const age = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  const stale = Date.parse(access.stale_at ?? "");
+  const staleText = !Number.isFinite(stale) ? ""
+    : stale <= now ? `; stale since ${access.stale_at}. Run \`npx --yes benchrouter@latest repos refresh\`.`
+      : `; stale at ${access.stale_at}`;
+  return `GitHub access: synced ${age} ago (${access.synced_at})${staleText}`;
+}
+
+/**
+ * GET /v1/setup/diagnostic returns the latest setup session and separate readiness
+ * facts (registered, evaluation status, observed serving). Do not collapse them into
+ * one "ready" result: evaluation completion is not a serving gate, and observed
  * serving is historical evidence rather than a current health check.
  */
 export function renderSetupStatus(body) {
@@ -258,16 +285,16 @@ export function renderSetupStatus(body) {
     ...(diagnostic.last_plan_attempt_at ? [`Last plan attempt: ${diagnostic.last_plan_attempt_at}`] : []),
     ...(diagnostic.last_plan_error ? [`Last plan error: ${diagnostic.last_plan_error}`] : []),
     ...(diagnostic.pr_open_no_report ? ["Open PR has not reported eval results yet."] : []),
-    "Readiness:",
+    // SETUP-001: the server names the route these facts describe when it knows one.
+    typeof readiness?.route_key === "string" && readiness.route_key ? `Readiness of ${readiness.route_key}:` : "Readiness:",
     ...(readiness && typeof readiness === "object"
       ? [
           `- Registered: ${formatReportedBoolean(readiness.registered)}`,
           `- Evaluation: ${readiness.evaluation_status ?? "none recorded"}`,
-          `- Production eligible: ${formatReportedBoolean(readiness.production_eligible)}`,
           `- Observed serving: ${formatReportedBoolean(readiness.observed_serving)}`
         ]
       : ["- Not reported by the server."]),
-    "Evaluation completion is not required for production eligibility.",
+    "A registered route serves; evaluation completion is not required (SERVE-001).",
     "Observed serving is historical evidence of a successful runtime delivery, not a current health check."
   ]);
 }

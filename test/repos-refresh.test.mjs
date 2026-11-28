@@ -26,6 +26,31 @@ test("repos refresh re-reads GitHub access, then lists the repositories (AUTH-00
   assert.deepEqual(replay.requests, ["POST /v1/setup/repos/refresh", "GET /v1/setup/repos"]);
 });
 
+test("repos list shows the GitHub access sync age and stale time, in human and JSON output (AUTH-003)", async (t) => {
+  // GET /v1/setup/repos with github_access as BenchRouter server PR #968 returns it: stale_at is synced_at + 24 hours.
+  const syncedAt = new Date(Date.now() - (3 * 60 + 5) * 60 * 1000).toISOString();
+  const staleAt = new Date(Date.parse(syncedAt) + 24 * 60 * 60 * 1000).toISOString();
+  const replay = await startServer(t, { "GET /v1/setup/repos": [200, { ok: true, ...repos, github_access: { synced_at: syncedAt, stale_at: staleAt } }] });
+  const human = await runCli(["repos", "list", "--api-url", replay.url, ...token]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.ok(human.stdout.endsWith(`GitHub access: synced 3h 5m ago (${syncedAt}); stale at ${staleAt}\n`), human.stdout);
+  const json = await runCli(["repos", "list", "--json", "--api-url", replay.url, ...token]);
+  const access = JSON.parse(json.stdout).github_access;
+  assert.equal(access.synced_at, syncedAt);
+  assert.equal(access.stale_at, staleAt);
+  assert.ok(access.age_seconds >= 185 * 60 && access.age_seconds < 186 * 60, String(access.age_seconds));
+});
+
+test("repos list says a stale or missing GitHub access sync needs repos refresh", async (t) => {
+  const old = "2026-11-01T00:00:00.000Z";
+  const stale = await startServer(t, { "GET /v1/setup/repos": [200, { ok: true, ...repos, github_access: { synced_at: old, stale_at: "2026-11-02T00:00:00.000Z" } }] });
+  const staleOut = await runCli(["repos", "list", "--api-url", stale.url, ...token]);
+  assert.match(staleOut.stdout, /; stale since 2026-11-02T00:00:00\.000Z\. Run `npx --yes benchrouter@latest repos refresh`\.\n$/);
+  const never = await startServer(t, { "GET /v1/setup/repos": [200, { ok: true, ...repos, github_access: { synced_at: null, stale_at: null } }] });
+  const neverOut = await runCli(["repos", "list", "--json", "--api-url", never.url, ...token]);
+  assert.deepEqual(JSON.parse(neverOut.stdout).github_access, { synced_at: null, stale_at: null, age_seconds: null });
+});
+
 test("repos refresh stops with the reconnect error when GitHub needs a fresh sign-in", async (t) => {
   const replay = await startServer(t, {
     "POST /v1/setup/repos/refresh": [409, { error: { message: "Reconnect GitHub to refresh repository access", code: "github_reauth_required" } }]

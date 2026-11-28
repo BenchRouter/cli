@@ -1,18 +1,67 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
+import { LineCounter, parse as parseYaml, parseDocument, visit } from "yaml";
 
 export const ROUTE_MANIFEST_RELATIVE_PATH = ".benchrouter/benchrouter.yml";
 
 export function readRouteManifest(root) {
   const manifestPath = path.join(root, ROUTE_MANIFEST_RELATIVE_PATH);
+  let source;
+  try {
+    source = readFileSync(manifestPath, "utf8");
+  } catch (error) {
+    // A read error names the path, never file content.
+    throw new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${error instanceof Error ? error.message : "read failed"}`);
+  }
+  const { doc, problem } = parseYamlDocument(source);
+  if (problem) throw new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${problem}`);
+  return normalizeRouteManifest(doc.toJS());
+}
+
+/**
+ * Every string in routes[].eval_pack.case_refs with its field, read without the strict checks,
+ * so doctor names a missing case file even when another field of the manifest is invalid.
+ * Returns [] when the file is unreadable or has no routes list.
+ */
+export function rawCaseRefs(root) {
   let parsed;
   try {
-    parsed = parseYaml(readFileSync(manifestPath, "utf8"));
-  } catch (error) {
-    throw new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${error instanceof Error ? error.message : "parse failed"}`);
+    parsed = parseYaml(readFileSync(path.join(root, ROUTE_MANIFEST_RELATIVE_PATH), "utf8"));
+  } catch {
+    return [];
   }
-  return normalizeRouteManifest(parsed);
+  const routes = Array.isArray(parsed?.routes) ? parsed.routes : [];
+  return routes.flatMap((route, index) => {
+    const refs = route?.eval_pack?.case_refs;
+    if (!Array.isArray(refs)) return [];
+    const routeId = typeof route.route_id === "string" && route.route_id.trim() ? route.route_id.trim() : `routes[${index}]`;
+    return refs.flatMap((ref, refIndex) => typeof ref === "string" && ref.trim()
+      ? [{ routeId, field: `eval_pack.case_refs[${refIndex}]`, ref: ref.trim() }]
+      : []);
+  });
+}
+
+/**
+ * Parses YAML and names its first problem only by the parser's error code and the line and
+ * column. Parser messages quote the file (a bad version, an alias name, source lines), and the
+ * file may hold secrets, so no parser text is ever printed. An alias with no anchor is not a parse
+ * error, but turning the document into data throws with the alias name, so it is reported here.
+ */
+export function parseYamlDocument(source, options = {}) {
+  const lineCounter = new LineCounter();
+  const doc = parseDocument(source, { ...options, lineCounter });
+  const at = (position) => (position ? ` at line ${position.line}, column ${position.col}` : "");
+  const error = doc.errors[0];
+  if (error) return { doc, problem: `${error.code ?? "PARSE_ERROR"}${at(error.linePos?.[0])}` };
+  let problem = null;
+  visit(doc, {
+    Alias(_, node) {
+      if (node.resolve(doc)) return undefined;
+      problem = `UNRESOLVED_ALIAS${at(Array.isArray(node.range) ? lineCounter.linePos(node.range[0]) : null)}`;
+      return visit.BREAK;
+    }
+  });
+  return { doc, problem };
 }
 
 export function normalizeRouteManifest(parsed) {

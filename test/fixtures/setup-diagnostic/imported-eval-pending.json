@@ -11,7 +11,6 @@
     "readiness": {
       "registered": true,
       "evaluation_status": "queued",
-      "production_eligible": true,
       "observed_serving": false
     },
     "pr_open_no_report": null

@@ -208,29 +208,46 @@ Options:
   --yes, -y                    Required with --json; skips the confirmation prompt.
 ${ACCOUNT_FLAGS}`,
   keys: `Usage:
-  benchrouter keys list
+  benchrouter keys list [--product-id <id>]
   benchrouter keys create --product-id <id> [--name text]
   benchrouter keys disable <key-id>
   benchrouter keys enable <key-id>
   benchrouter keys revoke <key-id>
 
-These manage runtime API keys. Revoke is immediate and cannot be undone.
+These manage runtime API keys (br_live_...). A key belongs to one group
+(product_id) and calls every route of that group. A group can have several active
+keys at the same time, and each one works. Runtime keys do not expire.
+
+To rotate a key without downtime:
+  1. keys create --product-id <id>, and deploy the new key to the application host.
+  2. Confirm the application works with it.
+  3. keys disable <old-key-id>. Requests with the old key fail; keys enable undoes it.
+  4. keys revoke <old-key-id> when nothing uses it. Revoke is immediate and cannot be undone.
+
+create, disable, enable and revoke print their plan and ask for confirmation.
+--yes skips the prompt; with --json it is required.
 
 Options:
-${ACCOUNT_FLAGS}  --yes, -y                    Skip confirmation for create/revoke.
+${ACCOUNT_FLAGS}  --yes, -y                    Skip confirmation for create, disable, enable and revoke.
 `,
   "keys list": `Usage:
-  benchrouter keys list
+  benchrouter keys list [--product-id <id>]
 
-Lists non-secret key metadata from GET /v1/dashboard/summary.
+Lists non-secret key metadata from GET /v1/dashboard/summary: id, name, prefix,
+product_id, created_at, last_used_at and disabled_at. It never shows a secret.
 
 Options:
+  --product-id <id>            Only the keys of this group.
 ${ACCOUNT_FLAGS}`,
   "keys create": `Usage:
   benchrouter keys create --product-id <id> [--name text]
 
 The new runtime key is returned once by the server and printed once here.
 Store it in the application host; the CLI never writes runtime keys to disk.
+The group's other keys keep working.
+
+With --json, the secret is api_key.key; api_key also has id, name, prefix and
+product_id. --json needs --yes.
 
 Options:
   --product-id <id>
@@ -332,6 +349,10 @@ ${ACCOUNT_FLAGS}`,
   benchrouter repos list
   benchrouter repos refresh
 
+Repository actions use BenchRouter's copy of your GitHub access. It must be less
+than 24 hours old; BenchRouter refreshes it by itself after 20 hours. When it is
+older, a command fails with repo_access_stale. Run repos refresh, then retry.
+
 Options:
 ${ACCOUNT_FLAGS}`,
   "repos refresh": `Usage:
@@ -339,13 +360,22 @@ ${ACCOUNT_FLAGS}`,
 
 Re-reads your GitHub repository access with the GitHub sign-in BenchRouter holds, as
 the Setup page's Refresh does, then lists the repositories. Run it after you install
-the GitHub App on more repositories. When GitHub needs a fresh sign-in, it fails with
-github_reauth_required: reconnect GitHub on the BenchRouter website, then run it again.
+the GitHub App on more repositories, or when a command fails with repo_access_stale:
+BenchRouter's copy of your GitHub access is more than 24 hours old (BenchRouter
+refreshes it by itself after 20 hours). Then retry the command. init, upgrade and
+the repository reads refresh once by themselves before they report it. When GitHub
+needs a fresh sign-in, it fails with github_reauth_required: reconnect GitHub on the
+BenchRouter website, then run it again.
 
 Options:
 ${ACCOUNT_FLAGS}`,
   "repos list": `Usage:
   benchrouter repos list
+
+Lists the repositories your GitHub access covers, from BenchRouter's copy of that
+access. A repository is listed only while the copy is less than 24 hours old.
+The last line gives the copy's age and when it goes stale; --json has
+github_access.synced_at, stale_at and age_seconds. repos refresh renews the copy.
 
 Options:
 ${ACCOUNT_FLAGS}`,
@@ -415,7 +445,7 @@ Options:
   --yes, -y
 ${ACCOUNT_FLAGS}`,
   routes: `Usage:
-  benchrouter routes list
+  benchrouter routes list [--repo owner/repo]
   benchrouter routes show <route-key>
   benchrouter routes catalog <route-key>
   benchrouter routes activity <route-key>
@@ -425,13 +455,18 @@ ${ACCOUNT_FLAGS}`,
   benchrouter routes archive <route-key>
   benchrouter routes unarchive <route-key>
 
+A route key names one route across your account, so these commands need no --repo.
+
 Options:
 ${ACCOUNT_FLAGS}  --yes, -y
 `,
   "routes list": `Usage:
-  benchrouter routes list
+  benchrouter routes list [--repo owner/repo]
+
+Lists the account's routes and archived routes.
 
 Options:
+  --repo owner/repo            Only the routes of this repository.
 ${ACCOUNT_FLAGS}`,
   "routes show": `Usage:
   benchrouter routes show <route-key>
@@ -548,6 +583,8 @@ ${ACCOUNT_FLAGS}`,
   benchrouter evals retry --result-set <id> | --route <route-key>
   benchrouter evals harness-retry <route-key> [--model <model-id>]
   benchrouter evals refresh-preview <route-key> <result-set-id> [--model <model-id>]
+
+A route key names one route across your account, so these commands need no --repo.
 
 Options:
 ${ACCOUNT_FLAGS}  --yes, -y
@@ -879,9 +916,10 @@ export function topLevelControlUsageLines() {
   benchrouter billing top-up --amount <usd> [--yes]
   benchrouter billing auto-reload setup|disable [--yes]
   benchrouter keys list|create|disable|enable|revoke [--json]
-  benchrouter repos list|refresh [--json]
+  benchrouter repos list|refresh [--json]   (refresh fixes repo_access_stale)
   benchrouter setup status|create|session show|approve [--json]
-  benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive [--json]
+  benchrouter routes list [--repo owner/repo] [--json]
+  benchrouter routes show|catalog|activity|startup-failures|create|pin|archive|unarchive [--json]
   benchrouter evals list|status|results|model|case-output|overview|draft|approve|run|retry|harness-retry|refresh-preview [--json]
   benchrouter evals status|results|model <route-key> ... --pr <number>   (an open PR's preview)
   benchrouter blocks list|unblock [--json]

@@ -44,6 +44,21 @@ test("models renders stable human and JSON output through the real CLI process",
   assert.deepEqual(replay.requests.map((request) => request.pathname), ["/v1/models", "/v1/models"]);
 });
 
+test("a reader that closes stdout early does not crash the command with EPIPE", async (t) => {
+  const replay = await startReplayServer(t);
+  const child = spawn(process.execPath, [cliPath, "models", "--api-url", replay.url], {
+    env: { ...process.env, BENCHROUTER_CONFIG_DIR: emptyConfigDir },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  // As `benchrouter models | head -0` does: the read end closes before the CLI writes.
+  child.stdout.destroy();
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+  const status = await new Promise((resolve) => child.on("close", resolve));
+  assert.equal(status, 0, stderr);
+  assert.ok(!stderr.includes("EPIPE"), stderr);
+});
+
 test("status, frontier, and failures replay unchanged recorded contracts end to end", async (t) => {
   const replay = await startReplayServer(t);
   const common = ["--repo", "example/app", "--api-url", replay.url];

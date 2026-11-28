@@ -44,7 +44,10 @@ npx --yes benchrouter@latest init \
   --incumbent-model provider/model
 ```
 
-`init` uses your login (`benchrouter login`) and needs `--repo owner/repo` when
+`init` uses your login (`benchrouter login`) for a repository that already has a
+BenchRouter group. The first route of a repository with no group needs a setup key
+from `benchrouter setup create --repo owner/repo --yes`; a login-only init there stops
+with `repo_not_found`. `init` needs `--repo owner/repo` when
 the current directory has no GitHub remote. A setup key from the BenchRouter setup
 page also works: pass `--setup-key br_setup_...` or set `BENCHROUTER_SETUP_KEY`.
 An explicit setup key is used instead of the login. `--route` takes the route key;
@@ -219,7 +222,9 @@ each file hash before it writes any file. It preserves customer setup steps
 between the prepare step and Run BenchRouter, customer steps after Run BenchRouter,
 and customer comments. A workflow from before the eval action migrates to the
 stub with its setup steps, post steps, `runs-on`, and comments. Each customer step must use
-`if: github.event_name == 'workflow_dispatch'`. It keeps the eval job's
+`if: github.event_name == 'workflow_dispatch'`; upgrade keeps each step as it is
+and does not add the condition, so a setup step without it stops the upgrade with
+no change. It keeps the eval job's
 `runs-on`, so a job moved to self-hosted runners stays there; `doctor` accepts
 any `runs-on` label, label list, or `group`/`labels` object. It never replaces cases,
 scorers, calibration fixtures, setup guides, or app files. Old generated-engine
@@ -307,9 +312,22 @@ The CLI carries the signed runtime bootstrap and its trust file. Before each
 command it writes them to `.benchrouter/bootstrap.mjs` and `.benchrouter/trust.json`
 in the repository, then runs the bootstrap. `.benchrouter/.gitignore` lists both
 files, so they are never committed. The bootstrap verifies the signed release
-before it starts. Capture starts a local proxy. Run the existing application test
-command separately against that proxy. Calibrate checks local evidence. Neither
-command proves production readiness. The kit's `benchrouter:capture` and
+before it starts. Neither command takes flags, and neither proves production
+readiness. `--help` on either writes no file.
+
+- `capture` starts a proxy on `127.0.0.1` on a free port. It prints the address and
+  writes the port to `.benchrouter/sidecar.port`. Leave it running and run the
+  application tests in another shell with the call site's base URL variable set to
+  `http://127.0.0.1:<port>/v1` (OpenAI families) or `http://127.0.0.1:<port>`
+  (`anthropic_messages`). It needs `BENCHROUTER_API_KEY` (the runtime key). Each
+  call is a real BenchRouter model call and spends your balance; it does not count
+  as production traffic. It records the calls in `.benchrouter/cases.<route>.json`.
+  Stop it with Ctrl-C.
+- `calibrate` makes no model calls and costs nothing. It needs network access to
+  fetch the signed runtime and check its release status. It checks each route's scorer
+  against the route's reference outputs and `.benchrouter/calibration.<route>.json`.
+  Set `BENCHROUTER_ROUTE_ID` to check one route.
+- `benchrouter run` is for GitHub Actions only: it needs the job's OIDC token. The kit's `benchrouter:capture` and
 `benchrouter:calibrate` scripts run `npx --yes benchrouter@latest capture` and
 `calibrate`.
 
@@ -330,10 +348,10 @@ benchrouter init --help
 benchrouter upgrade [--repo owner/repo]
 benchrouter doctor [--full]
 benchrouter models [--filter text] [--json]
-benchrouter status [--json]
-benchrouter frontier <route-key> [--json]
-benchrouter failures <route-key> [model] [--json]
-benchrouter explain <model> [--route <route-key>] [--json]
+benchrouter status [--repo owner/repo] [--json]
+benchrouter frontier <route-key> [--repo owner/repo] [--json]
+benchrouter failures <route-key> [model] [--repo owner/repo] [--json]
+benchrouter explain <model> [--route <route-key>] [--repo owner/repo] [--json]
 benchrouter login [--name text] [--expires-in-days 90]
 benchrouter feedback [--kind question|doc_gap|bug|other] [--json] "<message>"
 benchrouter account show [--json]
@@ -341,13 +359,15 @@ benchrouter account token save --account-token br_ctrl_...
 benchrouter billing show|activity|statement [--json]
 benchrouter billing top-up --amount 25 [--yes]
 benchrouter billing auto-reload setup --threshold <usd> --amount <usd> | disable
-benchrouter keys list|create|disable|enable|revoke
+benchrouter keys list [--product-id <id>]
+benchrouter keys create|disable|enable|revoke
 benchrouter repos list|refresh
 benchrouter setup status [--repo owner/repo]
 benchrouter setup create [--repo owner/repo] [--intent initial|new_route]
 benchrouter setup session show <session-id>
 benchrouter setup approve <approval-id|approval-link> [--model <model-id>] [--yes]
-benchrouter routes list|show|catalog|activity|startup-failures|create|pin|archive|unarchive
+benchrouter routes list [--repo owner/repo]
+benchrouter routes show|catalog|activity|startup-failures|create|pin|archive|unarchive
 benchrouter evals list|run
 benchrouter evals status <route-key> [--pr <number>]
 benchrouter evals results <route-key> [--pr <number>]
@@ -370,7 +390,10 @@ benchrouter databricks connect|status|add-eval|disconnect
 A route is always named by its route key, such as `product/route`: as a positional
 `<route-key>` or as `--route <route-key>`. `routes archive` and `routes unarchive`
 take the same key. When several archived routes share a key, `unarchive` lists them;
-pass the archived route's id from `routes list`.
+pass the archived route's id from `routes list`. A route key names one route across
+the account, so the `routes` and `evals` commands need no `--repo`. The repository
+reads (`status`, `frontier`, `failures`, `explain`) take `--repo`, or use the current
+git remote.
 
 `benchrouter --help` lists the customer commands. The BenchRouter-internal
 `proposals` and `admin` commands need a `bradm_` admin token and appear only under
@@ -438,6 +461,13 @@ frontier. Pass `--route` when a repository has more than one route.
 `keys revoke <key-id>` calls `POST /v1/dashboard/api-keys/:keyId/revoke` and
 prints non-secret key metadata. Revocation is immediate: any application still
 using that key stops authenticating.
+
+A group can have several active runtime keys at once, so a rotation has no
+downtime: `keys create --product-id <id>`, deploy the new key, then
+`keys disable <old-key-id>` (`keys enable` undoes it), then `keys revoke` when
+nothing uses the old key. `keys create --yes --json` prints the secret once as
+`api_key.key`. `--yes` skips the confirmation of `create`, `disable`, `enable` and
+`revoke`. `keys list --product-id <id>` lists one group's keys.
 
 `setup create` starts a setup session and prints a one-time setup code plus an
 `npx --yes benchrouter@latest init` command. With `--yes --json`, stdout contains
