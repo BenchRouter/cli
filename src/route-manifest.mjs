@@ -4,6 +4,13 @@ import { LineCounter, parse as parseYaml, parseDocument, visit } from "yaml";
 
 export const ROUTE_MANIFEST_RELATIVE_PATH = ".benchrouter/benchrouter.yml";
 
+class ManifestFieldError extends Error {
+  constructor(fieldPath, requirement) {
+    super(`${fieldPath} ${requirement}`);
+    this.fieldPath = fieldPath;
+  }
+}
+
 export function readRouteManifest(root) {
   const manifestPath = path.join(root, ROUTE_MANIFEST_RELATIVE_PATH);
   let source;
@@ -165,14 +172,14 @@ function requiredStringList(value, label) {
 
 function objectValue(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object.`);
+    throw new ManifestFieldError(label, "must be an object.");
   }
   return value;
 }
 
 function requiredString(value, label) {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} is required.`);
+    throw new ManifestFieldError(label, "is required.");
   }
   return value.trim();
 }

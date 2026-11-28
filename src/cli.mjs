@@ -296,14 +296,14 @@ async function init() {
           fail(error instanceof Error ? error.message : "Could not merge .benchrouter/benchrouter.yml.");
         }
       }
-      const problems = manifestProblems(content);
-      if (problems.length > 0 && content !== previous) {
-        const hint = problems.some((problem) => /\.call_site(?:\.base_url_env)? (?:is required|must be an object)\.$/.test(problem))
+      const problem = manifestProblem(content);
+      if (problem && content !== previous) {
+        const hint = problem.fieldPath?.endsWith(".call_site") || problem.fieldPath?.endsWith(".call_site.base_url_env")
           ? "\nPass --base-url-env <name> and update the call site to read its LLM base URL from that environment variable."
           : "";
-        fail(`init would write an invalid route manifest.\n${problems.join("\n")}${hint}`, "manifest_invalid");
+        fail(`init would write an invalid route manifest.\n${problem.message}${hint}`, "manifest_invalid");
       }
-      manifestWarnings.push(...problems);
+      if (problem) manifestWarnings.push(problem.message);
     } else if (file.path === WORKFLOW_PATH && previous !== null) {
       try {
         content = preserveCustomerSetup(previous, content);
@@ -390,14 +390,14 @@ async function init() {
 }
 
 // Validate the manifest init plans to write with the same rules doctor uses.
-function manifestProblems(content) {
+function manifestProblem(content) {
   const { doc, problem } = parseYamlDocument(content);
-  if (problem) return [`.benchrouter/benchrouter.yml is not valid YAML: ${problem}`];
+  if (problem) return new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} is not valid YAML: ${problem}`);
   try {
     normalizeRouteManifest(doc.toJS());
-    return [];
+    return null;
   } catch (error) {
-    return [error instanceof Error ? error.message : "the merged .benchrouter/benchrouter.yml is invalid"];
+    return error instanceof Error ? error : new Error(`the merged ${ROUTE_MANIFEST_RELATIVE_PATH} is invalid`);
   }
 }
 
