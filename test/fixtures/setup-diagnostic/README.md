@@ -7,3 +7,7 @@
 BenchRouter server's real Worker and D1 readiness integration test after a
 default-branch import while the latest evaluation was still queued. It proves
 that evaluation completion and production eligibility are separate facts.
+
+`route-scoped.json` is `production-decided.json` in the shape of BenchRouter server PR #968:
+`GET /v1/setup/diagnostic?repo=...&route=<route-key>` answers for the named route, and
+`readiness.route_key` names it. The route is the CLI tests' `app/chat`.

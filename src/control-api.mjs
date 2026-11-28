@@ -99,10 +99,10 @@ export const customerPaths = {
     body: { approved_baseline_model: model }
   }),
 
-  /** GET /v1/setup/diagnostic?repo=owner/repo */
-  setupDiagnostic: (repoFullName) => ({
+  /** GET /v1/setup/diagnostic?repo=owner/repo[&route=<route-key>]: readiness for that route when named. */
+  setupDiagnostic: (repoFullName, routeKey) => ({
     method: "GET",
-    path: `/v1/setup/diagnostic?repo=${encodePathSegment(repoFullName)}`,
+    path: `/v1/setup/diagnostic?repo=${encodePathSegment(repoFullName)}${routeKey ? `&route=${encodePathSegment(routeKey)}` : ""}`,
     label: "setup status"
   }),
 

@@ -1139,7 +1139,7 @@ async function doctor() {
   }
 
   if (full) {
-    await checkReadinessForDoctor({ apiUrl, repoFullName, failures, passed });
+    await checkReadinessForDoctor({ apiUrl, repoFullName, routeKey: selectedRouteId, failures, passed });
   } else {
     skipNeeded(`production readiness: pass --full (with \`${LOGIN_COMMAND}\`) to read the server's readiness for ${repoFullName ?? "this repo"}`);
   }
@@ -1177,7 +1177,7 @@ function printDoctorReport(stream, { passed, skipped, needed, notes, failures })
 // doctor --full: the server's readiness facts for the repo, read with the CLI login. A route the
 // server has not registered fails; the other facts are reported, because evaluation completion is
 // not a production-eligibility gate.
-async function checkReadinessForDoctor({ apiUrl, repoFullName, failures, passed }) {
+async function checkReadinessForDoctor({ apiUrl, repoFullName, routeKey, failures, passed }) {
   let credential = null;
   try { credential = resolveAccountToken(stringArg("account-token")); } catch { credential = null; }
   if (!credential) {
@@ -1190,7 +1190,7 @@ async function checkReadinessForDoctor({ apiUrl, repoFullName, failures, passed 
   }
   let readiness;
   try {
-    const body = await apiRequest({ apiUrl, token: credential.token, ...customerPaths.setupDiagnostic(repoFullName), timeoutMs: 5000, requireBody: true });
+    const body = await apiRequest({ apiUrl, token: credential.token, ...customerPaths.setupDiagnostic(repoFullName, routeKey), timeoutMs: 5000, requireBody: true });
     readiness = body?.diagnostic?.readiness;
   } catch (error) {
     failures.push(`production readiness: ${error instanceof Error ? error.message : "the server read failed"}`);
@@ -1203,8 +1203,10 @@ async function checkReadinessForDoctor({ apiUrl, repoFullName, failures, passed 
   const yesNo = (value) => (value === true ? "yes" : value === false ? "no" : "unknown");
   const facts = `registered ${yesNo(readiness.registered)}; evaluation ${readiness.evaluation_status ?? "none recorded"}; `
     + `production eligible ${yesNo(readiness.production_eligible)}; observed serving ${yesNo(readiness.observed_serving)}`;
-  if (readiness.registered === true) passed.push(`production readiness (server): ${facts}`);
-  else failures.push(`production readiness (server): ${facts}; BenchRouter has not registered this repo's routes yet`);
+  // The server names the route its facts describe (--route, else the latest setup session's route).
+  const scope = typeof readiness.route_key === "string" && readiness.route_key ? ` for ${readiness.route_key}` : "";
+  if (readiness.registered === true) passed.push(`production readiness (server)${scope}: ${facts}`);
+  else failures.push(`production readiness (server)${scope}: ${facts}; BenchRouter has not registered ${scope ? "this route" : "this repo's routes"} yet`);
 }
 
 async function checkManifestForDoctor({ root, apiUrl, repoFullName, selectedRouteId, failures, passed, skipped, skipNeeded }) {

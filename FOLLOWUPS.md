@@ -27,14 +27,6 @@ built, or proof that still needs the service worktree.
 - `GET /v1/billing/summary` — `billing show` reads the same fields from
   `GET /v1/dashboard/summary`.
 
-## Needs a server change
-
-- **GitHub access sync age:** `GET /v1/setup/repos` (`repos list --json`) returns
-  no sync time, so a person cannot see how old BenchRouter's copy of their GitHub
-  access is before a command fails with `repo_access_stale`. The server holds it
-  (`repo_access_sync_state.last_succeeded_at`). When the response carries it,
-  `repos list` should print the age.
-
 ## Proof that still needs the service worktree
 
 - **Enriched repo-read bodies:** `status`, `frontier`, `failures`, and `explain`

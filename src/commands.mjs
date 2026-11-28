@@ -257,14 +257,14 @@ async function runRepos(ctx) {
   if (!sub) return ctx.usage(1, "repos", "Missing subcommand. Try: repos list | repos refresh");
   if (sub === "refresh") {
     // AUTH-003: the Setup page's Refresh, then the list it shows.
-    const body = await refreshRepoAccess(accountClient(ctx));
+    const body = render.withGitHubAccessAge(await refreshRepoAccess(accountClient(ctx)));
     return emit(ctx, body, () => {
       process.stdout.write("Refreshed GitHub repository access.\n");
       render.renderReposList(body);
     });
   }
   if (sub !== "list") return unknown(ctx, "repos", sub);
-  const body = await accountRequest(ctx, customerPaths.setupRepos());
+  const body = render.withGitHubAccessAge(await accountRequest(ctx, customerPaths.setupRepos()));
   return emit(ctx, body, () => render.renderReposList(body));
 }
 

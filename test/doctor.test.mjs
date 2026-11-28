@@ -599,13 +599,15 @@ test("doctor confirms active BenchRouter Evals workflow from gh", async (t) => {
 // #961 item 7 and 8: --full runs every free check, and the last line says what is left.
 async function startDoctorServer(t) {
   const decided = JSON.parse(await readFile(path.join(testDir, "fixtures/setup-diagnostic/production-decided.json"), "utf8"));
+  const routeScoped = JSON.parse(await readFile(path.join(testDir, "fixtures/setup-diagnostic/route-scoped.json"), "utf8"));
   const seen = [];
   const server = createServer((request, response) => {
     request.resume();
     request.on("end", () => {
       seen.push(`${request.method} ${request.url} ${request.headers.authorization}`);
       const body = request.url === "/v1/repo/manifest-check" ? acceptedManifest
-        : request.url === "/v1/setup/diagnostic?repo=example%2Fapp" ? decided : null;
+        : request.url === "/v1/setup/diagnostic?repo=example%2Fapp" ? decided
+          : request.url === "/v1/setup/diagnostic?repo=example%2Fapp&route=app%2Fchat" ? routeScoped : null;
       response.writeHead(body ? 200 : 404, { "content-type": "application/json" });
       response.end(JSON.stringify(body ?? { error: { code: "not_found", message: "not recorded" } }));
     });
@@ -637,6 +639,18 @@ test("doctor --full runs the default-branch and readiness checks and says nothin
     "POST /v1/repo/manifest-check Bearer br_ctrl_doctor",
     "GET /v1/setup/diagnostic?repo=example%2Fapp Bearer br_ctrl_doctor"
   ]);
+});
+
+test("doctor --full --route reads that route's readiness and names it", { timeout: 4900 }, async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  const ghBin = await createFixtureGh(t);
+  const server = await startDoctorServer(t);
+  const result = await runCli(["doctor", "--phase", "activation", "--route", routeId, "--full", "--output-dir", root,
+    "--api-url", server.url, "--repo", "example/app"], root,
+  { PATH: `${ghBin}${path.delimiter}${process.env.PATH ?? ""}`, BENCHROUTER_ACCOUNT_TOKEN: "br_ctrl_doctor" });
+  assert.ok(server.seen.includes("GET /v1/setup/diagnostic?repo=example%2Fapp&route=app%2Fchat Bearer br_ctrl_doctor"), server.seen.join("\n"));
+  assert.match(`${result.stdout}${result.stderr}`,
+    /doctor passed: production readiness \(server\) for app\/chat: registered yes; evaluation decided; production eligible yes; observed serving no/);
 });
 
 test("doctor --full fails a check it cannot run and refuses to skip the workflow check", { timeout: 4900 }, async (t) => {

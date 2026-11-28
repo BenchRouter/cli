@@ -374,7 +374,8 @@ ${ACCOUNT_FLAGS}`,
 
 Lists the repositories your GitHub access covers, from BenchRouter's copy of that
 access. A repository is listed only while the copy is less than 24 hours old.
-The response has no sync time; run repos refresh to renew the copy.
+The last line gives the copy's age and when it goes stale; --json has
+github_access.synced_at, stale_at and age_seconds. repos refresh renews the copy.
 
 Options:
 ${ACCOUNT_FLAGS}`,

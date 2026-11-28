@@ -238,6 +238,33 @@ export function renderReposList(body) {
   for (const warning of Array.isArray(body.warnings) ? body.warnings : []) {
     process.stdout.write(`- warning ${warning.code}: ${warning.message}\n`);
   }
+  const access = githubAccessLine(body.github_access);
+  if (access) process.stdout.write(`${access}\n`);
+}
+
+/**
+ * AUTH-003: github_access {synced_at, stale_at} from GET /v1/setup/repos, with the sync age the
+ * CLI adds. Returns the input unchanged when the server sent no github_access.
+ */
+export function withGitHubAccessAge(body, now = Date.now()) {
+  const access = body?.github_access;
+  if (!access || typeof access !== "object") return body;
+  const synced = Date.parse(access.synced_at ?? "");
+  const age_seconds = Number.isFinite(synced) ? Math.max(0, Math.floor((now - synced) / 1000)) : null;
+  return { ...body, github_access: { ...access, age_seconds } };
+}
+
+function githubAccessLine(access, now = Date.now()) {
+  if (!access || typeof access !== "object") return null;
+  const synced = Date.parse(access.synced_at ?? "");
+  if (!Number.isFinite(synced)) return "GitHub access: never synced. Run `npx --yes benchrouter@latest repos refresh`.";
+  const minutes = Math.max(0, Math.floor((now - synced) / 60000));
+  const age = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  const stale = Date.parse(access.stale_at ?? "");
+  const staleText = !Number.isFinite(stale) ? ""
+    : stale <= now ? `; stale since ${access.stale_at}. Run \`npx --yes benchrouter@latest repos refresh\`.`
+      : `; stale at ${access.stale_at}`;
+  return `GitHub access: synced ${age} ago (${access.synced_at})${staleText}`;
 }
 
 /**
