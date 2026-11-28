@@ -1203,7 +1203,9 @@ async function checkReadinessForDoctor({ apiUrl, repoFullName, routeKey, failure
     const body = await apiRequest({ apiUrl, token: credential.token, ...customerPaths.setupDiagnostic(repoFullName, routeKey), timeoutMs: 5000, requireBody: true });
     readiness = body?.diagnostic?.readiness;
   } catch (error) {
-    failures.push(`production readiness: ${error instanceof Error ? error.message : "the server read failed"}`);
+    const detail = error instanceof ApiError ? error.body?.error : null;
+    const label = readinessScopeLabel(detail?.scope, detail?.route_key ?? routeKey) ?? "production readiness";
+    failures.push(`${label}: ${error instanceof Error ? error.message : "the server read failed"}`);
     return;
   }
   if (!readiness || typeof readiness !== "object") {
@@ -1216,14 +1218,22 @@ async function checkReadinessForDoctor({ apiUrl, repoFullName, routeKey, failure
   // SETUP-001: the server names the route its facts describe (--route, else the newest setup
   // session's route). Facts about another route, or about no named route, never pass --route.
   const answered = typeof readiness.route_key === "string" && readiness.route_key ? readiness.route_key : null;
+  const scopedLabel = readinessScopeLabel(readiness.scope, answered);
   if (routeKey && answered !== routeKey) {
-    failures.push(`production readiness (server): asked about ${routeKey}, but BenchRouter answered ${answered ? `for ${answered}` : "without naming a route"}; retry later`);
+    failures.push(`${scopedLabel ?? "production readiness (server)"}: asked about ${routeKey}, but BenchRouter answered ${answered ? `for ${answered}` : "without naming a route"}; retry later`);
     return;
   }
-  if (!answered) notes.push("production readiness (server): BenchRouter did not name the route these facts describe; pass --route <route-key> to check one route");
-  const scope = answered ? ` for ${answered}` : "";
-  if (readiness.registered === true) passed.push(`production readiness (server)${scope}: ${facts}`);
-  else failures.push(`production readiness (server)${scope}: ${facts}; BenchRouter has not registered ${scope ? "this route" : "this repo's routes"} yet`);
+  if (!answered && !scopedLabel) notes.push("production readiness (server): BenchRouter did not name the route these facts describe; pass --route <route-key> to check one route");
+  const label = scopedLabel ?? `production readiness (server)${answered ? ` for ${answered}` : ""}`;
+  const registrationTarget = readiness.scope !== "repository" && answered ? "this route" : "this repo's routes";
+  if (readiness.registered === true) passed.push(`${label}: ${facts}`);
+  else failures.push(`${label}: ${facts}; BenchRouter has not registered ${registrationTarget} yet`);
+}
+
+function readinessScopeLabel(scope, routeKey) {
+  if (scope === "repository") return "production readiness (repository)";
+  if (scope === "route" && typeof routeKey === "string" && routeKey) return `production readiness (route ${routeKey})`;
+  return null;
 }
 
 async function checkManifestForDoctor({ root, apiUrl, repoFullName, selectedRouteId, failures, passed, skipped, skipNeeded }) {
