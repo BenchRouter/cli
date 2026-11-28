@@ -1257,6 +1257,11 @@ test("init sends an unknown provider identity to review without offering substit
   assert.match(result.stderr, /Provider: anthropic/);
   assert.match(result.stderr, /Exact provider reference: claude-haiku-4-5-20991231/);
   assert.match(result.stderr, /Do not substitute a model or remove provider metadata/);
+  // The panel's agent stopped here: the code and the next steps are in the output.
+  assert.ok(result.stderr.startsWith("provider_identity_review_required: "), result.stderr);
+  assert.ok(result.stderr.includes("npx --yes benchrouter@latest models --filter \"claude-haiku-4-5-20991231\""), result.stderr);
+  assert.ok(result.stderr.includes("--provider-id openrouter"), result.stderr);
+  assert.ok(result.stderr.includes(`feedback --kind bug --error-code provider_identity_review_required --route ${routeId}`), result.stderr);
   assert.equal(setupServer.requests.length, 1);
   assert.deepEqual(setupServer.requests[0].body.route, {
     route_id: routeId,
@@ -1265,6 +1270,14 @@ test("init sends an unknown provider identity to review without offering substit
     provider_id: "anthropic",
     provider_ref: "claude-haiku-4-5-20991231"
   });
+
+  const json = await runCli([
+    "init", "--json", "--setup-key", "br_setup_provider_review_fixture", "--route", routeId, "--name", "Synopsis",
+    "--incumbent-model", "claude-haiku-4-5-20991231", "--provider-id", "anthropic", "--provider-ref", "claude-haiku-4-5-20991231",
+    "--api-url", setupServer.url, "--output-dir", root
+  ], root);
+  assert.equal(json.status, 1);
+  assert.equal(JSON.parse(json.stderr).error.code, "provider_identity_review_required");
 });
 
 test("init maps validated repository-executable eval packs to matching routes", async (t) => {

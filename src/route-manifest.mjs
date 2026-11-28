@@ -15,6 +15,29 @@ export function readRouteManifest(root) {
   return normalizeRouteManifest(parsed);
 }
 
+/**
+ * Every string in routes[].eval_pack.case_refs with its field, read without the strict checks,
+ * so doctor names a missing case file even when another field of the manifest is invalid.
+ * Returns [] when the file is unreadable or has no routes list.
+ */
+export function rawCaseRefs(root) {
+  let parsed;
+  try {
+    parsed = parseYaml(readFileSync(path.join(root, ROUTE_MANIFEST_RELATIVE_PATH), "utf8"));
+  } catch {
+    return [];
+  }
+  const routes = Array.isArray(parsed?.routes) ? parsed.routes : [];
+  return routes.flatMap((route, index) => {
+    const refs = route?.eval_pack?.case_refs;
+    if (!Array.isArray(refs)) return [];
+    const routeId = typeof route.route_id === "string" && route.route_id.trim() ? route.route_id.trim() : `routes[${index}]`;
+    return refs.flatMap((ref, refIndex) => typeof ref === "string" && ref.trim()
+      ? [{ routeId, field: `eval_pack.case_refs[${refIndex}]`, ref: ref.trim() }]
+      : []);
+  });
+}
+
 export function normalizeRouteManifest(parsed) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${ROUTE_MANIFEST_RELATIVE_PATH} must contain a YAML object.`);

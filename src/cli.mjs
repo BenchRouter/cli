@@ -3,18 +3,24 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline/promises";
-import { isMap, isSeq, parseDocument } from "yaml";
+import { isMap, isSeq, parse as parseYaml, parseDocument } from "yaml";
 import { LOGIN_COMMAND, normalizeRepoFullName, resolveAccountToken, resolveRepoCredential, resolveRepoToken, saveRepoToken } from "./config.mjs";
 import { apiRequest, ApiError, responseError } from "./http.mjs";
 import { isRepoAccessStale, refreshRepoAccess, refreshFailureLine } from "./control-helpers.mjs";
 import { isControlPlaneCommand, runControlCommand } from "./commands.mjs";
 import { controlUsageText, internalControlUsageLines, topLevelControlUsageLines } from "./usage-text.mjs";
 import { CliUsageError, runRepoRead } from "./repo-read.mjs";
-import { readRouteManifest } from "./route-manifest.mjs";
+import { normalizeRouteManifest, rawCaseRefs, readRouteManifest } from "./route-manifest.mjs";
 import { CLI_VERSION, newerVersionNotice } from "./version.mjs";
 import { unifiedDiff } from "./line-diff.mjs";
 import { customerPaths } from "./control-api.mjs";
 import { applyUpgradePacket, readKitVersion, planUpgradeFiles, preserveCustomerSetup, inspectSignedKit, prepareLocalKitFiles, ensureGitignoreLines, preflightFileApplication, stageFileApplication, writeLocalRuntime, UPGRADE_GENERATED_PATHS, GITIGNORE_PATH, WORKFLOW_PATH, LOCAL_SCRIPTS, LEGACY_LOCAL_SCRIPTS, DEAD_EVAL_SCRIPT } from "./generated-kit.mjs";
+
+// A reader that closes early (`benchrouter init --dry-run | head`) only ends the output. The
+// command still finishes; later stdout writes are dropped instead of crashing with EPIPE.
+process.stdout.on("error", (error) => {
+  if (error?.code !== "EPIPE") throw error;
+});
 
 // Every option name as typed, kept apart from parsed values so a name such as "_" or
 // "__proto__" cannot hide in the positional list or the object prototype.
@@ -51,6 +57,10 @@ const EXECUTABLE_EVAL_PACK_FIELDS = new Set([
 const RUNTIME_ENV_TEMPLATE_NAMES = [".env.example", "env.template", ".env.sample", ".env.template", ".dev.vars.example"];
 
 class StaleRepoAccess extends Error {}
+
+// The manifest check's 422 codes. Their messages come from the server's own parse of
+// benchrouter.yml (src/runner/manifest-check.ts) and name the refused field.
+const MANIFEST_FIELD_ERRORS = new Set(["manifest_invalid", "manifest_yaml_invalid", "route_not_declared"]);
 
 // Every value a BenchRouter kit or init packet has written, per benchrouter: script name. A different
 // old value is the customer's own script, which the kit replaces.
@@ -271,15 +281,29 @@ async function init() {
   // The dry run and the real run share this plan, so the preview names exactly what init writes and skips.
   const plannedFiles = [];
   const skippedFiles = [];
+  const manifestWarnings = [];
   for (const file of previewPacket.files) {
     if (file.path === ".env.example") continue;
     const targetPath = safeTargetPath(outputDir, file.path);
     const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
     let content = file.content;
     if (file.path === ".benchrouter/benchrouter.yml" && previous !== null) {
-      content = mergeRequestedRoutesIntoManifest(previous, content, routeIds, declaredApiFamilies(routeSpecs));
+      try {
+        content = mergeRequestedRoutesIntoManifest(previous, content, routeIds, declaredApiFamilies(routeSpecs));
+      } catch (error) {
+        fail(error instanceof Error ? error.message : "Could not merge .benchrouter/benchrouter.yml.");
+      }
+      manifestWarnings.push(...manifestProblems(content));
     } else if (file.path === WORKFLOW_PATH && previous !== null) {
-      content = preserveCustomerSetup(previous, content);
+      try {
+        content = preserveCustomerSetup(previous, content);
+      } catch (error) {
+        // A workflow init cannot merge is replaced only when the person asked to replace their edits.
+        if (!overwriteUserEdits) {
+          fail(`${error instanceof Error ? error.message : `Could not merge ${WORKFLOW_PATH}.`}\n` +
+            `init keeps your setup steps only from a workflow in BenchRouter's shape. Fix the workflow, or rerun with --overwrite-user-edits to replace it with BenchRouter's copy (your own steps in it are dropped).`);
+        }
+      }
     } else if (previous !== null && previous !== content && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
       skippedFiles.push(isBenchRouterKitFile(file.path)
         ? `${file.path} (it differs from BenchRouter's copy; --force replaces BenchRouter kit and README files)`
@@ -311,12 +335,14 @@ async function init() {
       process.stdout.write(`Would skip ${skippedFiles.length} file(s):\n`);
       for (const line of skippedFiles) process.stdout.write(`  ${line}\n`);
     }
+    writeManifestWarnings(manifestWarnings);
     process.stdout.write("runtime env configuration is deferred until activation\n");
     process.stdout.write("would request Runtime/host BENCHROUTER_API_KEY during a real init\n");
     return;
   }
 
   for (const line of skippedFiles) process.stdout.write(`skip-existing ${line}\n`);
+  writeManifestWarnings(manifestWarnings);
   try {
     plannedFiles.push(...initLocalFiles(previewPacket.package_json));
     await (await stageFileApplication({
@@ -351,6 +377,24 @@ async function init() {
 
   process.stdout.write("\nSuggested PR body:\n");
   process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }));
+}
+
+// init keeps an existing benchrouter.yml and adds routes to it, so a field the file already
+// gets wrong stays wrong. Say so before the PR, not first in doctor or the eval run.
+function manifestProblems(content) {
+  try {
+    normalizeRouteManifest(parseYaml(content));
+    return [];
+  } catch (error) {
+    return [error instanceof Error ? error.message : "the merged .benchrouter/benchrouter.yml is invalid"];
+  }
+}
+
+function writeManifestWarnings(warnings) {
+  if (warnings.length === 0) return;
+  process.stdout.write("\nWarning: init keeps your existing .benchrouter/benchrouter.yml, and after this init it is still invalid:\n");
+  for (const warning of warnings) process.stdout.write(`  - ${warning}\n`);
+  process.stdout.write("  doctor and the eval run refuse this file. Fix the named field before you open the PR.\n");
 }
 
 function declaredApiFamilies(routeSpecs) {
@@ -816,7 +860,7 @@ async function fetchSetupPacketOnce({ apiUrl, credential, repoFullName, routeSpe
       fail(modelReplacementMessage(error, matchingReplacementRouteSpec(error, routeSpecs)));
     }
     if (errorCode === "provider_identity_review_required") {
-      fail(providerIdentityReviewMessage(error, primary));
+      fail(providerIdentityReviewMessage(error, matchingReplacementRouteSpec(error, routeSpecs) ?? primary), errorCode);
     }
     if (errorCode === "approved_baseline_not_available") {
       fail(browserApprovalUnavailableMessage(primary));
@@ -956,6 +1000,7 @@ async function doctor() {
     manifestRoutes = readRouteManifest(root).routes;
   } catch (error) {
     failures.push(error instanceof Error ? error.message : "could not read .benchrouter/benchrouter.yml");
+    validateRawCaseRefsForDoctor(root, failures);
   }
   const selectedRoutes = selectedRouteId
     ? manifestRoutes.filter((route) => route.routeId === selectedRouteId)
@@ -1225,8 +1270,12 @@ async function checkManifestForDoctor({ root, apiUrl, repoFullName, selectedRout
   } catch (error) {
     if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
       failures.push("manifest check: this credential cannot check this repo; run benchrouter login or use the repo's setup key");
+    } else if (error instanceof ApiError && error.status === 422 && MANIFEST_FIELD_ERRORS.has(error.code)) {
+      // The server's manifest parse names the field it refused; print that field-level message.
+      const { message } = responseError(error.body, "");
+      failures.push(`manifest check: HTTP 422 (${error.code}): ${redact(message).slice(0, 500)}`);
     } else if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
-      // Only a bounded error code is safe to print from an error body.
+      // Other error bodies may carry anything; only a bounded error code is safe to print.
       const code = typeof error.code === "string" && error.code.length <= 100 && error.code.length > 0
         && [...error.code].every((char) => (char >= "a" && char <= "z") || (char >= "0" && char <= "9") || char === "_")
         ? ` (${redact(error.code)})` : "";
@@ -1267,21 +1316,32 @@ function discoverRouteFilesFromManifest(routes, root) {
 function validateDeclaredFilesForDoctor(root, route, failures) {
   const refs = new Set([route.configPath, route.scorerPath, ...route.caseRefs, ...route.codeRefs, ...route.repositoryExecutableRefs].filter(Boolean));
   for (const ref of refs) {
-    const resolved = resolveDoctorRelativePath(root, ref);
-    if (!resolved.ok) {
-      failures.push(`route ${route.routeId}: declared file ${ref} is invalid: ${resolved.error}`);
-      continue;
-    }
-    let isFile = false;
-    try { isFile = statSync(resolved.path).isFile(); } catch { isFile = false; }
-    if (existsSync(resolved.path) && !isFile) {
-      failures.push(`route ${route.routeId}: declared file ${ref} is not a regular file`);
-    } else if (!isFile) {
-      // A declared config may also be one of the required kit files.
-      const existing = failures.indexOf(`missing ${ref}`);
-      if (existing !== -1) failures.splice(existing, 1);
-      failures.push(`route ${route.routeId}: missing declared file ${ref}`);
-    }
+    const caseIndex = route.caseRefs.indexOf(ref);
+    validateDeclaredFile(root, route.routeId, ref, caseIndex === -1 ? "" : `eval_pack.case_refs[${caseIndex}]`, failures);
+  }
+}
+
+// A manifest field error stops the strict read, but the declared case files are still checked.
+function validateRawCaseRefsForDoctor(root, failures) {
+  for (const { routeId, field, ref } of rawCaseRefs(root)) validateDeclaredFile(root, routeId, ref, field, failures);
+}
+
+function validateDeclaredFile(root, routeId, ref, field, failures) {
+  const named = field ? ` (${field})` : "";
+  const resolved = resolveDoctorRelativePath(root, ref);
+  if (!resolved.ok) {
+    failures.push(`route ${routeId}: declared file ${ref}${named} is invalid: ${resolved.error}`);
+    return;
+  }
+  let isFile = false;
+  try { isFile = statSync(resolved.path).isFile(); } catch { isFile = false; }
+  if (existsSync(resolved.path) && !isFile) {
+    failures.push(`route ${routeId}: declared file ${ref}${named} is not a regular file`);
+  } else if (!isFile) {
+    // A declared config may also be one of the required kit files.
+    const existing = failures.indexOf(`missing ${ref}`);
+    if (existing !== -1) failures.splice(existing, 1);
+    failures.push(`route ${routeId}: missing declared file ${ref}${named}`);
   }
 }
 
@@ -1401,11 +1461,23 @@ function formatReplacementAlternative(alternative) {
 
 function providerIdentityReviewMessage(error, routeSpec) {
   const reason = typeof error.message === "string" ? `\nReason: ${error.message}` : "";
-  return `BenchRouter cannot prove the identity of the observed incumbent.
-Observed model: ${routeSpec.incumbent_model}
+  const detail = typeof error.reason === "string" ? ` (${error.reason})` : "";
+  const model = routeSpec.incumbent_model;
+  const steps = [
+    `Confirm the exact model ID the call site sends. List catalog IDs with: npx --yes benchrouter@latest models --filter ${JSON.stringify(model.split("/").at(-1))}`,
+    ...(routeSpec.provider_id === "openrouter" ? [] : [
+      `If the call site calls OpenRouter, pass --provider-id openrouter and --provider-ref ${model} (the exact OpenRouter ID). Setup can admit a paid, stable OpenRouter model that way.`
+    ]),
+    `If the inputs are exact, ask BenchRouter to review the catalog identity: npx --yes benchrouter@latest feedback --kind bug --error-code provider_identity_review_required --route ${routeSpec.route_id} "Catalog review for ${model}"`
+  ];
+  return `provider_identity_review_required: BenchRouter cannot prove the identity of the observed incumbent.
+Route: ${routeSpec.route_id}
+Observed model: ${model}
 Provider: ${routeSpec.provider_id ?? "not supplied"}
-Exact provider reference: ${routeSpec.provider_ref ?? "not supplied"}${reason}
-Do not substitute a model or remove provider metadata. The catalog mapping needs review before setup can continue.`;
+Exact provider reference: ${routeSpec.provider_ref ?? "not supplied"}${reason}${detail}
+Nothing was changed. Do not substitute a model or remove provider metadata. Next steps:
+${steps.map((step, index) => `${index + 1}. ${step}`).join("\n")}
+After the review, rerun the same init command unchanged.`;
 }
 
 function browserApprovalUnavailableMessage(routeSpec) {
@@ -2059,6 +2131,72 @@ function fail(message, code = "command_failed", exitCode = 1) {
   process.exit(exitCode);
 }
 
+// RUN-001: the local runtime commands take no flags; the signed runtime reads only these env vars.
+// A function, not a constant: usage() can run before the module's later constants exist.
+function runtimeUsage(commandName) {
+  const RUNTIME_FILES = `Before it starts, the CLI writes its signed runtime bootstrap and trust file to
+.benchrouter/bootstrap.mjs and .benchrouter/trust.json (both listed in
+.benchrouter/.gitignore), then runs the bootstrap from the repository root. The
+bootstrap downloads the signed runtime and verifies it. --help writes nothing.
+`;
+  return {
+  capture: `Usage:
+  benchrouter capture
+
+Starts a local proxy that records your application's model calls as replay cases.
+It takes no flags. Run it from the repository root, leave it running, and run your
+application tests in another shell against the proxy. Stop it with Ctrl-C; it
+finishes its writes, then exits.
+
+${RUNTIME_FILES}
+The proxy listens on 127.0.0.1 on a free port. It prints the address
+("listening on 127.0.0.1:<port>") and writes the port to .benchrouter/sidecar.port.
+Point the call site's base URL variable at it:
+  openai_chat_completions, openai_responses:  http://127.0.0.1:<port>/v1
+  anthropic_messages:                         http://127.0.0.1:<port>
+
+Billing: each call goes to BenchRouter and its model, as a normal call with your
+runtime key, and spends your balance. It does not count as production traffic.
+
+It adds each call to .benchrouter/cases.<route>.json for the route the request
+names (a route in .benchrouter/benchrouter.yml), and appends it to the raw log
+.benchrouter/captured.jsonl. Review the redactions before you commit cases.
+
+Environment:
+  BENCHROUTER_API_KEY              Required. The runtime key (br_live_...).
+  BENCHROUTER_CAPTURE_SAMPLES      Outputs to record for each call. Defaults to 1.
+  BENCHROUTER_CAPTURE_REDACT_PATHS JSON array of extra request paths to redact.
+  BENCHROUTER_SIDECAR_PORT_FILE    Port file. Defaults to .benchrouter/sidecar.port.
+  BENCHROUTER_CAPTURE_RAW_LOG      Raw log. Defaults to .benchrouter/captured.jsonl.
+`,
+  calibrate: `Usage:
+  benchrouter calibrate
+
+Checks each route's scorer against the route's own reference outputs and
+calibration fixtures (.benchrouter/calibration.<route>.json), with the cases and
+scorer that .benchrouter/benchrouter.yml declares. It takes no flags.
+
+${RUNTIME_FILES}
+Billing: none. Calibrate runs offline and makes no model calls; a judge scorer gets
+the fixture's judge reply instead of a model. It does not affect PR or production
+evals, and it does not prove eval quality.
+
+A route with no local evidence is UNVERIFIED and does not fail the command. A FAILED
+route exits 1.
+
+Environment:
+  BENCHROUTER_ROUTE_ID   Check only this route: its route_id or id in benchrouter.yml.
+                         Defaults to every route.
+`,
+  run: `Usage:
+  benchrouter run
+
+For GitHub Actions only. The BenchRouter eval workflow runs it, and it needs the
+job's OIDC token, so it fails on your computer. Use capture and calibrate locally.
+`
+  }[commandName];
+}
+
 function usage(status, commandName = "all", message) {
   const stream = status === 0 ? process.stdout : process.stderr;
   if (status !== 0 && args?.json) {
@@ -2074,7 +2212,7 @@ function usage(status, commandName = "all", message) {
     process.exit(status);
   }
   if (["capture", "calibrate", "run"].includes(commandName)) {
-    stream.write(`Usage: benchrouter ${commandName} [runtime options]\n\nWrite the CLI's signed runtime bootstrap and trust file to .benchrouter/ (gitignored),\nthen run the bootstrap from the current repository.\nCapture starts a local proxy; run your application tests against it separately.\nCalibrate checks local evidence. Run is for GitHub Actions and requires OIDC.\n`);
+    stream.write(runtimeUsage(commandName));
   } else if (commandName === "init") {
     stream.write(`Usage:
   benchrouter init --route product/route --name "Route Name" --incumbent-model provider/model [options]
@@ -2084,15 +2222,17 @@ Multiple routes (paired in order; first triple is primary):
     --route product/route-a --name "Route A" --incumbent-model provider/model-a \\
     --route product/route-b --name "Route B" --incumbent-model provider/model-b
 
-init uses your login (\`benchrouter login\`). A setup key from the BenchRouter
-setup page also works (--setup-key or BENCHROUTER_SETUP_KEY).
+init uses your saved login: run \`benchrouter login\` once, then init needs no
+setup key, for the first route and for each route you add later. A setup key from
+the BenchRouter setup page is optional (--setup-key or BENCHROUTER_SETUP_KEY).
 
 Routes share one product. Pass repeated route triples during init; the generated
 .benchrouter/benchrouter.yml is the single route declaration. The generated kit
 contains the eval-action workflow stub; the action and the CLI carry the bootstrap.
 
 Options:
-  --repo owner/repo        Defaults to the current git remote. Required with a login.
+  --repo owner/repo        Defaults to the current git remote. Pass it only when the
+                           directory has no GitHub remote.
   --route <route-key>     Repeatable. Pair each with one --name and one --incumbent-model.
                           (--route-id is the deprecated old name.)
   --name <text>           Repeatable. Display name for the matching --route.
@@ -2113,6 +2253,7 @@ Options:
                            init keeps an existing differing file and prints skip-existing. init always refreshes the evals workflow (it keeps
                            your setup steps) and merges benchrouter.yml; --force changes neither.
   --overwrite-user-edits   Replace every existing file that differs, including non-kit files.
+                           It also replaces an evals workflow that init cannot merge.
   --output-dir <path>      Defaults to current directory.
   --account-token br_ctrl_...  Defaults to BENCHROUTER_ACCOUNT_TOKEN, then the saved login.
   --setup-key br_setup_...     Optional setup key; used instead of the login when passed.
@@ -2138,7 +2279,19 @@ upgrade refreshes it with your login and retries once. If the refresh fails, it
 prints \`npx --yes benchrouter@latest repos refresh\`.
 
 Upgrade preserves the existing .benchrouter/benchrouter.yml byte-for-byte
-and preserves all route-owned assets and dispatch-only customer setup steps.
+and preserves all route-owned assets.
+
+Your steps in the evals workflow:
+- Setup steps between the BenchRouter prepare step and Run BenchRouter are kept
+  with the same content and their comments. Each one must already have
+  if: github.event_name == 'workflow_dispatch'. Upgrade does not add that
+  condition: a setup step without it stops the upgrade, names the rule, and
+  changes nothing.
+- Steps after Run BenchRouter are kept the same way. They must not use secrets.
+- The eval job's runs-on and a pinned commit SHA for the eval action are kept.
+- A workflow from before the eval action migrates with the same rules.
+The --dry-run diff shows the exact result.
+
 It replaces only the workflow, sets the benchrouter: package script values in
 place (the rest of package.json keeps its formatting; it removes the old benchrouter:eval script that ran \`bootstrap.mjs run\`), adds the local runtime files to .benchrouter/.gitignore, and deletes a
 committed legacy .benchrouter/bootstrap.mjs and .benchrouter/trust.json.
@@ -2186,11 +2339,17 @@ says what is left to do, or "nothing left to do".
       failures: "benchrouter failures <route-key> [model] [--repo owner/repo]",
       explain: "benchrouter explain <model> [--route product/route] [--repo owner/repo]"
     }[commandName];
+    const routeNote = commandName === "explain"
+      ? "\nWith one route in the repository, explain uses it. Pass --route when the repository\nhas no route or several.\n"
+      : "";
     stream.write(`Usage:
   ${commandUsage}
 
 Uses your login (\`benchrouter login\`). A repository setup key also works.
-
+These repository reads name the repository with --repo, or the current git remote.
+Account reads such as \`evals status <route-key>\` and \`routes activity <route-key>\`
+take only the route key and need no --repo.
+${routeNote}
 Options:
   --repo owner/repo         Defaults to the current git remote.
   --account-token br_ctrl_...  Defaults to BENCHROUTER_ACCOUNT_TOKEN, then the saved login.
@@ -2204,13 +2363,14 @@ Options:
   benchrouter upgrade [--repo owner/repo]
   benchrouter doctor [--full]
   benchrouter --version
-  benchrouter capture
-  benchrouter calibrate
+  benchrouter capture                (local proxy; spends balance per call)
+  benchrouter calibrate              (offline scorer check)
+  benchrouter run                    (GitHub Actions only; needs the job's OIDC token)
   benchrouter models [--json]
-  benchrouter status [--json]
-  benchrouter frontier <route-key> [--json]
-  benchrouter failures <route-key> [model] [--json]
-  benchrouter explain <model> [--route product/route] [--json]
+  benchrouter status [--repo owner/repo] [--json]
+  benchrouter frontier <route-key> [--repo owner/repo] [--json]
+  benchrouter failures <route-key> [model] [--repo owner/repo] [--json]
+  benchrouter explain <model> [--route product/route] [--repo owner/repo] [--json]
 ${topLevelControlUsageLines()}
 ${args.all === true ? `\nBenchRouter-internal commands (admin token):\n${internalControlUsageLines()}\n` : ""}
 Run \`benchrouter <command> --help\` for its flags, for example \`benchrouter evals model --help\`.

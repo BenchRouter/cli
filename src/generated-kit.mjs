@@ -70,8 +70,16 @@ function workflowDocument(source, options) {
 
 function evalSteps(doc) {
   const steps = doc.getIn(["jobs", "eval", "steps"]);
-  if (!steps || !Array.isArray(steps.items)) throw new Error(`${WORKFLOW_PATH} must contain jobs.eval.steps.`);
+  if (!steps || !Array.isArray(steps.items)) throw new Error(`${WORKFLOW_PATH} must contain jobs.eval.steps${foundJobs(doc.toJS())}.`);
   return steps;
+}
+
+// Names the jobs a workflow has, so a renamed job (jobs.evals) is visible in the error.
+function foundJobs(workflow) {
+  const jobs = workflow?.jobs && typeof workflow.jobs === "object" && !Array.isArray(workflow.jobs) ? Object.keys(workflow.jobs) : [];
+  if (jobs.length === 0) return " (it has no jobs)";
+  if (jobs.includes("eval")) return " (jobs.eval has no steps list)";
+  return ` (it has ${jobs.map((name) => `jobs.${name}`).join(", ")}; BenchRouter's workflow has one job named eval)`;
 }
 
 function stepIds(steps) {
@@ -324,6 +332,16 @@ function postCommentTokens(steps) {
 // SETUP-001: also keep the customer's valid eval-job runs-on. A legacy workflow migrates: its setup
 // between the interpreter recorder and the runtime step, and its post steps, move into the stub.
 export function preserveCustomerSetup(existingSource, templateSource) {
+  try {
+    return mergeCustomerSetup(existingSource, templateSource);
+  } catch (error) {
+    // Some checks name the file and some only describe the rule; every error names the file.
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(message.startsWith(WORKFLOW_PATH) ? message : `${WORKFLOW_PATH}: ${message}`);
+  }
+}
+
+function mergeCustomerSetup(existingSource, templateSource) {
   const existing = workflowDocument(existingSource, { keepSourceTokens: true });
   // SETUP-001: a customer's pinned eval-action ref (a commit SHA) survives the refresh.
   const pinned = workflowBounds(evalSteps(existing)).ref;
@@ -862,6 +880,7 @@ export function inspectSignedKit(root, failures) {
     if (workflow.concurrency !== undefined || workflow.jobs?.eval?.strategy !== undefined) throw new Error("the signed runtime job must have no concurrency or matrix");
     if (Object.keys(workflow.jobs ?? {}).length !== 1) throw new Error("requires exactly one eval job");
     const job = workflow.jobs?.eval;
+    if (!job) throw new Error(`requires the job to be named eval${foundJobs(workflow)}`);
     if (job?.["timeout-minutes"] !== 120) throw new Error("requires a 120-minute job ceiling");
     if (!validRunsOn(job["runs-on"])) throw new Error("requires runs-on: a runner label, a list of labels, or a group/labels object");
     const guard = "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository";
