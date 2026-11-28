@@ -1,0 +1,22 @@
+# Route recorded in the cold-read panel round 3 J2 preview. The route namespace was redacted.
+  - id: panel-summarize
+    route_id: app/panel-summarize
+    name: Panel Summarize
+    code_refs:
+      - src/summarize.ts
+    metadata:
+      eval_archetype: ""
+    call_site:
+      base_url_env: ""
+      api_family: anthropic_messages
+    seed:
+      incumbent_model: anthropic/claude-haiku-5.5
+    eval_pack:
+      id: panel_summarize_v1
+      config_path: .benchrouter/benchrouter.yml
+      workflow: .github/workflows/benchrouter-evals.yml
+      command: node .benchrouter/bootstrap.mjs run
+      scorer: .benchrouter/scorer.panel-summarize.js
+      result_schema: benchrouter.result.v1
+      case_refs:
+        - .benchrouter/cases.panel-summarize.json
