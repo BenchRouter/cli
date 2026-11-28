@@ -2167,7 +2167,7 @@ function fail(message, code = "command_failed", exitCode = 1) {
   process.exit(exitCode);
 }
 
-// RUN-001: the local runtime commands take no flags; the signed runtime reads only these env vars.
+// RUN-001: the local runtime commands take no flags.
 // A function, not a constant: usage() can run before the module's later constants exist.
 function runtimeUsage(commandName) {
   const RUNTIME_FILES = `Before it starts, the CLI writes its signed runtime bootstrap and trust file to
@@ -2191,19 +2191,33 @@ Point the call site's base URL variable at it:
   openai_chat_completions, openai_responses:  http://127.0.0.1:<port>/v1
   anthropic_messages:                         http://127.0.0.1:<port>
 
-Billing: each call goes to BenchRouter and its model, as a normal call with your
-runtime key, and spends your balance. It does not count as production traffic.
+The local caller can omit Authorization and x-api-key. The proxy ignores both
+headers and authenticates upstream with BENCHROUTER_API_KEY by default. For Anthropic
+Messages, it forwards anthropic-version and anthropic-beta if supplied.
+
+Capture has no stub upstream or non-forwarding mode. The CLI's signed bootstrap
+sets the upstream to https://api.benchrouter.com. Forwarded model calls and
+extra samples spend your balance and do not count as production traffic.
 
 It adds each call to .benchrouter/cases.<route>.json for the route the request
 names (a route in .benchrouter/benchrouter.yml), and appends it to the raw log
 .benchrouter/captured.jsonl. Review the redactions before you commit cases.
 
-Environment:
-  BENCHROUTER_API_KEY              Required. The runtime key (br_live_...).
-  BENCHROUTER_CAPTURE_SAMPLES      Outputs to record for each call. Defaults to 1.
-  BENCHROUTER_CAPTURE_REDACT_PATHS JSON array of extra request paths to redact.
-  BENCHROUTER_SIDECAR_PORT_FILE    Port file. Defaults to .benchrouter/sidecar.port.
-  BENCHROUTER_CAPTURE_RAW_LOG      Raw log. Defaults to .benchrouter/captured.jsonl.
+Capture environment:
+  BENCHROUTER_API_KEY               Required. The runtime key (br_live_...).
+  BENCHROUTER_CAPTURE_SAMPLES       Outputs to record for each call. Defaults to 1.
+  BENCHROUTER_CAPTURE_REDACT_PATHS  JSON array of extra request paths to redact.
+  BENCHROUTER_SIDECAR_PORT_FILE     Port file. Defaults to .benchrouter/sidecar.port.
+  BENCHROUTER_CAPTURE_RAW_LOG       Raw log. Defaults to .benchrouter/captured.jsonl.
+  BENCHROUTER_CODE_REFS_SHA256      Code-ref digest to record in capture provenance.
+  The port file and raw log paths can be absolute or relative to the repository root.
+
+Inherited runner environment:
+  GITHUB_REPOSITORY_ID             Scopes the signed runtime release lookup to that repository.
+  RUNNER_TEMP                      Base directory for the verified runtime file.
+  BENCHROUTER_MODEL_RUN_ID         With an eval-call token, makes the proxy use that token upstream.
+  BENCHROUTER_EVAL_CALL_TOKEN      Upstream token for a model run. The runtime key is still required.
+  BENCHROUTER_EVAL_CALL_TOKEN_MODEL  Fallback if BENCHROUTER_EVAL_CALL_TOKEN is unset.
 `,
   calibrate: `Usage:
   benchrouter calibrate
@@ -2270,8 +2284,8 @@ Routes share one product. Pass repeated route triples during init; the generated
 contains the eval-action workflow stub; the action and the CLI carry the bootstrap.
 
 Options:
-  --repo owner/repo        Defaults to the current git remote. Pass it only when the
-                           directory has no GitHub remote.
+  --repo owner/repo        Selects the repository explicitly, even if it matches
+                           the GitHub origin remote. Omit it to use that remote.
   --route <route-key>     Repeatable. Pair each with one --name and one --incumbent-model.
                           (--route-id is the deprecated old name.)
   --name <text>           Repeatable. Display name for the matching --route.

@@ -635,15 +635,22 @@ export function renderRouteRepinned(body) {
 /** ROUTE-006: `benchrouter routes activity`, the route's background eval activity. */
 export function renderRouteActivity(body) {
   const a = body.eval_activity;
+  const search = body.search_status;
+  const searchLine = search
+    ? `Production search: ${search.summary}${search.result_set_id ? ` (result set: ${search.result_set_id})` : ""}`
+    : "Production search: unavailable";
   if (!a) {
-    printLines([`${body.route_key}: no eval activity.`]);
+    printLines([`${body.route_key}: no eval activity.`, searchLine]);
     return;
   }
+  const tranche = a.current_tranche == null ? "Displayed tranche" : `Displayed tranche ${a.current_tranche}`;
   const out = [
-    `${body.route_key}: ${a.state} (${a.trigger ?? "no trigger"}); coverage ${a.coverage_status ?? "-"}`,
-    `Models: ${a.total_models} total; ${a.terminal_models} done (${a.uploaded_models} measured, ${a.reused_models} reused), ` +
+    body.route_key,
+    searchLine,
+    `${tranche}: ${a.state} (${a.trigger ?? "no trigger"}); coverage ${a.coverage_status ?? "-"}`,
+    `Tranche models: ${a.total_models} total; ${a.terminal_models} done (${a.uploaded_models} measured, ${a.reused_models} reused), ` +
       `${a.failed_models} failed, ${a.running_models} running, ${a.queued_models} queued, ${a.pending_models} pending, ${a.skipped_models} skipped`,
-    `Result set: ${a.result_set_id ?? "none"}; requested ${utcMinute(a.requested_at)}, started ${utcMinute(a.started_at)}, completed ${utcMinute(a.completed_at)}`
+    `Activity result set: ${a.result_set_id ?? "none"}; requested ${utcMinute(a.requested_at)}, started ${utcMinute(a.started_at)}, completed ${utcMinute(a.completed_at)}`
   ];
   if (a.github_run_url) out.push(`GitHub run: ${a.github_run_url}`);
   if (a.failure_display) {

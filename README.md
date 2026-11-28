@@ -47,8 +47,9 @@ npx --yes benchrouter@latest init \
 `init` uses your login (`benchrouter login`) for a repository that already has a
 BenchRouter group. The first route of a repository with no group needs a setup key
 from `benchrouter setup create --repo owner/repo --yes`; a login-only init there stops
-with `repo_not_found`. `init` needs `--repo owner/repo` when
-the current directory has no GitHub remote. A setup key from the BenchRouter setup
+with `repo_not_found`. Pass `--repo owner/repo` to select the repository
+explicitly, even if it matches the GitHub origin remote. Omit it to use that
+remote. A setup key from the BenchRouter setup
 page also works: pass `--setup-key br_setup_...` or set `BENCHROUTER_SETUP_KEY`.
 An explicit setup key is used instead of the login. `--route` takes the route key;
 `--route-id` is its deprecated old name and prints a note.
@@ -319,10 +320,12 @@ readiness. `--help` on either writes no file.
   writes the port to `.benchrouter/sidecar.port`. Leave it running and run the
   application tests in another shell with the call site's base URL variable set to
   `http://127.0.0.1:<port>/v1` (OpenAI families) or `http://127.0.0.1:<port>`
-  (`anthropic_messages`). It needs `BENCHROUTER_API_KEY` (the runtime key). Each
-  call is a real BenchRouter model call and spends your balance; it does not count
-  as production traffic. It records the calls in `.benchrouter/cases.<route>.json`.
-  Stop it with Ctrl-C.
+  (`anthropic_messages`). The proxy needs `BENCHROUTER_API_KEY` (the runtime key).
+  It ignores the caller's `Authorization` and `x-api-key` headers. Capture has
+  no stub upstream or non-forwarding mode. Model calls and extra samples spend
+  your balance. They do not count as production traffic. Capture records cases
+  in `.benchrouter/cases.<route>.json`. Run `benchrouter capture --help` for
+  environment overrides. Stop it with Ctrl-C.
 - `calibrate` makes no model calls and costs nothing. It needs network access to
   fetch the signed runtime and check its release status. It checks each route's scorer
   against the route's reference outputs and `.benchrouter/calibration.<route>.json`.
@@ -359,7 +362,7 @@ benchrouter account token save --account-token br_ctrl_...
 benchrouter billing show|activity|statement [--json]
 benchrouter billing top-up --amount 25 [--yes]
 benchrouter billing auto-reload setup --threshold <usd> --amount <usd> | disable
-benchrouter keys list [--product-id <id>]
+benchrouter keys list [--product-id <id>] [--json]
 benchrouter keys create|disable|enable|revoke
 benchrouter repos list|refresh
 benchrouter setup status [--repo owner/repo]
@@ -394,6 +397,13 @@ pass the archived route's id from `routes list`. A route key names one route acr
 the account, so the `routes` and `evals` commands need no `--repo`. The repository
 reads (`status`, `frontier`, `failures`, `explain`) take `--repo`, or use the current
 git remote.
+
+To identify which runtime key an app uses, privately compare the start of the
+app's stored key with the prefix shown by `keys list`. In JSON, use each
+`api_keys` entry's `prefix` field.
+
+`routes activity` shows the displayed tranche and the production search status.
+Their result set IDs can differ.
 
 `benchrouter --help` lists the customer commands. The BenchRouter-internal
 `proposals` and `admin` commands need a `bradm_` admin token and appear only under
